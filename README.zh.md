@@ -21,7 +21,7 @@
 dsh plugin --profile web add https://github.com/zhuoxiaoshuai/dsh-database/releases/download/v0.1.0-alpha.12.15/dsh-database.tgz
 ```
 
-装完后重启 `dsh web`。需要 Node.js 24 或以上。
+装完后重启 `dsh web`。需要 Node.js 24 或以上。git 仓库里没有 `lib/`，不要用 `github:` 安装。
 
 如果已经克隆了仓库，也可以在本地打包：
 
@@ -38,7 +38,13 @@ dsh plugin --profile web remove dsh-database
 
 不要把 `cordis.patch.yml` 再抄进 profile。
 
-桌面版的 PATH 里没有 `dsh`。从托盘打开 **DSH 终端**，把命令里的 `--profile web` 改成 `--profile desktop`。插件是同一份，只是 profile 不同。
+桌面版的 PATH 里没有 `dsh`。从托盘打开 **DSH 终端**，然后执行：
+
+```sh
+dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/releases/download/v0.1.0-alpha.12.15/dsh-database.tgz
+```
+
+插件是同一份，只是 profile 不同。`--profile web` 不会装进桌面应用。
 
 ## 环境
 
@@ -122,7 +128,7 @@ Peek 使用临时消费组 `dsh-peek-{uuid}`，并且 `autoCommit: false`。这�
 | --- | --- |
 | `database_status` | 当前已登录的 SQL / Redis 连接，以及 `generation` |
 | `database_catalog` | `schemas` / `tables` / `table`。不要用 SQL 去查 `information_schema` |
-| `database_execute_sql` | `action=read` 读取当前 AI Query 文本；带上 `sql` 则执行（仅 SIT）。UAT / PVT 只读 |
+| `database_execute_sql` | `action=read` 读取当前 AI Query 文本；带上 `sql` 则执行（仅 SIT） |
 | `database_templates` | 保存和搜索文本，不会执行 |
 | `database_read_collab` | 当前打开的查询页签 |
 | `database_import_connections` | 登记主机，不接收密码 |
@@ -133,11 +139,11 @@ Peek 使用临时消费组 `dsh-peek-{uuid}`，并且 `autoCommit: false`。这�
 
 ## 运行方式
 
-页签挂在 DSH 右侧栏。驱动（`mysql2`、`oracledb`、`redis`、`kafkajs`）只在 Host Worker 里加载。浏览器请求 `/plugins/database/...`，需要带会话 cookie；没有 cookie 会返回 401。
+页签挂在 DSH 右侧栏。驱动（`mysql2`、`oracledb`、`redis`、`kafkajs`）在 Host 进程里运行。浏览器请求 `/plugins/database/...`，需要带会话 cookie；没有 cookie 会返回 401。
 
-连接写在工作区文件里。编辑器按对话分开。重连会更换 `generation`，正在进行的请求会作废。
+连接写在工作区文件里。编辑器按对话分开。重连会作废正在进行的请求。
 
-在 AI Query 里输入后，编辑器由你接管；交还之前，模型不能覆盖这份文本。真正执行时要求编辑器在你手上，并且 revision 对得上。页面不能伪造 AI 身份。
+在 AI Query 里输入后，编辑器由你接管；交还之前，模型不能覆盖这份文本。
 
 写入超时会报「未知」：库里可能已经有这条数据了。peek 和查询的超时时间是 30 秒。
 
@@ -163,7 +169,7 @@ DSH_TEST_REDIS=1 npm run test:host
 DSH_TEST_DATABASES=1 npm run test:host
 ```
 
-`npm run test:redis` 会启动带标签的 Docker 容器（随机端口、独立证书），跑完后删掉。OpenSSL 不在 PATH 时可设置 `DSH_OPENSSL`。如果要隔离宿主，设置 `DSH_DESKTOP_APP=... npm run test:host`。
+`npm run test:redis` 会启动 Docker 容器，跑完后删掉。OpenSSL 不在 PATH 时可设置 `DSH_OPENSSL`。如果要隔离宿主，设置 `DSH_DESKTOP_APP=... npm run test:host`。
 
 问题请提到 [Issues](https://github.com/zhuoxiaoshuai/dsh-database/issues)。安全相关见 [SECURITY.md](SECURITY.md)。
 

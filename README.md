@@ -21,7 +21,7 @@ Names in the screenshots are test data.
 dsh plugin --profile web add https://github.com/zhuoxiaoshuai/dsh-database/releases/download/v0.1.0-alpha.12.15/dsh-database.tgz
 ```
 
-Restart `dsh web` afterwards. Node.js 24 or newer is required.
+Restart `dsh web` afterwards. Node.js 24 or newer is required. The git repository does not ship `lib/`, so do not install from `github:`.
 
 From a clone you can also pack it locally:
 
@@ -38,7 +38,13 @@ dsh plugin --profile web remove dsh-database
 
 Do not copy `cordis.patch.yml` into the profile by hand.
 
-On Desktop, `dsh` is not on PATH. Open **DSH Terminal** from the tray and use `--profile desktop` instead of `--profile web`. It is the same plugin on a different profile.
+On Desktop, `dsh` is not on PATH. Open **DSH Terminal** from the tray and run:
+
+```sh
+dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/releases/download/v0.1.0-alpha.12.15/dsh-database.tgz
+```
+
+It is the same plugin on a different profile. `--profile web` does not install into the desktop app.
 
 ## Environments
 
@@ -72,7 +78,7 @@ DDL allows at most 20 steps. Approval lasts 5 minutes. Destructive steps ask you
 
 On SIT, `database_execute_sql` runs up to 8 statements, 100 rows each, including DML. The first error stops the rest.
 
-BIGINT is returned as a string from the driver (`supportBigNumbers` + `bigNumberStrings`). BLOB cells show as `[BLOB n bytes]`.
+BIGINT is returned as a string. BLOB cells show as `[BLOB n bytes]`.
 
 ## Oracle
 
@@ -122,7 +128,7 @@ Tool guides load only when you pass a topic to `database_status`.
 | --- | --- |
 | `database_status` | Live SQL/Redis connections and `generation` |
 | `database_catalog` | `schemas` / `tables` / `table`. Do not query `information_schema` |
-| `database_execute_sql` | `action=read` returns the current AI Query text. With `sql`, it runs (SIT only). Read-only on UAT/PVT |
+| `database_execute_sql` | `action=read` returns the current AI Query text. With `sql`, it runs on SIT only |
 | `database_templates` | Save and search text. Does not execute |
 | `database_read_collab` | Open query tabs |
 | `database_import_connections` | Register hosts. No password |
@@ -133,11 +139,11 @@ Tool guides load only when you pass a topic to `database_status`.
 
 ## How it runs
 
-The tab lives in DSH’s right sidebar. Drivers (`mysql2`, `oracledb`, `redis`, `kafkajs`) load only in Host workers. The browser calls `/plugins/database/...` with a session cookie; without a cookie the response is 401.
+The tab lives in DSH’s right sidebar. Drivers (`mysql2`, `oracledb`, `redis`, `kafkajs`) run in the Host process. The browser calls `/plugins/database/...` with a session cookie; without a cookie the response is 401.
 
-Connections are stored in the workspace file. Editors are per conversation. Reconnect changes `generation` and cancels in-flight work.
+Connections are stored in the workspace file. Editors are per conversation. Reconnect cancels in-flight work.
 
-Typing in AI Query takes over that editor until you give it back. A run requires the editor to be under your control, with a matching revision. The page cannot forge an AI actor.
+Typing in AI Query takes over that editor until you give it back.
 
 A timed-out write is reported as unknown: the row may already be in the database. Peek and query timeout is 30 seconds.
 
@@ -163,7 +169,7 @@ DSH_TEST_REDIS=1 npm run test:host
 DSH_TEST_DATABASES=1 npm run test:host
 ```
 
-`npm run test:redis` starts labelled Docker containers with random ports and per-run certificates, then deletes them. Set `DSH_OPENSSL` if OpenSSL is not on PATH. For an isolated host: `DSH_DESKTOP_APP=... npm run test:host`.
+`npm run test:redis` starts Docker containers and deletes them afterwards. Set `DSH_OPENSSL` if OpenSSL is not on PATH. For an isolated host: `DSH_DESKTOP_APP=... npm run test:host`.
 
 Issues: [github.com/zhuoxiaoshuai/dsh-database/issues](https://github.com/zhuoxiaoshuai/dsh-database/issues). Security: [SECURITY.md](SECURITY.md).
 
