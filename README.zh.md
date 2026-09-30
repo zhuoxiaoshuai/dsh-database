@@ -14,10 +14,17 @@
 
 当前版本 **0.1.0-alpha.12.15**。隔离 profile 的证据不能当成生产声明。
 
+```sh
+npm pack
+dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
+```
+
+卸载回到官方 `dsh web`，不留核心补丁：`dsh plugin --profile web remove dsh-database`。桌面版从托盘打开 **DSH 终端**（不把 `dsh` 写入 PATH），使用 `--profile desktop`。
+
 > 如果这个插件有用，点个 Star 方便其他 DSH 用户找到。
 
 > [!IMPORTANT]
-> **SIT 会把查询单元格原值送给模型。** UAT / PVT 拒绝 AI 写入。密码不会回到浏览器快照。每条已保存连接都等于把该账号交给 Host 进程。详见 [SECURITY.md](SECURITY.md)。
+> **SIT 会把查询单元格原值送给模型。** UAT / PVT 拒绝 **AI** 写入和网格 DML；人工 SQL 页在所有环境仍可自动提交（`lane: manual`）。密码不会回到浏览器快照。每条已保存连接都等于把该账号交给 Host 进程。详见 [SECURITY.md](SECURITY.md)。
 
 ## 为什么存在
 
@@ -41,7 +48,7 @@ DeepSeek Harness 已经在会话旁边推理。常见摸库方式却把这条路
 | Redis / Kafka | 假装是 SQL | 通常不在范围内 | 另买工具 | SCAN 游标 / 有界 peek |
 | 图表 / 自然语言报告 | 截图 | 常常有 | 专用 BI | **不是这个插件** — 工作台里给准确单元格 |
 | 秘密 | 经常进上下文 | 环境变量 / 设置页 | 本地文件 | 只在 Host；Windows DPAPI；快照里剥掉 |
-| 环境 | 无 | 按源只读开关 | 无 | SIT 可写 / UAT·PVT 只读 / DDL 人工闸 |
+| 环境 | 无 | 按源只读开关 | 无 | SIT：AI + 网格可写；UAT·PVT：拦 AI/网格，人工 SQL 页仍可写 |
 | 取消 / 超时 / 未知 | 看聊天状态 | 看工具 | 看工具 | 执行状态是一等对象 |
 
 **一句话：** 不是 SQL 聊天机器人，也不是第二套 Navicat。是会话旁的工作台，模型是同一条路上的同事。
@@ -51,22 +58,17 @@ DeepSeek Harness 已经在会话旁边推理。常见摸库方式却把这条路
 ## 亮点
 
 - **按你本来的方式打开表。** 左目录，右页签（总览 / 查询 / **AI Query** / 经验 / 历史）。四种源，一套外框。
-- **模型跑的是你的文档，不是影子副本。** 点历史即打开当时那份文本。其他连接上的活动只出提示条，不抢当前连接。
-- **输入即接管。** `ExecutionDocument` 有 `text`、`context`、`revision`、`controller`。人一改，`controller` 变成 `user`。交还之前 AI 发布会被拒绝。运行还核对 revision，过期页签打不出去。
+- **模型跑的是你看见的那份。** 点历史即打开当时那份文本。其他连接上的活动只出提示条，不抢当前连接。
+- **输入即接管。** 第一下按键就让模型不能再覆盖编辑器，直到你交还。运行还核对 revision，过期页签打不出去。
 - **浏览器不加载 Driver。** mysql2、oracledb、redis、kafkajs 只在 Host Worker 里。客户端走带认证的插件 HTTP。
-- **环境是闸，不是徽章。** SIT 跟数据库账号（AI 可 DML / `redis_execute`）。UAT / PVT：类生产连接只读，AI 禁写。
-- **分页跟源走，单元格说实话。** SQL 用 `LIMIT` / `OFFSET FETCH`。Redis 用 SCAN（空页会发生，界面会说）。Kafka peek 有界。BIGINT 和精确小数是字符串。BLOB 是 `[BLOB n bytes]`，不把二进制倒进对话。
-- **秘密留在 Host。** 「记住密码」默认关。Windows 用当前用户 DPAPI，密钥走 stdin 不走命令行。加密记住密码只在 Windows。自定义 CA 同样剥离。
+- **环境是闸，不是徽章。** SIT：AI 可 DML / `redis_execute`。UAT / PVT：拦 AI 和网格 DML；人工 SQL 页仍可写。DDL 人工闸。真正权限是数据库账号。
+- **分页跟源走，单元格说实话。** SQL 用 `LIMIT` / `OFFSET FETCH`。Redis SCAN 空页就是空页（界面会说）。Kafka peek 不提交 offset。BIGINT 在 Driver 就是字符串。BLOB 是 `[BLOB n bytes]`。
+- **秘密留在 Host。** 「记住密码」默认关。加密记住密码只在 Windows（当前用户 DPAPI，密钥走 stdin 不走命令行）。自定义 CA 同样剥离。
 
 本项目两层：
 
 1. **抽出的工作台** — Workspace、AI Query、接管、执行、History、Knowledge、外框。一次。
 2. **数据源模块** — 协议、对象、授权、结果形状。现在四个；新源应抄 Kafka（`standard` + `standard-text`），不要克隆 MySQL。
-
-```sh
-npm pack
-dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
-```
 
 **目录**
 
@@ -252,7 +254,7 @@ dsh plugin --profile desktop add ./dsh-database-0.1.0-alpha.12.15.tgz
 | --- | --- | --- |
 | `database_status` | 哪些连接活着？怎么查？ | 列出已登录 SQL/Redis 连接和 `generation`。带 topic 可加载调用指南。 |
 | `database_catalog` | 这个 Schema / 表里有什么？ | `schemas` / `tables` / `table`。不要用 SQL 查 `information_schema`。读不到是 `unavailable`，不是空。 |
-| `database_execute_sql` | 当前 SQL 是什么？跑这条。 | `action=read` 返回 AI Query 文本。带 `sql`：SIT 最多 8 条、每条 100 行，首错停止。UAT/PVT 只读。 |
+| `database_execute_sql` | 当前 SQL 是什么？跑这条。 | `action=read` 返回 AI Query 文本。带 `sql`：SIT 最多 8 条、每条 100 行，首错停止。UAT/PVT：这个**工具**只读。 |
 | `database_templates` | 保存 / 搜索这条 SQL | 经验库。保存不执行。 |
 | `database_read_collab` | 打开了哪些页签？ | 查询页页签。`lastRun` 只有列名、行数、耗时，不是第二份网格。 |
 | `database_import_connections` | 先登记这些主机 | 只登记，不收密码、不登录。密码在工作台里补。 |
@@ -311,7 +313,7 @@ MySQL Worker 在目录、维护、查询连接上都开 `supportBigNumbers: true
 
 ### 环境是闸，不是徽章。
 
-`normalizeEnvironment`：`dev` / `test` → SIT；`staging` → UAT；`prod` → PVT；未识别 → **UAT**。SIT 跟数据库账号（AI 可 DML / `redis_execute`；单元格**原值**送给模型）。UAT / PVT：类生产连接只读，AI 禁写。这些环境下 SQL 工具结果还会走 `redactQueryResult`（JOIN 和 `SELECT *` 会省略单元格；简单单表列清单仍可能通过，除非你加列规则）。DDL 人工闸。
+`normalizeEnvironment`：`dev` / `test` → SIT；`staging` → UAT；`prod` → PVT；未识别 → **UAT**。SIT 跟数据库账号（AI 可 DML / `redis_execute`；单元格**原值**送给模型）。UAT / PVT：拒绝 AI 写入和网格 DML；SQL 工具结果走 `redactQueryResult`（JOIN 和 `SELECT *` 会省略单元格；简单单表列清单仍可能通过，除非你加列规则）。人工 SQL 页（`executeDml`，`lane: 'manual'`）在所有环境仍可自动提交——不要把标签当成锁。DDL 人工闸。网格维护只在 SIT。
 
 密码不会在快照里打来回。「记住密码」默认关。加密记住密码**只在 Windows**（当前用户 DPAPI，密钥走 stdin 不走命令行）。自定义 CA 同样剥离。
 
@@ -384,8 +386,8 @@ flowchart TB
 
 | 环境 | 人工 | AI |
 | --- | --- | --- |
-| SIT | 跟账号权限 | 单元格原值；允许 DML；允许 Redis `redis_execute` |
-| UAT / PVT | 类生产连接只读 | 禁写；拒绝 Redis execute |
+| SIT | 跟账号权限；网格 DML/DDL 可走 | 单元格原值；允许 DML；允许 Redis `redis_execute` |
+| UAT / PVT | 人工 SQL 页仍可写（自动提交）；网格 DML 拦住 | 禁写；拒绝 Redis execute；单元格按下面脱敏 |
 | DDL | 人工确认 | 不自动跑 |
 
 未识别、空或无法归类的标签 fail-safe 成 **UAT**。别名：`dev` / `test` → SIT；`staging` → UAT；`prod` → PVT。详见 [SECURITY.md](SECURITY.md)。
@@ -427,7 +429,7 @@ flowchart TB
 
 **模型会看到行数据吗？**
 
-**SIT 会**——单元格原值送给模型。这正是让模型看结果的意义。类生产连接用 **UAT / PVT**：AI 禁写，也拒绝 Redis execute；SQL 工具结果会走 `redactQueryResult`（JOIN 和 `SELECT *` 会省略单元格；简单单表列清单仍可能通过，除非你加列规则）。
+**SIT 会**——单元格原值送给模型。这正是让模型看结果的意义。用 **UAT / PVT** 拦住 **AI** 写入和网格 DML（也拒绝 Redis execute；SQL 工具结果走 `redactQueryResult`）。人工 SQL 页在 UAT/PVT 仍可自动提交——真正闸门是数据库账号。
 
 **这能替代 Navicat 吗？**
 

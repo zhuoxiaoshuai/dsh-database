@@ -15,7 +15,7 @@ Once installed, it talks to the databases and brokers you add: MySQL, Oracle, Re
 | Environment | Human | AI |
 | --- | --- | --- |
 | SIT | Read and write according to the database account | SQL may run INSERT/UPDATE/DELETE without a second confirmation. Cell values are sent to the model **unredacted**. Redis `redis_execute` is allowed. |
-| UAT / PVT | Production-like connections stay read-only in the workbench | AI writes are refused. Redis is limited to status, key scan, and value read tools. |
+| UAT / PVT | Grid DML/DDL blocked. The human SQL page (`lane: manual`) can still auto-commit in every environment — the database account is the real write gate. | AI writes are refused. Redis is limited to status, key scan, and value read tools. |
 
 DDL still requires a human confirmation step. Kafka does not commit consumer offsets and does not send messages in the current version.
 

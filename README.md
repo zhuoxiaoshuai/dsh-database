@@ -14,10 +14,17 @@
 
 Current version **0.1.0-alpha.12.15**. Isolation-profile evidence is not a production claim.
 
+```sh
+npm pack
+dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
+```
+
+Uninstall returns stock `dsh web` — no leftover core patches: `dsh plugin --profile web remove dsh-database`. Desktop: open **DSH Terminal** from the tray (Desktop does not put `dsh` on PATH) and use `--profile desktop`.
+
 > If this plugin is useful, a star helps other DSH users find it.
 
 > [!IMPORTANT]
-> **SIT sends query cells to the model unredacted.** UAT / PVT refuse AI writes. Passwords never go back to the browser snapshot. Treat every saved connection as giving the Host process that account. See [SECURITY.md](SECURITY.md).
+> **SIT sends query cells to the model unredacted.** UAT / PVT refuse **AI** writes and grid DML; the human SQL page can still auto-commit in every environment (`lane: manual`). Passwords never go back to the browser snapshot. Treat every saved connection as giving the Host process that account. See [SECURITY.md](SECURITY.md).
 
 ## Why this exists
 
@@ -41,7 +48,7 @@ High-star DSH plugins sell a *boundary*, not a feature dump. [Vision Toolkit](ht
 | Redis / Kafka | Pretend they are SQL | Usually out of scope | Other products | SCAN cursor / bounded peek |
 | Charts / NL report | Screenshot | Often yes | Dedicated BI | **Not this plugin** — exact cells in a workbench |
 | Secrets | Often in context | Env / Settings | Local files | Host-only; Windows DPAPI; stripped from snapshots |
-| Environment | None | Per-source read-only flags | None | SIT write / UAT·PVT read-only / DDL human-gated |
+| Environment | None | Per-source read-only flags | None | SIT: AI + grid write; UAT·PVT: AI/grid blocked, human SQL page still writes |
 | Cancel / timeout / unknown | Chat status | Tool-dependent | Tool-dependent | First-class execution states |
 
 **One-line take:** not a SQL chatbot and not a second Navicat. It is the conversation-side workbench where the model is a coworker on the same lane.
@@ -51,22 +58,17 @@ Community SQL-in-chat plugins (for example [tomowang/dsh-data-agent](https://git
 ## Highlights
 
 - **Open a table the way you already work.** Catalog on the left, tabs on the right (overview / query / **AI Query** / knowledge / history). Four sources, one chrome.
-- **The model runs your document, not a shadow copy.** History opens the text that ran. Activity on another connection is a hint bar, not a steal.
-- **Typing is takeover.** `ExecutionDocument` has `text`, `context`, `revision`, and `controller`. If you edit, `controller` becomes `user`. AI publish is rejected until you hand it back. Run also checks revision so a stale tab cannot fire.
+- **The model runs what you see.** History opens the text that ran. Activity on another connection is a hint bar, not a steal.
+- **Typing is takeover.** Your first keystroke stops the model from overwriting the editor until you hand it back. Run also checks revision so a stale tab cannot fire.
 - **Drivers never enter the browser.** mysql2, oracledb, redis, and kafkajs load only in Host workers. The client talks authenticated plugin HTTP.
-- **Environment is a gate, not a badge.** SIT follows the DB account (AI may DML / `redis_execute`). UAT / PVT: production-like connections read-only; AI writes refused.
-- **Native pages, honest cells.** SQL uses `LIMIT` / `OFFSET FETCH`. Redis uses SCAN (empty pages happen; the UI says so). Kafka peek is bounded. BIGINT and exact decimals stay strings. BLOB is `[BLOB n bytes]`, not a dumped buffer.
-- **Secrets stay on the Host.** Remember-password is off by default. On Windows it is current-user DPAPI over stdin, not argv. Encrypted remember-password is Windows-only. Custom CAs follow the same strip.
+- **Environment is a gate, not a badge.** SIT: AI may DML / `redis_execute`. UAT / PVT: AI and grid DML blocked; the human SQL page can still write. DDL is human-gated. The database account is the real permission.
+- **Native pages, honest cells.** SQL uses `LIMIT` / `OFFSET FETCH`. Redis SCAN empty pages stay empty (the UI says so). Kafka peek never commits. BIGINT stays a string at the driver. BLOB is `[BLOB n bytes]`.
+- **Secrets stay on the Host.** Remember-password is off by default. Encrypted remember-password is Windows-only (current-user DPAPI over stdin, not argv). Custom CAs follow the same strip.
 
 This project has two layers:
 
 1. **Extracted workbench** — workspace, AI Query, takeover, execution, history, knowledge, chrome. Once.
 2. **Source modules** — protocol, objects, authorize, result shape. Four today; new ones should copy Kafka (`standard` + `standard-text`), not clone MySQL.
-
-```sh
-npm pack
-dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
-```
 
 **Contents**
 
@@ -252,7 +254,7 @@ Same tools humans use through the tab. Guides stay on-demand (`database_status` 
 | --- | --- | --- |
 | `database_status` | Which connections are live? How do I query? | Lists live SQL/Redis connections and `generation`. Pass a topic to load a call guide. |
 | `database_catalog` | What is in this schema / table? | `schemas` / `tables` / `table`. Do not use `information_schema` through SQL. Missing access is `unavailable`, not empty. |
-| `database_execute_sql` | What is the current SQL? Run this. | `action=read` returns the AI Query text. With `sql`: up to 8 statements on SIT, 100 rows each, stop on first error. UAT/PVT read-only. |
+| `database_execute_sql` | What is the current SQL? Run this. | `action=read` returns the AI Query text. With `sql`: up to 8 statements on SIT, 100 rows each, stop on first error. UAT/PVT: this **tool** is read-only. |
 | `database_templates` | Save / search this SQL | Knowledge store. Save does not execute. |
 | `database_read_collab` | What tabs are open? | Query-page tabs. `lastRun` is columns, row count, elapsed — not a second result grid. |
 | `database_import_connections` | Register these hosts | Registers without password or login. You type the secret in the workbench. |
@@ -311,7 +313,7 @@ MySQL workers set `supportBigNumbers: true` and `bigNumberStrings: true` on cata
 
 ### Environment is a gate, not a badge.
 
-`normalizeEnvironment`: `dev` / `test` → SIT; `staging` → UAT; `prod` → PVT; anything unknown → **UAT**. SIT follows the database account (AI may DML / `redis_execute`; cells go to the model **unredacted**). UAT / PVT: production-like connections read-only; AI writes refused. On those environments, SQL tool results also pass `redactQueryResult` (joins and `SELECT *` omit cells; simple single-table column lists can still pass unless you add column rules). DDL is human-gated.
+`normalizeEnvironment`: `dev` / `test` → SIT; `staging` → UAT; `prod` → PVT; anything unknown → **UAT**. SIT follows the database account (AI may DML / `redis_execute`; cells go to the model **unredacted**). UAT / PVT: AI writes and grid DML are refused; SQL tool results pass `redactQueryResult` (joins and `SELECT *` omit cells; simple single-table column lists can still pass unless you add column rules). The human SQL page (`executeDml` with `lane: 'manual'`) can still auto-commit in every environment — do not treat the tag as a lock. DDL is human-gated. Grid maintenance stays SIT-only.
 
 Passwords never round-trip in the snapshot. Remember-password is off by default. Encrypted remember-password is **Windows-only** (current-user DPAPI over stdin, not argv). Custom CAs follow the same strip.
 
@@ -384,8 +386,8 @@ Longer notes: [docs/README.md](docs/README.md), [architecture](docs/data-source-
 
 | Environment | Human | AI |
 | --- | --- | --- |
-| SIT | Account permissions apply | Unredacted cells; DML allowed; Redis `redis_execute` allowed |
-| UAT / PVT | Production-like connections read-only | Writes refused; Redis execute refused |
+| SIT | Account permissions apply; grid DML/DDL allowed | Unredacted cells; DML allowed; Redis `redis_execute` allowed |
+| UAT / PVT | Human SQL page can still write (auto-commit); grid DML blocked | Writes refused; Redis execute refused; cells redacted as below |
 | DDL | Human confirmation | Not auto-run |
 
 Unknown, empty, or unrecognized tags fail-safe to **UAT**. Aliases: `dev` / `test` → SIT; `staging` → UAT; `prod` → PVT. See [SECURITY.md](SECURITY.md).
@@ -427,7 +429,7 @@ No. Passwords and custom CAs are stripped from connection snapshots, logs, query
 
 **Will the model see row data?**
 
-On **SIT**, yes — cells go unredacted. That is the point of asking the model about a result. Use **UAT / PVT** when the connection is production-like: AI writes are refused, Redis execute is refused, and SQL tool results pass `redactQueryResult` (joins and `SELECT *` omit cells; simple single-table column lists can still pass unless you add column rules).
+On **SIT**, yes — cells go unredacted. That is the point of asking the model about a result. Use **UAT / PVT** to stop **AI** writes and grid DML (Redis execute refused; SQL tool results pass `redactQueryResult`). The human SQL page can still auto-commit on UAT/PVT — the database account is the real gate.
 
 **Is this a replacement for Navicat?**
 
