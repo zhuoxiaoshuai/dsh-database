@@ -40,6 +40,7 @@
     "lib/connect-error.mjs",
     "cordis.patch.yml",
     "README.md",
+    "README.zh.md",
     "LICENSE",
     "lib/catalog.mjs",
     "lib/query.mjs",

@@ -1,84 +1,92 @@
 # dsh-database
 
+<div align="center">
+  🌏 <a href="./README.md"><b>English</b></a> · <a href="./README.zh.md">中文</a>
+</div>
+
+<br />
+
+[![license](https://img.shields.io/github/license/zhuoxiaoshuai/dsh-database?style=flat&label=license&color=blue)](LICENSE)
+[![stars](https://img.shields.io/github/stars/zhuoxiaoshuai/dsh-database?style=flat&label=stars&color=blue)](https://github.com/zhuoxiaoshuai/dsh-database)
+[![docs](https://img.shields.io/badge/docs-English%20%7C%20%E4%B8%AD%E6%96%87-0075cc?style=flat&labelColor=555555)](README.zh.md)
+
 MySQL, Oracle, Redis, and Kafka workbench for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), with a shared execution path for humans and the model.
 
-DeepSeek Harness 的 MySQL、Oracle、Redis、Kafka 工作台，人和模型共用同一套连接、执行和记录。
+Current version **0.1.0-alpha.12.15**.
 
-仓库：[zhuoxiaoshuai/dsh-database](https://github.com/zhuoxiaoshuai/dsh-database)。当前版本 **0.1.0-alpha.12.15**。
+## Install
 
-## 安装
-
-需要已能运行的 DSH（`dsh web`），Node.js ≥ 24。
+Requires a working DSH (`dsh web`) and Node.js ≥ 24.
 
 ```sh
 npm pack
 dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
 ```
 
-装到 npm 之后可以改成：
+After the package is on npm:
 
 ```sh
 dsh plugin --profile web add dsh-database
 ```
 
-安装由包内 `cordis.patch.yml` 挂载。不要再往 profile 的 patch 里手写同一行，否则会重复加载。
+The bundled `cordis.patch.yml` mounts the plugin. Do not insert the same row into the profile patch by hand, or the loader will duplicate it.
 
-卸载：
+Uninstall:
 
 ```sh
 dsh plugin --profile web remove dsh-database
 ```
 
-不要同时安装旧的「内嵌数据库的 remote-exec」：二者都会占用 `/plugins/database/connections`。本插件与 `dsh-remote-exec` 可以并存。
+Do not install an older remote-exec build that still embeds the database workbench: both claim `/plugins/database/connections`. This plugin can sit beside `dsh-remote-exec`.
 
-## 能做什么
+## What it does
 
-在右侧栏「数据库」页签里管理连接，按对话隔离查询工作台。
+The **Database** tab in the right sidebar manages connections. Query workbenches are isolated per conversation.
 
-- **MySQL / Oracle**：目录与表结构、SELECT、受控 DML/DDL、SQL 经验库。生产/预发布连接只读。
-- **Redis 7.2+**：单机、一台哨兵或一个集群种子；命令台与 Key 浏览。每次命令用独立连接，结束即关。
-- **Kafka**：列出 Topic、查看分区、有界 peek。不提交消费位置，不发消息。
+- **MySQL / Oracle**: catalog and table metadata, SELECT, controlled DML/DDL, SQL experience library. Production / pre-production connections stay read-only.
+- **Redis 7.2+**: standalone, one sentinel, or one cluster seed; command console and key browser. Each command uses a fresh connection and closes it when finished.
+- **Kafka**: list topics, inspect partitions, bounded peek. Does not commit consumer offsets or produce messages.
 
-勾选「记住密码」时，Windows 用当前账户 DPAPI 加密后写入 `$DSH_HOME/database/`。未勾选则密码不落盘。查询页签、草稿和历史按对话保存在 `conversation-workbenches/`。
+If **Remember password** is checked, Windows stores it with the current-user DPAPI under `$DSH_HOME/database/`. Unchecked passwords are never written to disk. Query tabs, drafts, and history live under `conversation-workbenches/` per conversation.
 
 ## AI
 
-正式入口是工作台 **AI Query**。人和 AI 走同一套执行与记录。
+The supported entry is the workbench **AI Query** tab. Humans and the model share the same execution and records.
 
-- SIT：模型可以看到单元格原值，并可以直接执行 INSERT/UPDATE/DELETE（首错停止；一次最多 8 条 SQL，每条最多 100 行）。
-- UAT / PVT：AI 不能写。Redis 的 `redis_execute` 会被拒绝。
-- DDL 仍须人工确认。
+- SIT: the model sees unredacted cell values and may run INSERT/UPDATE/DELETE directly (stop on first error; at most 8 SQL statements per call, 100 rows each).
+- UAT / PVT: AI writes are refused. Redis `redis_execute` is rejected.
+- DDL still needs a human confirmation step.
 
-点执行历史即打开详情。其他连接上的 AI 活动只出提示条，不会自动切换连接。
+Opening an execution history item shows its details. AI activity on another connection only shows a hint bar; it does not switch the current connection.
 
-## 限制（请按这个理解能力边界）
+## Limits
 
-- 视图、同义词可看元数据；含 LOB 的 Oracle 查询尚未支持。
-- Oracle 19c、SID、时间字段维护未验收。
-- Redis Cluster / Sentinel、真实业务集群未验收。
-- Kafka 不支持发消息、改 offset、Kerberos / OAuth / 客户端证书。
-- 查询默认每页 100 行，最多 500 行、1 MiB，单请求 30 秒。取消只终止本次会话，共享登录仍可用。
-- 大整数和精确小数按字符串展示。
+- Views and synonyms can be browsed as metadata; Oracle queries with LOB columns are not supported yet.
+- Oracle 19c, SID, and temporal-column maintenance are unverified.
+- Redis Cluster / Sentinel and production clusters are unverified.
+- Kafka does not produce messages, change offsets, or support Kerberos / OAuth / client-certificate auth.
+- Queries default to 100 rows per page, capped at 500 rows and 1 MiB, with a 30-second request deadline. Cancel stops only that session; the shared login stays up.
+- Large integers and exact decimals are displayed as strings.
 
-已在隔离 profile 上验证过的组合见下表。现用 Desktop GUI 与真实模型工具关联仍为未跑。
+Verified combinations are listed below. The live Desktop GUI and real model tool-call correlation remain unrun.
 
-| 环境 | 说明 |
+| Environment | Notes |
 | --- | --- |
-| Node.js | 包声明 ≥ 24；隔离加载使用 Desktop 内置 Node |
-| Harness | 已验证 `0.1.2-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.2` |
-| MySQL | 8.4.x 临时容器；8.0.32 仅只读核对 |
-| Oracle | Free 23 Thin 模式，不替代 19c/SID |
-| Redis | 8.10.2 一次性容器 |
-| 驱动 | mysql2 3.24.4、oracledb 7.0.1、redis 6.2.1、kafkajs 2.2.4 |
+| Node.js | Package requires ≥ 24; isolated loads use Desktop's bundled Node |
+| Harness | Verified on `0.1.2-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.2` |
+| MySQL | 8.4.x throwaway containers; 8.0.32 read-only check only |
+| Oracle | Free 23 Thin mode; not a substitute for 19c / SID |
+| Redis | 8.10.2 throwaway containers |
+| Drivers | mysql2 3.24.4, oracledb 7.0.1, redis 6.2.1, kafkajs 2.2.4 |
 
-## 开发
+## Development
 
 ```sh
 npm ci --legacy-peer-deps
 npm run check
 ```
 
-实库验收会创建带唯一标签的临时 Docker 容器，结束后删除。不要对业务库跑这些脚本。
+Live-database acceptance creates uniquely labelled temporary Docker containers and deletes them afterwards. Do not run those scripts against business databases.
 
 ```sh
 npm run test:mysql
@@ -87,15 +95,15 @@ DSH_TEST_REDIS=1 npm run test:host
 DSH_TEST_DATABASES=1 npm run test:host
 ```
 
-安装到本机 Desktop 前设置 `DSH_DESKTOP_APP` 为安装根目录（含 `DeepSeek Harness.exe` 或 `app.asar.unpacked`），再执行 `npm run install:desktop`。脚本只把 `npm pack` 的 tgz 交给 profile 的 pnpm，不链源码。
+To install into local Desktop, set `DSH_DESKTOP_APP` to the install root (`DeepSeek Harness.exe` or `app.asar.unpacked`), then `npm run install:desktop`. The script packs a tarball and hands it to the profile's pnpm; it does not link source.
 
-隔离宿主验收：`DSH_DESKTOP_APP=... npm run test:host`。可用 `DSH_TEST_BROWSER` 指定浏览器；`DSH_TEST_ALLOW_VERSION` 仅用于诊断，正式通过不要设置。OpenSSL 不在 PATH 时，Redis TLS fixture 可设 `DSH_OPENSSL`。
+Isolated host acceptance: `DSH_DESKTOP_APP=... npm run test:host`. `DSH_TEST_BROWSER` selects the browser. `DSH_TEST_ALLOW_VERSION` is diagnostic only; a real pass must unset it. If OpenSSL is not on PATH, Redis TLS fixtures accept `DSH_OPENSSL`.
 
-架构与接入说明见 [docs/README.md](docs/README.md)。
+Architecture notes: [docs/README.md](docs/README.md). Security notes: [SECURITY.md](SECURITY.md).
 
-## 目录收录
+## Listing
 
-仓库创建满一天后，向 [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) 提交 `data/plugins/zhuoxiaoshuai__dsh-database.yml`：
+After the repository is at least one day old, submit `data/plugins/zhuoxiaoshuai__dsh-database.yml` to [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin):
 
 ```yaml
 url: https://github.com/zhuoxiaoshuai/dsh-database
@@ -106,7 +114,7 @@ description:
   zh: DeepSeek Harness 的 MySQL、Oracle、Redis、Kafka 工作台，人和模型共用同一套连接、执行和记录。
 ```
 
-GitHub Topics 请加上 `dsh-plugin`。
+The GitHub topic `dsh-plugin` is already set.
 
 ## License
 
