@@ -15,10 +15,10 @@ MySQL, Oracle, Redis, and Kafka workbench for [DeepSeek Harness](https://github.
 Current version **0.1.0-alpha.12.15**.
 
 <p align="center">
-  <img src="docs/screenshots/workbench.png" alt="One workbench with MySQL, Oracle, Redis, and Kafka connections" width="100%" />
+  <img src="docs/screenshots/kafka-topic.png" alt="One workbench with MySQL, Oracle, Redis, and Kafka; Kafka topic partitions" width="100%" />
 </p>
 
-<p align="center"><sub>The plugin registers a <b>Database</b> tab next to the conversation. Four sources share the same tree, tabs, and AI Query. Connections are workspace-scoped; query workbenches follow the conversation.</sub></p>
+<p align="center"><sub>Current workbench: four sources in one tree. Kafka shows topic metadata (partitions, replica factor, watermarks). Peek does not join the business consumer group.</sub></p>
 
 ## Highlights
 
@@ -31,16 +31,15 @@ Current version **0.1.0-alpha.12.15**.
 
 ## Screenshots
 
-Current workbench UI. Sample connection names, topics, and keys are disposable fixtures, not a business cluster.
+Current workbench UI (0.1.0-alpha.12.15). Sample names and rows are disposable fixtures, not a business cluster. BIGINT and exact decimals render as strings.
 
-| Four sources, one tree | Kafka topic / partitions |
+| Redis keys, TTL, JSON | MySQL result grid |
 | --- | --- |
-| <img src="docs/screenshots/workbench.png" alt="Workbench with MySQL Oracle Redis Kafka" /> | <img src="docs/screenshots/kafka-topic.png" alt="Kafka topic partitions" /> |
+| <img src="docs/screenshots/redis-keys.png" alt="Redis key browser" /> | <img src="docs/screenshots/mysql-results.png" alt="MySQL result grid with BIGINT as string" /> |
 
-<p align="center">
-  <img src="docs/screenshots/redis-keys.png" alt="Redis key browser" width="100%" />
-</p>
-<p align="center"><sub>Redis: SCAN tree, key type, TTL, JSON value. Command console is a separate tab and a separate connection.</sub></p>
+| Oracle catalog | Four sources in one tree |
+| --- | --- |
+| <img src="docs/screenshots/oracle-catalog.png" alt="Oracle catalog" /> | <img src="docs/screenshots/workbench.png" alt="MySQL Oracle Redis Kafka connections" /> |
 
 ## Architecture
 

@@ -72,7 +72,15 @@ await build({
         if (action === 'redis-key') return { keyType: 'string', ttl: 3600, value: { result: { type: 'string', value: '{"user":"demo","ttl":3600}' } } }
         return { result: { type: 'string', value: 'PONG' }, elapsedMs: 2 }
       },
-      maintenance: async () => ({ source: 'table', canEnable: false, canInsert: false, canUpdate: false, canDelete: false, reason: '', primaryKeys: ['id'], resultPrimaryKeys: ['id'], identityColumns: [], columns: [] }),
+      maintenance: async () => ({
+        source: 'table', canEnable: true, canInsert: true, canUpdate: true, canDelete: true, reason: '',
+        primaryKeys: ['id'], resultPrimaryKeys: ['id'], identityColumns: [],
+        columns: [
+          { resultColumn: 'id', sourceColumn: 'id', editable: false },
+          { resultColumn: 'amount', sourceColumn: 'amount', editable: true },
+          { resultColumn: 'note', sourceColumn: 'note', editable: true },
+        ],
+      }),
       executions: async (action, body) => {
         if (action === 'execution-wait') { await new Promise(resolve => setTimeout(resolve, 400)); return { revision: 0, items: [], events: [] } }
         if (action === 'execution-document-get') return { document: aiDocument }
@@ -131,8 +139,8 @@ try {
   await shot('redis-keys.png')
   await sidebar().getByText('MySQL · local', { exact: true }).click()
   await sidebar().locator('.db-schema-node').filter({ hasText: /^business$/ }).click()
-  await page.locator('.db-table-node').filter({ hasText: /^records$/ }).waitFor()
-  await page.locator('.db-table-node').filter({ hasText: /^records$/ }).locator('.db-tree-label').dblclick()
+  await page.getByRole('button', { name: 'records', exact: true }).click()
+  await page.getByRole('button', { name: '打开表', exact: true }).click()
   await page.getByText('9007199254740993').first().waitFor()
   await shot('mysql-results.png')
   await sidebar().getByText('Oracle · local', { exact: true }).click()

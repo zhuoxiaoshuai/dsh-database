@@ -15,10 +15,10 @@ DeepSeek Harness 的 MySQL、Oracle、Redis、Kafka 工作台。人和模型共�
 当前版本 **0.1.0-alpha.12.15**。
 
 <p align="center">
-  <img src="docs/screenshots/workbench.png" alt="同一工作台里的 MySQL、Oracle、Redis、Kafka 连接" width="100%" />
+  <img src="docs/screenshots/kafka-topic.png" alt="同一工作台里的 MySQL、Oracle、Redis、Kafka；Kafka Topic 分区" width="100%" />
 </p>
 
-<p align="center"><sub>插件在会话旁注册「<b>数据库</b>」页签。四种源共用同一棵树、同一套页签和 AI Query。连接按工作区保存，查询工作台按对话隔离。</sub></p>
+<p align="center"><sub>当前工作台：四种源同一棵树。Kafka 展示 Topic 元数据（分区、副本因子、水位）。peek 不加入业务消费组。</sub></p>
 
 ## 亮点
 
@@ -31,16 +31,15 @@ DeepSeek Harness 的 MySQL、Oracle、Redis、Kafka 工作台。人和模型共�
 
 ## 截图
 
-当前工作台界面。连接名、Topic、Key 是一次性夹具，不是业务集群。
+当前工作台界面（0.1.0-alpha.12.15）。连接名和样例行是一次性夹具，不是业务集群。大整数和精确小数按字符串展示。
 
-| 四个源，一棵树 | Kafka Topic / 分区 |
+| Redis Key、TTL、JSON | MySQL 结果网格 |
 | --- | --- |
-| <img src="docs/screenshots/workbench.png" alt="同一工作台的 MySQL Oracle Redis Kafka" /> | <img src="docs/screenshots/kafka-topic.png" alt="Kafka Topic 分区" /> |
+| <img src="docs/screenshots/redis-keys.png" alt="Redis Key 浏览" /> | <img src="docs/screenshots/mysql-results.png" alt="MySQL 结果网格，BIGINT 按字符串" /> |
 
-<p align="center">
-  <img src="docs/screenshots/redis-keys.png" alt="Redis Key 浏览" width="100%" />
-</p>
-<p align="center"><sub>Redis：SCAN 树、类型、TTL、JSON 值。命令台是另一个页签、另一条连接。</sub></p>
+| Oracle 目录 | 四个源，一棵树 |
+| --- | --- |
+| <img src="docs/screenshots/oracle-catalog.png" alt="Oracle 目录" /> | <img src="docs/screenshots/workbench.png" alt="同一工作台的 MySQL Oracle Redis Kafka" /> |
 
 ## 架构
 
