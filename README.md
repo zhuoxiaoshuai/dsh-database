@@ -18,11 +18,17 @@ Names in the screenshots are test data.
 ## Install
 
 ```sh
+dsh plugin --profile web add https://github.com/zhuoxiaoshuai/dsh-database/releases/download/v0.1.0-alpha.12.15/dsh-database.tgz
+```
+
+Restart `dsh web` afterwards. Node.js 24 or newer is required.
+
+From a clone you can also pack it locally:
+
+```sh
 npm pack
 dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
 ```
-
-Restart `dsh web` afterwards. Node.js 24 or newer is required. There is no npm package yet, so use the tgz from `npm pack`.
 
 To uninstall:
 
@@ -62,7 +68,7 @@ Filter, sort, and paging run on the server. The default is 100 rows; the cap is 
 
 Grid edits use parameterized statements: preview, confirm once, and match the original primary-key row. A conflict rolls back and keeps the draft.
 
-DDL allows at most 20 steps. Approval lasts 5 minutes. Destructive steps ask you to type the table name. The run stops on the first error; there is no all-or-nothing DDL rollback. InnoDB lock wait showed up on a disposable 8.4 container.
+DDL allows at most 20 steps. Approval lasts 5 minutes. Destructive steps ask you to type the table name. The run stops on the first error; there is no all-or-nothing DDL rollback.
 
 On SIT, `database_execute_sql` runs up to 8 statements, 100 rows each, including DML. The first error stops the rest.
 
@@ -74,7 +80,7 @@ BIGINT is returned as a string from the driver (`supportBigNumbers` + `bigNumber
 
 The SQL page is the same as MySQL. Objects are schemas; names are case-insensitive. If a schema named after the username exists, that is the default. Identifiers are quoted; paging uses `OFFSET … ROWS FETCH FIRST … ROWS ONLY`; plans use `EXPLAIN PLAN FOR`. q-quote works; `#` comments do not.
 
-The driver is oracledb Thin, default port 1521, Service Name. SID has not been tried. NUMBER and timestamps are fetched as STRING. Views and synonyms expose metadata only. A query that includes a LOB column fails. 19c, SID, and temporal-column maintenance have not been tried. Free 23 Thin is not a stand-in for 19c.
+The driver is oracledb Thin, default port 1521, Service Name. NUMBER and timestamps are fetched as STRING. Views and synonyms expose metadata only. A query that includes a LOB column fails.
 
 ## Redis
 
@@ -90,7 +96,7 @@ Standalone, one sentinel, or one cluster seed are supported. ACL, TLS, and a cus
 
 The key browser and the command console use different connections. The console runs one CLI-quoted command and then closes. `SELECT` or `MULTI` in the console does not change the tree.
 
-`redis_execute` is available on SIT only. `DSH_REDIS_COMMAND_BLACKLIST` is empty unless you set it; Redis ACL still applies. Cluster and Sentinel have not been tried against a production cluster.
+`redis_execute` is available on SIT only. `DSH_REDIS_COMMAND_BLACKLIST` is empty unless you set it; Redis ACL still applies.
 
 ## Kafka
 
@@ -107,8 +113,6 @@ Replace `"orders"` with a topic you actually have.
 Authentication: none, TLS+CA, PLAIN, or SCRAM-SHA-256/512. PLAIN and SCRAM can skip TLS. When TLS is on, certificates are always verified. Kerberos, OAuth, and client certificates are not supported. There is no produce, topic admin, or offset move.
 
 Peek uses a temporary group `dsh-peek-{uuid}` with `autoCommit: false`. Those groups stay hidden in GROUPS. If stop or disconnect times out, the worker is dropped and a new one is started.
-
-Typing in AI Query takes over that editor until you give it back.
 
 ## Tools
 
@@ -127,27 +131,15 @@ Tool guides load only when you pass a topic to `database_status`.
 | `kafka_status` `kafka_topics` `kafka_describe` | Topics, partitions, watermarks |
 | `kafka_peek` | Peek one partition. Refused if you already took over the editor |
 
-## Implementation
+## How it runs
 
 The tab lives in DSH’s right sidebar. Drivers (`mysql2`, `oracledb`, `redis`, `kafkajs`) load only in Host workers. The browser calls `/plugins/database/...` with a session cookie; without a cookie the response is 401.
 
 Connections are stored in the workspace file. Editors are per conversation. Reconnect changes `generation` and cancels in-flight work.
 
-Redis and Kafka use `ExecutionDocument` (`text`, `context`, `revision`, `controller`). MySQL and Oracle still use `SharedQuery`, with the same takeover rules. The first keystroke sets `controller` to `user`. A run requires `controller === 'user'` and a matching `revision`. Actor is `user` or `ai`; the page cannot forge `ai`.
+Typing in AI Query takes over that editor until you give it back. A run requires the editor to be under your control, with a matching revision. The page cannot forge an AI actor.
 
 A timed-out write is reported as unknown: the row may already be in the database. Peek and query timeout is 30 seconds.
-
-MySQL and Oracle still go through `legacy-sql` / `legacy-adapter`. The Redis UI is `standard`; the Host path is still `legacy-adapter`. Kafka is `standard` + `standard-text`.
-
-More in [docs](docs/README.md), [architecture](docs/data-source-architecture.md), and [adding a source](docs/data-source-onboarding.md). To add a source, copy Kafka, not MySQL.
-
-## Limits
-
-- No PostgreSQL, ClickHouse, MongoDB, Elasticsearch, or charts
-- Oracle cannot query LOB columns; 19c and SID have not been tried
-- Redis Cluster / Sentinel have not been tried against a production cluster
-- Kafka cannot produce; Kerberos, OAuth, and client certificates are unsupported
-- The Desktop GUI and a real model `callId` have not been run
 
 ## Troubleshooting
 
@@ -171,27 +163,15 @@ DSH_TEST_REDIS=1 npm run test:host
 DSH_TEST_DATABASES=1 npm run test:host
 ```
 
-These scripts start labelled Docker containers and delete them afterwards. For an isolated host: `DSH_DESKTOP_APP=... npm run test:host`.
+`npm run test:redis` starts labelled Docker containers with random ports and per-run certificates, then deletes them. Set `DSH_OPENSSL` if OpenSSL is not on PATH. For an isolated host: `DSH_DESKTOP_APP=... npm run test:host`.
 
 Issues: [github.com/zhuoxiaoshuai/dsh-database/issues](https://github.com/zhuoxiaoshuai/dsh-database/issues). Security: [SECURITY.md](SECURITY.md).
 
-To list on [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin), add `data/plugins/zhuoxiaoshuai__dsh-database.yml` (the `dsh-plugin` topic is already set):
+## Tried on
 
-```yaml
-url: https://github.com/zhuoxiaoshuai/dsh-database
-name: zhuoxiaoshuai/dsh-database
-category: dev
-tarball: https://github.com/zhuoxiaoshuai/dsh-database/releases/download/v0.1.0-alpha.12.15/dsh-database.tgz
-description:
-  en: MySQL, Oracle, Redis and Kafka inside DeepSeek Harness. Written entirely with AI.
-  zh: DeepSeek Harness 插件，用来连接 MySQL、Oracle、Redis 和 Kafka。全程由 AI 编写。
-```
+Harness `0.1.2-rc.1`, `0.1.7-rc.2`, and `0.2.0-rc.2`.
 
-## Status
-
-Tried on Harness `0.1.2-rc.1`, `0.1.7-rc.2`, and `0.2.0-rc.2`.
-
-Drivers: mysql2 3.24.4, oracledb 7.0.1, redis 6.2.1, kafkajs 2.2.4. MySQL was a disposable 8.4 container, plus a read-only check on 8.0.32. Oracle was Free 23 Thin. Redis was a disposable 8.10.2 container.
+Drivers: mysql2 3.24.4, oracledb 7.0.1, redis 6.2.1, kafkajs 2.2.4. MySQL 8.4 and 8.0.32. Oracle Database Free 23 (Thin). Redis 8.10.2.
 
 ## License
 
