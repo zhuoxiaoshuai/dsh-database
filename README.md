@@ -8,7 +8,7 @@
 
 🚀 One Database tab | Four sources | Same execution lane
 
-[Why](#why-this-exists) | [Compare](#how-it-compares) | [Highlights](#highlights) | [Try these](#try-these) | [See it in action](#see-it-in-action) | [Quick start](#quick-start-three-steps) | [Sources](#sources) | [What the model calls](#what-the-model-calls) | [How it works](#how-it-works) | [Limits](#configuration-and-limits)
+[Why](#why-this-exists) | [Where data goes](#where-data-goes) | [Compare](#how-it-compares) | [Highlights](#highlights) | [Try these](#try-these) | [See it in action](#see-it-in-action) | [Quick start](#quick-start-three-steps) | [Sources](#sources) | [What the model calls](#what-the-model-calls) | [How it works](#how-it-works) | [Limits](#configuration-and-limits)
 
 🌐 **English** | [中文](README.zh.md)
 
@@ -25,6 +25,22 @@ Uninstall returns stock `dsh web` — no leftover core patches: `dsh plugin --pr
 
 > [!IMPORTANT]
 > **SIT sends query cells to the model unredacted.** UAT / PVT refuse **AI** writes and grid DML; the human SQL page can still auto-commit in every environment (`lane: manual`). Passwords never go back to the browser snapshot. Treat every saved connection as giving the Host process that account. See [SECURITY.md](SECURITY.md).
+
+## Where data goes
+
+UAT / PVT does not make SIT cells private. Tag the connection **before** the first query.
+
+| What | Where it goes |
+| --- | --- |
+| Passwords, custom CAs | Host only. Stripped from snapshots, logs, history, and model-facing output. Encrypted remember-password is Windows DPAPI (stdin, CurrentUser) |
+| Query cells on **SIT** | **Unredacted to the model** |
+| Query cells on **UAT / PVT** | AI writes refused. Tool results pass `redactQueryResult` (joins / `SELECT *` omit cells; simple single-table lists can still pass unless you add column rules) |
+| Human SQL page writes | Auto-commit in **every** environment (`lane: manual`). The database account is the real gate |
+| Grid DML / DDL / AI `database_execute_sql` writes | **SIT only** |
+| Redis `redis_execute` | **SIT only.** Console is one CLI-quoted command on an isolated connection, then close |
+| Kafka peek | Temporary `dsh-peek-{uuid}`, `autoCommit: false`, no offset commit. GROUPS hides those ids |
+| BIGINT / NUMBER | String at the **driver** (`bigNumberStrings` / `fetchTypeHandler`), not after JSON |
+| BLOB | `[BLOB n bytes]` placeholder, not a dumped buffer |
 
 ## Why this exists
 
@@ -73,6 +89,7 @@ This project has two layers:
 **Contents**
 
 - [Why this exists](#why-this-exists)
+- [Where data goes](#where-data-goes)
 - [How it compares](#how-it-compares)
 - [Highlights](#highlights)
 - [Who it is for](#who-it-is-for)
@@ -192,11 +209,27 @@ Restart a running Web Profile. In a conversation, open the **Database** tab, add
 
 ### 3. Run something you can take over
 
-- MySQL / Oracle: open a table or run SQL. History is conversation-private.
-- Redis: pick a DB, browse keys, or run one command in the console.
-- Kafka: open a topic, then bounded peek of one partition.
+Paste into the workbench (or ask the model — it lands in the same document). Then type: takeover is immediate.
 
-The model uses the same document. Typing takes over immediately.
+MySQL / Oracle (BIGINT stays a digit string at the driver):
+
+```sql
+SELECT 9007199254740993 AS too_big_for_js;
+```
+
+Redis command console (`PING` does not change the SCAN tree — that connection already closed):
+
+```text
+PING
+```
+
+Kafka AI Query / peek tab (replace `"orders"` with a topic you can see):
+
+```text
+PEEK "orders" PARTITION 0 FROM LATEST LIMIT 20
+```
+
+History is conversation-private. Verified Harness lines: `0.1.2-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.2`. Live Desktop GUI and real model `callId` correlation remain unrun.
 
 ## Sources
 
@@ -269,6 +302,16 @@ Kafka tools write the command into `ExecutionDocument` (`source: 'ai'`), then di
 
 The plugin is one **extracted data-source platform**, not four mini-IDEs. Adding a source is not cloning the product. Removing a source should leave the platform standing.
 
+DSH already owns the conversation, the right-sidebar slot, and session identity. This plugin owns drivers, authorize, SCAN / peek / `LIMIT`, and the shared document. You do not need four mini-plugins or Navicat-in-the-chat.
+
+```mermaid
+flowchart LR
+  Host["Host: drivers + secrets"]
+  WB["Workbench: one document"]
+  Src["Source module: native semantics"]
+  Host --- WB --- Src
+```
+
 High-star DSH plugins sell the *boundary* in prose, not a class diagram. Vision Toolkit contrasts “generic caption bridges” with task-aware vision. Database contrasts **shadow SQL in a tool call** with **one document the human can steal back**.
 
 ### A run, end to end
@@ -286,6 +329,16 @@ flowchart LR
 The Database tab is a DSH right-sidebar slot. Connections live in the workspace file; query tabs and AI documents live **per conversation**, so two chats do not share a dirty editor. The browser never loads a driver: it calls authenticated `/plugins/database/...` (401 without credentials). Host `ConnectionService` binds the live session, connection `generation` (reconnect invalidates in-flight work), and environment. Actors are only `user` or `ai` — the browser cannot mint a trusted AI identity.
 
 The source module turns text into a **worker action + input** (`prepareText` / SQL adapter). Runtime checks the action against a whitelist. Kafka only allows the read actions it parsed; it will not produce.
+
+### Ask the model
+
+| Playbook | What the agent should do | How the plugin enforces it |
+| --- | --- | --- |
+| Takeover | Stop publishing when the user types | `controller: user`; AI publish rejected until `return-ai` |
+| SIT analysis | Read the cells you just ran | Unredacted cells — treat SIT as giving the model the grid |
+| UAT / PVT | No DML, no `redis_execute` | Authorize refuse. Human SQL page is a **separate** lane |
+| Kafka peek | Call `kafka_peek`, not a business group | Temp `dsh-peek-*`, `autoCommit: false` |
+| New source | Copy Kafka `standard` + `standard-text` | Do not clone MySQL `legacy-sql` |
 
 ### Most SQL-in-chat tools keep a shadow statement. We keep one document.
 

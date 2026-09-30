@@ -8,7 +8,7 @@
 
 🚀 一个「数据库」页签 ｜ 四种源 ｜ 同一条执行路
 
-[为什么存在](#为什么存在) ｜ [怎么比](#和其他做法比) ｜ [亮点](#亮点) ｜ [先试试](#先试试) ｜ [实际效果](#实际效果) ｜ [快速开始](#快速开始三步完成) ｜ [数据源](#数据源) ｜ [模型会调什么](#模型会调什么) ｜ [工作原理](#工作原理) ｜ [限制](#配置与限制)
+[为什么存在](#为什么存在) ｜ [数据流向](#数据流向) ｜ [怎么比](#和其他做法比) ｜ [亮点](#亮点) ｜ [先试试](#先试试) ｜ [实际效果](#实际效果) ｜ [快速开始](#快速开始三步完成) ｜ [数据源](#数据源) ｜ [模型会调什么](#模型会调什么) ｜ [工作原理](#工作原理) ｜ [限制](#配置与限制)
 
 🌐 [English](README.md) ｜ **中文**
 
@@ -25,6 +25,22 @@ dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
 
 > [!IMPORTANT]
 > **SIT 会把查询单元格原值送给模型。** UAT / PVT 拒绝 **AI** 写入和网格 DML；人工 SQL 页在所有环境仍可自动提交（`lane: manual`）。密码不会回到浏览器快照。每条已保存连接都等于把该账号交给 Host 进程。详见 [SECURITY.md](SECURITY.md)。
+
+## 数据流向
+
+UAT / PVT 不会让 SIT 的单元格变私密。先标环境，再跑第一条查询。
+
+| 什么 | 去哪 |
+| --- | --- |
+| 密码、自定义 CA | 只在 Host。快照、日志、历史、给模型的输出里剥掉。加密记住密码是 Windows DPAPI（stdin、当前用户） |
+| **SIT** 查询单元格 | **原值送给模型** |
+| **UAT / PVT** 查询单元格 | AI 禁写。工具结果走 `redactQueryResult`（JOIN / `SELECT *` 省略单元格；简单单表列清单仍可能通过，除非加列规则） |
+| 人工 SQL 页写入 | **所有环境**自动提交（`lane: manual`）。真正闸门是数据库账号 |
+| 网格 DML / DDL / AI `database_execute_sql` 写入 | **仅 SIT** |
+| Redis `redis_execute` | **仅 SIT。** 命令台一条 CLI 引号命令、隔离连接、跑完即关 |
+| Kafka peek | 临时 `dsh-peek-{uuid}`，`autoCommit: false`，不提交 offset。GROUPS 藏掉这些 id |
+| BIGINT / NUMBER | 在 **Driver** 就是字符串（`bigNumberStrings` / `fetchTypeHandler`），不是 JSON 之后再救 |
+| BLOB | `[BLOB n bytes]` 占位，不把二进制倒进对话 |
 
 ## 为什么存在
 
@@ -73,6 +89,7 @@ DeepSeek Harness 已经在会话旁边推理。常见摸库方式却把这条路
 **目录**
 
 - [为什么存在](#为什么存在)
+- [数据流向](#数据流向)
 - [和其他做法比](#和其他做法比)
 - [亮点](#亮点)
 - [适合谁用](#适合谁用)
@@ -192,11 +209,27 @@ dsh plugin --profile desktop add ./dsh-database-0.1.0-alpha.12.15.tgz
 
 ### 3. 跑一条人能接管的操作
 
-- MySQL / Oracle：打开一张表或跑 SQL。历史按对话隔离。
-- Redis：选一个 DB，浏览 Key，或在命令台跑一条命令。
-- Kafka：打开 Topic，再对一个分区做有界 peek。
+贴进工作台（或让模型跑——落到同一份文档）。然后打字：立刻接管。
 
-模型和人用同一份文档。人一打字就接管。
+MySQL / Oracle（BIGINT 在 Driver 就是数字字符串）：
+
+```sql
+SELECT 9007199254740993 AS too_big_for_js;
+```
+
+Redis 命令台（`PING` 不会改 SCAN 树——那条连接已经关了）：
+
+```text
+PING
+```
+
+Kafka AI Query / peek 页（把 `"orders"` 换成你看得见的 Topic）：
+
+```text
+PEEK "orders" PARTITION 0 FROM LATEST LIMIT 20
+```
+
+历史按对话隔离。已验证的 Harness：`0.1.2-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.2`。现用 Desktop GUI 与真实模型 `callId` 关联仍为未跑。
 
 ## 数据源
 
@@ -269,6 +302,16 @@ Kafka 工具会把命令写入 `ExecutionDocument`（`source: 'ai'`），只有 
 
 这是一套**抽出的数据源平台**，不是四个迷你 IDE。加一种源不是再复制一套产品。拿掉一种源，平台仍然成立。
 
+DSH 已经有会话、右侧栏槽位、会话身份。这个插件负责 Driver、授权、SCAN / peek / `LIMIT`、以及共用文档。不需要四个小插件，也不需要把 Navicat 塞进对话。
+
+```mermaid
+flowchart LR
+  Host["Host：Driver + 秘密"]
+  WB["工作台：一份文档"]
+  Src["源模块：原生语义"]
+  Host --- WB --- Src
+```
+
 社区里 star 高的插件用文字卖**边界**，而不是一张类图。Vision Toolkit 对比的是「通用配图桥」和任务向视觉。数据库插件对比的是 **工具调用里的影子 SQL** 和 **人能抢回来的那一份文档**。
 
 ### 一次运行怎么走完
@@ -286,6 +329,16 @@ flowchart LR
 「数据库」页签挂在 DSH 右侧栏。连接在工作区文件；查询页签和 AI 文档**按对话隔离**，两个会话不会共用一份脏编辑器。浏览器不加载 Driver：走带认证的 `/plugins/database/...`（没凭证就是 401）。Host `ConnectionService` 绑死当前会话、连接 `generation`（重连会作废进行中的请求）、环境。actor 只有 `user` / `ai`，浏览器不能伪造可信 AI 身份。
 
 源模块把文本变成 **worker action + input**（`prepareText` 或 SQL 适配）。Runtime 再对白名单。Kafka 只允许它解析出来的读操作，不会去发消息。
+
+### 让模型这样用
+
+| 剧本 | 模型该做什么 | 插件怎么卡住 |
+| --- | --- | --- |
+| 接管 | 人一打字就停止发布 | `controller: user`；交还前拒绝 AI 发布 |
+| SIT 看数 | 读刚跑出来的单元格 | 原值进模型——把 SIT 当成把网格交给模型 |
+| UAT / PVT | 不 DML、不调 `redis_execute` | 授权拒绝。人工 SQL 页是**另一条**通道 |
+| Kafka peek | 调 `kafka_peek`，不要进业务组 | 临时 `dsh-peek-*`，`autoCommit: false` |
+| 新源 | 抄 Kafka 的 `standard` + `standard-text` | 不要克隆 MySQL 的 `legacy-sql` |
 
 ### 多数「对话写 SQL」留一份影子语句。我们只留一份文档。
 
