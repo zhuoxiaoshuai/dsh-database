@@ -52,7 +52,7 @@ DeepSeek Harness 已经在会话旁边推理。常见摸库方式却把这条路
 - **浏览器不加载 Driver。** mysql2、oracledb、redis、kafkajs 只在 Host Worker 里。客户端走带认证的插件 HTTP。
 - **环境是闸，不是徽章。** SIT 跟数据库账号（AI 可 DML / `redis_execute`）。UAT / PVT：类生产连接只读，AI 禁写。
 - **分页跟源走，单元格说实话。** SQL 用 `LIMIT` / `OFFSET FETCH`。Redis 用 SCAN（空页会发生，界面会说）。Kafka peek 有界。BIGINT 和精确小数是字符串。BLOB 是 `[BLOB n bytes]`，不把二进制倒进对话。
-- **秘密留在 Host。** 「记住密码」默认关。Windows 用当前用户 DPAPI，密钥走 stdin 不走命令行。自定义 CA 同样剥离。
+- **秘密留在 Host。** 「记住密码」默认关。Windows 用当前用户 DPAPI，密钥走 stdin 不走命令行。加密记住密码只在 Windows。自定义 CA 同样剥离。
 
 本项目两层：
 
@@ -237,7 +237,7 @@ flowchart LR
 3. Host `ConnectionService` 绑死当前会话、连接 `generation`（重连会作废进行中的请求）、环境。actor 只有 `user` / `ai`，浏览器不能伪造可信 AI 身份。
 4. 源模块把文本变成 **worker action + input**（`prepareText` 或 SQL 适配）。Runtime 再对白名单。Kafka 只允许它解析出来的读操作，不会去发消息。
 5. Worker 带取消和截止时间。Peek 创建 `dsh-peek-{uuid}`，`autoCommit: false`，seek 到 offset，然后 stop/disconnect。Redis 命令台每次独立连接、一条 CLI 引号命令、立刻关掉——`SELECT` / `MULTI` 不会留在 SCAN 上。
-6. 进网格前 `formatFetchedValue` 把数字变成字符串，所以 `9007199254740993` 还是这串数字。BLOB 是占位符，不把二进制倒进对话。
+6. 会撑破 JS 安全整数的值在 **Driver** 就变成字符串：MySQL `supportBigNumbers` + `bigNumberStrings`；Oracle NUMBER／时间 `fetchTypeHandler` → STRING。然后 `formatFetchedValue` 把 BLOB 写成 `[BLOB n bytes]`，不把二进制倒进对话。所以 `9007199254740993` 还是这串数字。
 7. 一次执行一条记录：身份、状态、事件。成功 / 失败 / 取消 / 空 / 部分 / **未知**（写入超时后库端可能已经生效——界面写未知，不假装已回滚）。
 
 ### 人和模型共用的那份文档
@@ -319,7 +319,7 @@ flowchart TB
 | UAT / PVT | 类生产连接只读 | 禁写；拒绝 Redis execute |
 | DDL | 人工确认 | 不自动跑 |
 
-详见 [SECURITY.md](SECURITY.md)。
+未识别或 `staging` 会 fail-safe 成 **UAT**（AI 和类生产连接只读）。详见 [SECURITY.md](SECURITY.md)。
 
 ### 不宣称的
 

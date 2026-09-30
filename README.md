@@ -52,7 +52,7 @@ High-star DSH plugins (Vision Toolkit, Vision Router) sell a *boundary*: who is 
 - **Drivers never enter the browser.** mysql2, oracledb, redis, and kafkajs load only in Host workers. The client talks authenticated plugin HTTP.
 - **Environment is a gate, not a badge.** SIT follows the DB account (AI may DML / `redis_execute`). UAT / PVT: production-like connections read-only; AI writes refused.
 - **Native pages, honest cells.** SQL uses `LIMIT` / `OFFSET FETCH`. Redis uses SCAN (empty pages happen; the UI says so). Kafka peek is bounded. BIGINT and exact decimals stay strings. BLOB is `[BLOB n bytes]`, not a dumped buffer.
-- **Secrets stay on the Host.** Remember-password is off by default. On Windows it is current-user DPAPI over stdin, not argv. Custom CAs follow the same strip.
+- **Secrets stay on the Host.** Remember-password is off by default. On Windows it is current-user DPAPI over stdin, not argv. Encrypted remember-password is Windows-only. Custom CAs follow the same strip.
 
 This project has two layers:
 
@@ -237,7 +237,7 @@ flowchart LR
 3. Host `ConnectionService` binds the live session, connection `generation` (an edit that reconnects invalidates in-flight work), and environment. Actors are `user` or `ai` — the browser cannot mint a trusted AI identity.
 4. The source module turns text into a **worker action + input** (`prepareText` / SQL adapter). Runtime checks the action against a whitelist. Kafka only allows the read actions it parsed; it will not produce.
 5. The worker runs with cancel and deadline. Peek creates `dsh-peek-{uuid}`, `autoCommit: false`, seeks an offset, then stops and disconnects. Redis command console opens a connection, runs **one** CLI-quoted command, and closes it — `SELECT` / `MULTI` do not leak onto SCAN.
-6. Numbers become strings in `formatFetchedValue` before they hit the grid, so `9007199254740993` stays that digit string. BLOB is a placeholder, not a binary dump into chat.
+6. Integers that would break in JS stay strings at the **driver**: MySQL `supportBigNumbers` + `bigNumberStrings`; Oracle NUMBER/timestamps `fetchTypeHandler` → STRING. Then `formatFetchedValue` turns BLOB into `[BLOB n bytes]`, not a dumped buffer. So `9007199254740993` stays that digit string.
 7. One execution record: identity, status, events. Success / failure / cancel / empty / partial / **unknown** (timeout after a write may have already hit the server — the UI says unknown, it does not pretend rollback).
 
 ### The document humans and the model share
@@ -319,7 +319,7 @@ Longer notes: [docs/README.md](docs/README.md), [architecture](docs/data-source-
 | UAT / PVT | Production-like connections read-only | Writes refused; Redis execute refused |
 | DDL | Human confirmation | Not auto-run |
 
-See [SECURITY.md](SECURITY.md).
+Unknown or `staging` tags fail-safe to **UAT** (read-only for AI and production-like connections). See [SECURITY.md](SECURITY.md).
 
 ### What we do not claim
 
