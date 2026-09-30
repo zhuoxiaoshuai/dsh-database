@@ -4,503 +4,249 @@
 [![DSH](https://img.shields.io/badge/DSH-Web-5B4CF0?style=flat-square)](cordis.patch.yml)
 [![stars](https://img.shields.io/github/stars/zhuoxiaoshuai/dsh-database?style=flat-square)](https://github.com/zhuoxiaoshuai/dsh-database)
 
-**A MySQL, Oracle, Redis, and Kafka workbench for DeepSeek Harness: humans and the model share connections, documents, execution, results, and history.**
-
-🚀 One Database tab | Four sources | Same execution lane
-
-[Why](#why-this-exists) | [Where data goes](#where-data-goes) | [Compare](#how-it-compares) | [Highlights](#highlights) | [Try these](#try-these) | [See it in action](#see-it-in-action) | [Quick start](#quick-start-three-steps) | [Sources](#sources) | [What the model calls](#what-the-model-calls) | [How it works](#how-it-works) | [Limits](#configuration-and-limits)
+MySQL, Oracle, Redis, and Kafka in a DeepSeek Harness tab. You and the model use the same connections, the same editor, the same runs, and the same history.
 
 🌐 **English** | [中文](README.zh.md)
 
-Current version **0.1.0-alpha.12.15**. Isolation-profile evidence is not a production claim.
+Version **0.1.0-alpha.12.15**. Tests against throwaway containers are not a production claim.
 
 ```sh
 npm pack
 dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
 ```
 
-Uninstall returns stock `dsh web` — no leftover core patches: `dsh plugin --profile web remove dsh-database`. Desktop: open **DSH Terminal** from the tray (Desktop does not put `dsh` on PATH) and use `--profile desktop`.
-
-> If this plugin is useful, a star helps other DSH users find it.
+Uninstall: `dsh plugin --profile web remove dsh-database`. That returns stock `dsh web`; do not also paste the same row into the profile patch. Desktop bundles `dsh` but does not put it on PATH — open **DSH Terminal** from the tray and use `--profile desktop`.
 
 > [!IMPORTANT]
-> **SIT sends query cells to the model unredacted.** UAT / PVT refuse **AI** writes and grid DML; the human SQL page can still auto-commit in every environment (`lane: manual`). Passwords never go back to the browser snapshot. Treat every saved connection as giving the Host process that account. See [SECURITY.md](SECURITY.md).
+> On **SIT**, query cells go to the model unredacted. UAT / PVT block AI writes and grid DML. The human SQL page still auto-commits in every environment (`lane: manual`). A saved connection is that account running in the Host process. [SECURITY.md](SECURITY.md).
 
-## Where data goes
+## Data
 
-UAT / PVT does not make SIT cells private. Tag the connection **before** the first query.
+Tag the environment before the first query. UAT / PVT does not hide cells you already sent on SIT.
 
-| What | Where it goes |
+| | |
 | --- | --- |
-| Passwords, custom CAs | Host only. Stripped from snapshots, logs, history, and model-facing output. Encrypted remember-password is Windows DPAPI (stdin, CurrentUser) |
-| Query cells on **SIT** | **Unredacted to the model** |
-| Query cells on **UAT / PVT** | AI writes refused. Tool results pass `redactQueryResult` (joins / `SELECT *` omit cells; simple single-table lists can still pass unless you add column rules) |
-| Human SQL page writes | Auto-commit in **every** environment (`lane: manual`). The database account is the real gate |
-| Grid DML / DDL / AI `database_execute_sql` writes | **SIT only** |
-| Redis `redis_execute` | **SIT only.** Console is one CLI-quoted command on an isolated connection, then close |
-| Kafka peek | Temporary `dsh-peek-{uuid}`, `autoCommit: false`, no offset commit. GROUPS hides those ids |
-| BIGINT / NUMBER | String at the **driver** (`bigNumberStrings` / `fetchTypeHandler`), not after JSON |
-| BLOB | `[BLOB n bytes]` placeholder, not a dumped buffer |
+| Passwords, custom CAs | Host only. Stripped from snapshots, logs, history, and model output. Encrypted remember-password is Windows DPAPI (stdin, CurrentUser). Off by default; not available on other OS |
+| SIT query cells | Sent to the model as-is |
+| UAT / PVT query cells | AI cannot write. Tool results go through `redactQueryResult` (joins and `SELECT *` drop cells; a simple single-table column list can still pass unless you add column rules) |
+| SQL editor writes | Auto-commit in every environment (`lane: manual`). The database user is the actual permission |
+| Grid DML / DDL / AI `database_execute_sql` writes | SIT only |
+| `redis_execute` | SIT only. Console: one CLI-quoted command on its own connection, then close |
+| Kafka peek | Group `dsh-peek-{uuid}`, `autoCommit: false`, no offset commit. GROUPS hides those ids |
+| BIGINT / NUMBER | String at the driver (`bigNumberStrings` / `fetchTypeHandler`) |
+| BLOB | `[BLOB n bytes]`, not a dumped buffer |
 
-## Why this exists
+## What it does
 
-DeepSeek Harness already reasons next to your session. The usual ways to touch a database still break that:
+One Database tab: catalog on the left; overview, query, AI Query, knowledge, and history on the right. Four sources share that chrome. Redis stays SCAN + a command console. Kafka peek does not join a business consumer group.
 
-- **Paste SQL into the chat.** The model sees (or invents) connection strings, cannot open a catalog, cannot cancel a live statement cleanly, and overwrites the text you were editing.
-- **Ask a SQL-in-chat agent.** Natural language becomes SQL (and often a chart) in the transcript. That is a good report workflow. It is a poor workbench: you cannot take over the same editor, Redis/Kafka get forced into tables, and peek may join a real consumer group.
-- **Keep Navicat on the other screen.** The model is blind. You screenshot grids. Nobody shares history.
-- **Ship four mini-plugins.** Each clones AI Query, history, and chrome. Redis gets faked as SQL. Kafka peek quietly joins a consumer group.
+Typing in AI Query takes control (`controller: user`) until you hand it back. mysql2, oracledb, redis, and kafkajs load only in Host workers; the browser talks authenticated `/plugins/database/...`.
 
-This plugin puts **one Database tab** in the conversation. Humans and the model share the same connection, the same document, the same execution record, and the same result. Redis stays Redis. Kafka peek uses a throwaway `dsh-peek-*` group with `autoCommit: false` and never commits offsets.
+This is not a chart / NL-report plugin and not a second Navicat. No PostgreSQL, ClickHouse, MongoDB, or Elasticsearch in this package.
 
-High-star DSH plugins sell a *boundary*, not a feature dump. [Vision Toolkit](https://github.com/Anionex/dsh-vision-toolkit) keeps pixels and local image work on one side of the agent. [dsh-context](https://github.com/bowenliang123/dsh-context) answers “what is in the window right now.” Database does the same for data sources: **the Host holds drivers and secrets; the workbench holds the document; the source module holds native semantics.**
+New sources should copy Kafka (`standard` + `standard-text`), not clone MySQL.
 
-## How it compares
+## Screenshots
 
-| | Chat paste | SQL-in-chat agent | External IDE | This plugin |
-| --- | --- | --- | --- | --- |
-| Model can run what you see | Only if you paste it | A shadow statement in the tool call | No | **AI Query** is the same document |
-| You can take over | Fight the next token | Edit the next prompt | N/A | Typing sets `controller: user`; AI cannot overwrite |
-| Redis / Kafka | Pretend they are SQL | Usually out of scope | Other products | SCAN cursor / bounded peek |
-| Charts / NL report | Screenshot | Often yes | Dedicated BI | **Not this plugin** — exact cells in a workbench |
-| Secrets | Often in context | Env / Settings | Local files | Host-only; Windows DPAPI; stripped from snapshots |
-| Environment | None | Per-source read-only flags | None | SIT: AI + grid write; UAT·PVT: AI/grid blocked, human SQL page still writes |
-| Cancel / timeout / unknown | Chat status | Tool-dependent | Tool-dependent | First-class execution states |
-
-**One-line take:** not a SQL chatbot and not a second Navicat. It is the conversation-side workbench where the model is a coworker on the same lane.
-
-Community SQL-in-chat plugins (for example [tomowang/dsh-data-agent](https://github.com/tomowang/dsh-data-agent)) are the right tool when the job is **natural language → SQL → chart in the transcript**. Use this plugin when the job is a **shared workbench**: catalog, native Redis/Kafka pages, typing takeover, Host-held drivers. PostgreSQL, ClickHouse, and bar/line/pie charts are not in this package.
-
-## Highlights
-
-- **Open a table the way you already work.** Catalog on the left, tabs on the right (overview / query / **AI Query** / knowledge / history). Four sources, one chrome.
-- **The model runs what you see.** History opens the text that ran. Activity on another connection is a hint bar, not a steal.
-- **Typing is takeover.** Your first keystroke stops the model from overwriting the editor until you hand it back. Run also checks revision so a stale tab cannot fire.
-- **Drivers never enter the browser.** mysql2, oracledb, redis, and kafkajs load only in Host workers. The client talks authenticated plugin HTTP.
-- **Environment is a gate, not a badge.** SIT: AI may DML / `redis_execute`. UAT / PVT: AI and grid DML blocked; the human SQL page can still write. DDL is human-gated. The database account is the real permission.
-- **Native pages, honest cells.** SQL uses `LIMIT` / `OFFSET FETCH`. Redis SCAN empty pages stay empty (the UI says so). Kafka peek never commits. BIGINT stays a string at the driver. BLOB is `[BLOB n bytes]`.
-- **Secrets stay on the Host.** Remember-password is off by default. Encrypted remember-password is Windows-only (current-user DPAPI over stdin, not argv). Custom CAs follow the same strip.
-
-This project has two layers:
-
-1. **Extracted workbench** — workspace, AI Query, takeover, execution, history, knowledge, chrome. Once.
-2. **Source modules** — protocol, objects, authorize, result shape. Four today; new ones should copy Kafka (`standard` + `standard-text`), not clone MySQL.
-
-**Contents**
-
-- [Why this exists](#why-this-exists)
-- [Where data goes](#where-data-goes)
-- [How it compares](#how-it-compares)
-- [Highlights](#highlights)
-- [Who it is for](#who-it-is-for)
-- [Try these](#try-these)
-- [See it in action](#see-it-in-action)
-- [Quick start: three steps](#quick-start-three-steps)
-- [Sources](#sources)
-- [What the model calls](#what-the-model-calls)
-- [How it works](#how-it-works)
-- [Configuration and limits](#configuration-and-limits)
-- [Troubleshooting](#troubleshooting)
-- [FAQ](#faq)
-- [Development and community](#development-and-community)
-
-## Who it is for
-
-1. You already live in DeepSeek Harness and want MySQL / Oracle / Redis / Kafka **beside the conversation**, not in another window the model cannot see.
-2. You want the model to run the **same** SQL, Redis command, or Kafka peek you can open, edit, and take over — not a parallel agent console.
-3. You care that peek does not join the business consumer group, that Redis `MULTI` does not stick on the key browser, and that `9007199254740993` does not become `9007199254740992`.
-
-## Try these
-
-Say this in the conversation after a connection is live. The SQL, command, or peek lands in **AI Query** so you can edit it and take over.
-
-| You say | What actually happens |
-| --- | --- |
-| Look at table `orders` and show the latest 20 rows | Catalog via `database_catalog` (not `information_schema`). SQL via `database_execute_sql`. You can change `LIMIT` before it runs again. |
-| The model wrote a `DELETE` — stop, I will edit it | First keystroke sets `controller: user`. Further AI publish is rejected until you hand it back. |
-| What type and TTL is Redis key `user:42`? | `redis_value` on the SCAN connection. The CLI console is a **different** socket, so `SELECT` / `MULTI` do not leak onto the browser. |
-| Peek partition 0 of topic `orders`, latest 20 messages | `kafka_peek` creates `dsh-peek-{uuid}`, `autoCommit: false`, seeks one partition, then disconnects. It does not join `billing`. |
-| Save this SQL as knowledge | `database_templates` stores text. Save does not execute. A later run uses the same authorize path. |
-
-## See it in action
-
-### Four sources in one tree
+Current UI. Names and rows are fixtures.
 
 <p align="center">
   <img src="docs/screenshots/workbench.png" alt="MySQL, Oracle, Redis, and Kafka in one connection tree" width="100%" />
 </p>
 
-*Left: MySQL, Oracle, Redis, and Kafka connections. Right: Kafka topics. Query tabs, AI Query, and knowledge stay the same chrome.*
-
-> Prompt example: “List topics on this Kafka connection, then describe `orders`.”
-
-### Kafka topic metadata
+*MySQL, Oracle, Redis, Kafka on the left. Kafka topics on the right.*
 
 <p align="center">
   <img src="docs/screenshots/kafka-topic.png" alt="Kafka topic partitions, replica factor, watermarks" width="100%" />
 </p>
 
-*Partitions, replica factor, leader, and watermarks. Peek uses a temporary consumer and does not join the business group or commit offsets.*
-
-> Prompt example: “Peek partition 0 of `orders` from the latest offset, limit 20. Do not join the billing consumer group.”
-
-### Redis keys and values
+*Partitions, replica factor, leader, watermarks. Peek uses a temporary consumer.*
 
 <p align="center">
   <img src="docs/screenshots/redis-keys.png" alt="Redis key browser with TTL and JSON value" width="100%" />
 </p>
 
-*SCAN tree, key type, TTL, JSON value. The command console is a separate tab and a separate connection, so `SELECT` / `AUTH` / `MULTI` do not leak onto the browser.*
-
-> Prompt example: “What type and TTL is `user:42`? Then GET it in the command console.”
-
-### MySQL result grid
+*SCAN tree, type, TTL, value. The command console is another connection, so `SELECT` / `MULTI` do not stick on the browser.*
 
 <p align="center">
   <img src="docs/screenshots/mysql-results.png" alt="MySQL result grid with BIGINT as string" width="100%" />
 </p>
 
-*BIGINT and exact decimals render as strings. Cells are not executed as HTML.*
-
-> Prompt example: “Show the latest 20 rows from `orders`. Keep BIGINT as text.”
-
-### Oracle catalog
+*BIGINT and exact decimals as strings. Cells are not executed as HTML.*
 
 <p align="center">
   <img src="docs/screenshots/oracle-catalog.png" alt="Oracle schema catalog" width="100%" />
 </p>
 
-*Schema tree (case-insensitive). Same SQL workbench as MySQL; Service Name / SID, pagination, and types stay Oracle.*
+*Schema tree (case-insensitive). Same SQL workbench as MySQL; Service Name / SID and types are Oracle.*
 
-> Prompt example: “Open schema `HR` and describe `EMPLOYEES`. Do not query `information_schema`.”
+## Quick start
 
-Screenshots are the current workbench. Sample names and rows are disposable fixtures, not a business cluster.
+Needs a working `dsh web` and Node.js ≥ 24. After `npm pack` and `dsh plugin add` (above), restart the Web Profile. Open **Database**, add a connection, Test, then Connect. A failed edit keeps the previous live session.
 
-## Quick start: three steps
-
-### 1. Install
-
-Requires working DSH (`dsh web`) and Node.js ≥ 24.
-
-```sh
-npm pack
-dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
-```
-
-After npm publish:
-
-```sh
-dsh plugin --profile web add dsh-database
-```
-
-Using **DSH Desktop**? It bundles `dsh` and does not add it to PATH. Open **DSH Terminal** from the tray:
-
-```sh
-dsh plugin --profile desktop add ./dsh-database-0.1.0-alpha.12.15.tgz
-```
-
-Then restart Desktop. `npm run install:desktop` packs a tarball into the profile (set `DSH_DESKTOP_APP` to the install root; no source link).
-
-The bundled `cordis.patch.yml` mounts the plugin. Do not paste the same row into the profile patch. Uninstall: `dsh plugin --profile web remove dsh-database`.
-
-### 2. Restart and open the tab
-
-Restart a running Web Profile. In a conversation, open the **Database** tab, add a connection, **Test**, then **Connect**. Failed edits keep the previous live session.
-
-### 3. Run something you can take over
-
-Paste into the workbench (or ask the model — it lands in the same document). Then type: takeover is immediate.
-
-MySQL / Oracle (BIGINT stays a digit string at the driver):
+Once connected:
 
 ```sql
 SELECT 9007199254740993 AS too_big_for_js;
 ```
 
-Redis command console (`PING` does not change the SCAN tree — that connection already closed):
-
 ```text
 PING
 ```
-
-Kafka AI Query / peek tab (replace `"orders"` with a topic you can see):
 
 ```text
 PEEK "orders" PARTITION 0 FROM LATEST LIMIT 20
 ```
 
-History is conversation-private. Verified Harness lines: `0.1.2-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.2`. Live Desktop GUI and real model `callId` correlation remain unrun.
+Replace `"orders"` with a topic you can see. History is per conversation. Harness versions we ran: `0.1.2-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.2`. Live Desktop GUI and real model `callId` correlation have not been run.
+
+After npm publish: `dsh plugin --profile web add dsh-database`.
 
 ## Sources
 
-Each source reuses the workbench above. The table is the map; the sections are the real differences.
-
-| Source | Best question | Main result |
+| Source | Typical use | Result |
 | --- | --- | --- |
-| MySQL | What is in this database / table? Run this SQL. | Catalog, `SHOW CREATE`, result grid |
-| Oracle | Same, on a Service / SID schema | Schema tree, `OFFSET FETCH` grid |
-| Redis | What is this key? Run this command. | SCAN tree, type, TTL, value |
-| Kafka | What is on this topic? | Partitions, watermarks, bounded peek |
+| MySQL | Catalog, SQL | Grid, `SHOW CREATE` |
+| Oracle | Same, Service / SID schema | `OFFSET FETCH` grid |
+| Redis | Keys, one command | SCAN, type, TTL, value |
+| Kafka | Topic inspect | Partitions, watermarks, peek |
 
 ### MySQL
 
-Relational SQL. Objects: **database → table → column**. Identifiers use backticks. Pages: `LIMIT … OFFSET …`. System schemas (`mysql`, `information_schema`, `performance_schema`, `sys`) stay visible. Defaults: `VARCHAR(255)` / `BIGINT`.
+Objects: database → table → column. Backticks. `LIMIT … OFFSET …`. System schemas stay visible. Defaults: `VARCHAR(255)` / `BIGINT`. Driver `mysql2`, port 3306.
 
-- **Connect:** host / port / user / password, default 3306. Driver `mysql2` in the Host worker.
-- **Catalog:** tree, search, object home. Columns, indexes, constraints, and `SHOW CREATE` when the account can read them. Missing access is a reason, not a zero.
-- **Query:** SQL editor, format, cancel (does not drop the shared login). SELECT uses server-side filter / sort / page. Default 100 rows, cap 500 rows and 1 MiB, 30-second deadline.
-- **Writes:** parameterized INSERT/UPDATE/DELETE, preview, one confirmation, primary-key locate and original-row check. Conflicts roll back and keep the draft. DDL up to 20 steps, 5-minute one-shot approval; type the destructive name in the same window. First error stops. No whole-DDL rollback promise. InnoDB lock-wait is verified on throwaway 8.4.
-- **AI:** `database_execute_sql`, up to 8 statements on SIT (100 rows each, DML allowed), stop on first error.
+Catalog: tree, search, columns / indexes / constraints, `SHOW CREATE` when the account can read it. Missing access is reported, not shown as empty.
+
+Query: editor, format, cancel (login stays). SELECT filter / sort / page on the server. Default 100 rows, cap 500 rows and 1 MiB, 30 s. Grid DML: parameterized, preview, one confirm, PK locate and original-row check; conflict rolls back and keeps the draft. DDL: up to 20 steps, 5-minute one-shot approval, type the destructive name in the same window; first error stops; no whole-DDL rollback. InnoDB lock-wait checked on throwaway 8.4.
+
+AI: `database_execute_sql`, SIT up to 8 statements (100 rows each, DML allowed), stop on first error.
 
 ### Oracle
 
-Same SQL workbench as MySQL, different dialect. Objects: **Schema** (case-insensitive). Default schema is the username when it exists. Identifiers use `"`. Pages: `OFFSET … ROWS FETCH FIRST … ROWS ONLY`. `EXPLAIN PLAN FOR`. q-quotes yes, `#` comments no.
+Same SQL workbench, different dialect. Schema is case-insensitive; default schema is the username when it exists. Identifiers use `"`. `OFFSET … ROWS FETCH FIRST … ROWS ONLY`. `EXPLAIN PLAN FOR`. q-quotes yes, `#` comments no. Driver `oracledb`, port 1521, Thin mode. SID unverified.
 
-- **Connect:** Service Name or SID, port 1521, Thin mode. SID is unverified. Driver `oracledb`.
-- **Catalog / query / writes:** same platform path as MySQL. Column comments are a separate dictionary. Defaults: `VARCHAR2(255)` / `NUMBER(19)`.
-- **Limits:** views and synonyms, metadata only. Queries with LOB columns are unsupported. 19c, SID, and temporal-column maintenance are unverified. Free 23 Thin is not a substitute for 19c.
+Column comments are a separate dictionary. Defaults: `VARCHAR2(255)` / `NUMBER(19)`. Views and synonyms: metadata only. LOB columns in a query are unsupported. 19c, SID, and temporal-column maintenance unverified. Free 23 Thin is not a stand-in for 19c.
 
 ### Redis
 
-Not SQL. Objects: **DB → Key**, plus type and TTL. A page is a **SCAN cursor** (empty pages and duplicates happen; the UI dedupes and says when the cursor is unfinished). Requires Redis 7.2+.
+Not SQL. DB → Key, plus type and TTL. A page is a SCAN cursor (empty pages and duplicates happen; the UI dedupes and says when SCAN is unfinished). Redis 7.2+.
 
-- **Connect:** standalone, one sentinel, or one cluster seed. Optional ACL, TLS, custom CA. Sentinel asks one address for the master; username/password apply to both. Cluster uses the host as a seed; DB is 0.
-- **Two connections on purpose:** one Redis-CLI-quoted command per request, then close. Not a shell.
-- **Keys:** String / Hash / List / Set / ZSet / TTL, paged large collections, set/remove TTL, delete, edit basic values. Binary as Base64.
-- **Host:** `DSH_REDIS_COMMAND_BLACKLIST` (default empty). AI `redis_execute` is SIT-only; UAT/PVT keep status / keys / value-read.
-- **Unverified:** Cluster / Sentinel against production clusters.
+Standalone, one sentinel, or one cluster seed. Optional ACL, TLS, custom CA. Sentinel: one address for the master; user/password apply to both. Cluster: host is a seed, DB is 0.
+
+Command console: one Redis-CLI-quoted command, then close. Key browser: String / Hash / List / Set / ZSet / TTL, paged large collections, set/remove TTL, delete, edit basic values. Binary as Base64. `DSH_REDIS_COMMAND_BLACKLIST` default empty; ACL still applies. `redis_execute` is SIT-only. Cluster / Sentinel against production clusters unverified.
 
 ### Kafka
 
-Read-only inspect. Objects: **topic / partition / existing consumer group**. Peek is a bounded read of **one** partition. It does not join the business group or commit offsets.
+Read-only. Topic / partition / existing group. Peek is one partition, bounded. Auth: none, TLS + custom CA, SASL PLAIN, SCRAM-SHA-256 / 512. PLAIN/SCRAM may skip TLS; if TLS is on, certificates are verified. No Kerberos, OAuth, or client certs. No produce, topic create/delete, config change, or offset move.
 
-- **Connect:** none, TLS + custom CA, SASL PLAIN, SCRAM-SHA-256 / 512. PLAIN/SCRAM may skip TLS; when TLS is on, certificates are verified (no skip-verify). Kerberos, OAuth, and client certificates are out of scope.
-- **Work:** list topics, describe partitions, bounded peek. Result is messages plus metadata, not a SQL grid.
-- **Does not:** produce, create/delete topics, change configs, or move consumer offsets.
-- **Plug-in:** client `standard` + host `standard-text`. New sources should copy this path, not MySQL.
+Client `standard`, host `standard-text`. Copy this for a new source.
 
-## What the model calls
+## Tools
 
-Same tools humans use through the tab. Guides stay on-demand (`database_status` with a topic) so they are not stuffed into every turn.
+Same path as the tab. Call guides load on demand (`database_status` + topic), not every turn.
 
-| Tool | Best question | What it does |
-| --- | --- | --- |
-| `database_status` | Which connections are live? How do I query? | Lists live SQL/Redis connections and `generation`. Pass a topic to load a call guide. |
-| `database_catalog` | What is in this schema / table? | `schemas` / `tables` / `table`. Do not use `information_schema` through SQL. Missing access is `unavailable`, not empty. |
-| `database_execute_sql` | What is the current SQL? Run this. | `action=read` returns the AI Query text. With `sql`: up to 8 statements on SIT, 100 rows each, stop on first error. UAT/PVT: this **tool** is read-only. |
-| `database_templates` | Save / search this SQL | Knowledge store. Save does not execute. |
-| `database_read_collab` | What tabs are open? | Query-page tabs. `lastRun` is columns, row count, elapsed — not a second result grid. |
-| `database_import_connections` | Register these hosts | Registers without password or login. You type the secret in the workbench. |
-| `redis_status` / `redis_keys` / `redis_value` | What keys? What is this key? | SCAN cursor (empty pages happen). Type, TTL, paged value. |
-| `redis_execute` | Run this Redis command | **SIT only.** One CLI-quoted command on an isolated connection. |
-| `kafka_status` / `kafka_topics` / `kafka_describe` | What topics? What is this topic? | Visible topics, partitions, leader, watermarks. |
-| `kafka_peek` | What is on this partition? | Bounded read of **one** partition. Publishes into the shared document first; refuses if you already took over. |
-
-Kafka tools write the command into `ExecutionDocument` (`source: 'ai'`), then dispatch only if `controller` is still `ai` and `revision` still matches. SQL `database_execute_sql` is the same idea on the `SharedQuery` path.
+| Tool | |
+| --- | --- |
+| `database_status` | Live SQL/Redis connections and `generation`. Optional topic loads a guide |
+| `database_catalog` | `schemas` / `tables` / `table`. Do not use `information_schema` via SQL. Missing access is `unavailable` |
+| `database_execute_sql` | `action=read` returns the AI Query text. With `sql`: SIT, up to 8 statements, 100 rows each, stop on first error. This tool is read-only on UAT/PVT |
+| `database_templates` | Knowledge. Save does not run SQL |
+| `database_read_collab` | Query tabs. `lastRun` is columns, row count, elapsed |
+| `database_import_connections` | Register hosts without password. Login in the workbench |
+| `redis_status` / `redis_keys` / `redis_value` | SCAN (empty pages happen), type, TTL, paged value |
+| `redis_execute` | SIT only. One command, isolated connection |
+| `kafka_status` / `kafka_topics` / `kafka_describe` | Visible topics, partitions, leader, watermarks |
+| `kafka_peek` | One partition. Writes the command into the shared document first; refused if you already took over |
 
 ## How it works
 
-The plugin is one **extracted data-source platform**, not four mini-IDEs. Adding a source is not cloning the product. Removing a source should leave the platform standing.
-
-DSH already owns the conversation, the right-sidebar slot, and session identity. This plugin owns drivers, authorize, SCAN / peek / `LIMIT`, and the shared document. You do not need four mini-plugins or Navicat-in-the-chat.
+Workbench and AI Query edit a document (`text`, `context`, `revision`, `controller`). Host `ConnectionService` checks session, connection `generation`, environment, and actor (`user` or `ai` — the browser cannot mint `ai`). The source module turns text into a worker action; runtime checks a whitelist. Kafka only allows the read actions it parsed.
 
 ```mermaid
 flowchart LR
-  Host["Host: drivers + secrets"]
-  WB["Workbench: one document"]
-  Src["Source module: native semantics"]
-  Host --- WB --- Src
+  UI["Workbench / AI Query"] --> Doc["text + context + revision + controller"]
+  Doc --> Auth["session, generation, env, actor"]
+  Auth --> Worker["mysql2 / oracledb / redis / kafkajs"]
+  Worker --> Rec["result + execution record"]
+  Rec --> Hist["conversation history"]
 ```
 
-High-star DSH plugins sell the *boundary* in prose, not a class diagram. Vision Toolkit contrasts “generic caption bridges” with task-aware vision. Database contrasts **shadow SQL in a tool call** with **one document the human can steal back**.
+Connections live in the workspace file. Query tabs and AI documents are per conversation. Reconnect bumps `generation` and drops in-flight work.
 
-### A run, end to end
+Redis and Kafka store `ExecutionDocument`. MySQL and Oracle still use `SharedQuery` on the same AI Query tab (same takeover rules). `SourceWorkspace` is overview / query / AI Query / knowledge; a source supplies Editor, Result, `runText`, and tree bindings.
 
-```mermaid
-flowchart LR
-  UI["Workbench / AI Query"] --> Doc["Document text + context + revision + controller"]
-  Doc --> Auth["Host authorize: session, generation, SIT/UAT/PVT, actor"]
-  Auth --> Worker["Worker whitelist: mysql2 / oracledb / redis / kafkajs"]
-  Worker --> Proj["Source result projection"]
-  Proj --> Chrome["Shared result chrome + execution record"]
-  Chrome --> Hist["Conversation history"]
-```
+`updateExecutionDocument` rejects AI writes when `controller !== 'ai'`. First keystroke is `saveDraft(..., takeControl=true)` → `controller: user`. Hand-back is `return-ai` and needs a saved document. `runExecutionDocument` requires `controller === 'user'` and a matching `revision`. Redis DB is part of `context`; changing it bumps revision, keeps controller, and cancels the old request scope.
 
-The Database tab is a DSH right-sidebar slot. Connections live in the workspace file; query tabs and AI documents live **per conversation**, so two chats do not share a dirty editor. The browser never loads a driver: it calls authenticated `/plugins/database/...` (401 without credentials). Host `ConnectionService` binds the live session, connection `generation` (reconnect invalidates in-flight work), and environment. Actors are only `user` or `ai` — the browser cannot mint a trusted AI identity.
+`peekKafkaPartition`: `dsh-peek-{uuid}`, `autoCommit: false`, seek one partition, `stop` / `disconnect`. Cleanup timeout recycles the worker (`recycleWorker`). `visibleGroupIds` hides `dsh-peek-` names.
 
-The source module turns text into a **worker action + input** (`prepareText` / SQL adapter). Runtime checks the action against a whitelist. Kafka only allows the read actions it parsed; it will not produce.
+MySQL catalog / maintenance / query connections set `supportBigNumbers` and `bigNumberStrings`. Oracle query uses `oracleFetchTypeHandler` so NUMBER and timestamps arrive as STRING. `formatFetchedValue` turns Buffer into `[BLOB n bytes]`. Grid cells are not HTML.
 
-### Ask the model
+`normalizeEnvironment`: `dev` / `test` → SIT; `staging` → UAT; `prod` → PVT; anything else → UAT. Grid maintenance is SIT-only.
 
-| Playbook | What the agent should do | How the plugin enforces it |
-| --- | --- | --- |
-| Takeover | Stop publishing when the user types | `controller: user`; AI publish rejected until `return-ai` |
-| SIT analysis | Read the cells you just ran | Unredacted cells — treat SIT as giving the model the grid |
-| UAT / PVT | No DML, no `redis_execute` | Authorize refuse. Human SQL page is a **separate** lane |
-| Kafka peek | Call `kafka_peek`, not a business group | Temp `dsh-peek-*`, `autoCommit: false` |
-| New source | Copy Kafka `standard` + `standard-text` | Do not clone MySQL `legacy-sql` |
+One execution record per run: success, failure, cancel, empty, partial, or **unknown**. Unknown means a timed-out write may already have hit the server; the UI does not claim rollback. Default deadline 30 s for peek and query.
 
-### Most SQL-in-chat tools keep a shadow statement. We keep one document.
-
-When the model calls `kafka_peek` or `database_execute_sql`, it must not hide a second copy of the statement. Kafka tools **publish** into `ExecutionDocument` (`updateExecutionDocument` with `source: 'ai'`), then dispatch only if `controller` is still `ai` and `revision` still matches. You see that text in **AI Query**. History opens the same text. Activity on another connection is a hint bar, not a steal.
-
-Standard sources (Redis, Kafka) use `ExecutionDocument`: `{ text, context, revision, controller }`. SQL still uses `SharedQuery` on the same AI Query tab (legacy path: same takeover rules, same history). The product promise is the same: **one document, one run, one record.**
-
-`SourceWorkspace` is the shared chrome: overview / query / AI Query / knowledge. A source only supplies Editor, Result, `runText`, and tree bindings — it does not wrap a second workbench.
-
-### Typing is takeover, not a race with the next token.
-
-`updateExecutionDocument` rejects AI writes when `controller !== 'ai'` (`用户已接管 AI Query`). The first keystroke calls `saveDraft(..., takeControl=true)` and sets `controller: user` / `user-edit`. Hand-back is explicit (`return-ai`); unsaved text cannot be returned. `runExecutionDocument` requires `controller === 'user'` and a matching `revision`, so a stale tab cannot fire.
-
-`context` is part of the document (Redis DB; Kafka has no extra target today). Switching DB bumps `revision`, **keeps** controller, and cancels the old request scope (`createRequestScope`).
-
-### Peek does not join the business consumer group.
-
-`peekKafkaPartition` creates `dsh-peek-{uuid}`, runs with `autoCommit: false`, seeks **one** partition, then `stop` / `disconnect`. If cleanup times out, the worker is recycled (`recycleWorker`) instead of leaking a group on a dead connection. The GROUPS tree hides names that start with `dsh-peek-` (`visibleGroupIds`).
-
-Redis command console is a **different** connection on purpose: one CLI-quoted command, then close. `SELECT` / `AUTH` / `MULTI` cannot stick on the SCAN browser. `DSH_REDIS_COMMAND_BLACKLIST` is empty by default; Redis ACL is still the account.
-
-### Integers that would lie in JavaScript stay strings at the driver.
-
-MySQL workers set `supportBigNumbers: true` and `bigNumberStrings: true` on catalog, maintenance, and query connections (`mysql/driver.mjs`). Oracle query fetch uses `oracleFetchTypeHandler`: NUMBER and timestamps arrive as STRING. Then `formatFetchedValue` turns BLOB / Buffer into `[BLOB n bytes]`. The grid does not execute cells as HTML. So `9007199254740993` stays that digit string, not `9007199254740992`.
-
-### Environment is a gate, not a badge.
-
-`normalizeEnvironment`: `dev` / `test` → SIT; `staging` → UAT; `prod` → PVT; anything unknown → **UAT**. SIT follows the database account (AI may DML / `redis_execute`; cells go to the model **unredacted**). UAT / PVT: AI writes and grid DML are refused; SQL tool results pass `redactQueryResult` (joins and `SELECT *` omit cells; simple single-table column lists can still pass unless you add column rules). The human SQL page (`executeDml` with `lane: 'manual'`) can still auto-commit in every environment — do not treat the tag as a lock. DDL is human-gated. Grid maintenance stays SIT-only.
-
-Passwords never round-trip in the snapshot. Remember-password is off by default. Encrypted remember-password is **Windows-only** (current-user DPAPI over stdin, not argv). Custom CAs follow the same strip.
-
-### Fail visibly.
-
-One execution record: identity, status, events. Success / failure / cancel / empty / partial / **unknown**. A write that times out may already have hit the server — the UI says unknown; it does not pretend rollback.
-
-Worker runs with cancel and a deadline (peek / query default 30 seconds). Redis command isolation and Kafka peek cleanup are part of that same record, not a side channel.
-
-### What is extracted vs what stays native
-
-```mermaid
-flowchart TB
-  subgraph dsh [DeepSeek Harness]
-    Tab[Database tab]
-  end
-  subgraph platform [Extracted once]
-    Conn[Connection shell / secrets / SIT UAT PVT]
-    WS[Workspace / documents / tabs]
-    EX[Execution identity / cancel / history]
-    AI[AI Query / takeover / revision]
-    KN[Knowledge publish]
-    UI[Shared tree / toolbar / result chrome]
-  end
-  subgraph modules [Source modules]
-    MySQL
-    Oracle
-    Redis
-    Kafka
-  end
-  subgraph host [Host workers]
-    W[Drivers never in the browser]
-  end
-  Tab --> Conn
-  Conn --> WS
-  WS --> modules
-  AI --> WS
-  UI --> WS
-  modules --> EX
-  EX --> W
-  EX --> KN
-```
-
-| Shared once | Left at the source |
+| Shared | Per source |
 | --- | --- |
-| Tab, add/test/connect, DPAPI, conversation isolation | Host/port vs Service/SID vs SASL vs Redis mode |
-| Tabs, loading/error/empty, result frame | Tree: database / schema / DB / topic |
-| Execution identity, cancel, history | `LIMIT`, SCAN cursor, peek offset |
-| AI Query, takeover, revision | Command language, authorize, AI args → native text |
-| `knowledge.json` publish (human confirm) | Fingerprint / analysis per source |
+| Tab, connect, DPAPI, conversation isolation | host/port vs Service/SID vs SASL vs Redis mode |
+| Loading / error / empty, result frame | tree shape |
+| Execution id, cancel, history | `LIMIT`, SCAN cursor, peek offset |
+| AI Query, takeover, revision | command language, authorize |
+| `knowledge.json` (human confirm) | fingerprint / analysis |
 
-We do **not** require every source to have `database`, every tree to be Schema/Table, or every result to be a 2-D grid.
+| Source | Client | Host |
+| --- | --- | --- |
+| MySQL | `legacy-sql` | `legacy-adapter` |
+| Oracle | `legacy-sql` | `legacy-adapter` |
+| Redis | `standard` | `legacy-adapter` |
+| Kafka | `standard` | `standard-text` |
 
-| Source | Client | Host execution | Why |
-| --- | --- | --- | --- |
-| MySQL | `legacy-sql` | `legacy-adapter` | Catalog, batch, InnoDB DML/DDL grid, transactions — still the SQL compatibility path |
-| Oracle | `legacy-sql` | `legacy-adapter` | Same path; dialect owns identifiers, `OFFSET FETCH`, comments |
-| Redis | `standard` | `legacy-adapter` | Standard pages; command isolation + SCAN still go through the Redis adapter |
-| Kafka | `standard` | `standard-text` | `normalizeContext` / `prepareText` / `authorize` → worker whitelist. **Copy this for a new source.** |
+Knowledge save does not execute. Trial run uses the same authorize path. Old `sql-templates.json` is read once into `knowledge.json`.
 
-Knowledge save does not execute. A trial run uses the same authorize path. Old `sql-templates.json` still reads once into `knowledge.json`.
+More detail: [docs/README.md](docs/README.md), [architecture](docs/data-source-architecture.md), [onboarding](docs/data-source-onboarding.md).
 
-Rules we keep: one authority per piece of state; AI and humans are the same pipeline; fail visibly; do not unify Kafka offsets with Redis SCAN; adding a source should not rewrite MySQL.
-
-Longer notes: [docs/README.md](docs/README.md), [architecture](docs/data-source-architecture.md), [onboarding a source](docs/data-source-onboarding.md).
-
-## Configuration and limits
-
-### Environment
+## Limits
 
 | Environment | Human | AI |
 | --- | --- | --- |
-| SIT | Account permissions apply; grid DML/DDL allowed | Unredacted cells; DML allowed; Redis `redis_execute` allowed |
-| UAT / PVT | Human SQL page can still write (auto-commit); grid DML blocked | Writes refused; Redis execute refused; cells redacted as below |
-| DDL | Human confirmation | Not auto-run |
+| SIT | Account permissions; grid DML/DDL | Unredacted cells; DML; `redis_execute` |
+| UAT / PVT | SQL editor can still write (auto-commit); grid DML blocked | No writes; no Redis execute |
+| DDL | Confirm | Not auto-run |
 
-Unknown, empty, or unrecognized tags fail-safe to **UAT**. Aliases: `dev` / `test` → SIT; `staging` → UAT; `prod` → PVT. See [SECURITY.md](SECURITY.md).
-
-### What we do not claim
-
-- Views and synonyms: metadata only. Oracle queries with LOB columns are unsupported.
-- Oracle 19c, SID, and temporal-column maintenance are unverified.
-- Redis Cluster / Sentinel and production clusters are unverified.
-- Kafka does not produce, change offsets, or support Kerberos / OAuth / client certificates.
-- No PostgreSQL, ClickHouse, MongoDB, Elasticsearch, or bar/line/pie charts in this package.
-- Live Desktop GUI and real model `callId` correlation remain unrun.
-
-| Environment | Notes |
+| | |
 | --- | --- |
 | Node.js | ≥ 24; isolated loads use Desktop's bundled Node |
-| Harness | Verified `0.1.2-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.2` |
-| MySQL | 8.4.x throwaway containers; 8.0.32 read-only check |
-| Oracle | Free 23 Thin mode; not a substitute for 19c / SID |
-| Redis | 8.10.2 throwaway containers |
+| Harness | `0.1.2-rc.1`, `0.1.7-rc.2`, `0.2.0-rc.2` |
+| MySQL | 8.4.x throwaway; 8.0.32 read-only check |
+| Oracle | Free 23 Thin; not 19c / SID |
+| Redis | 8.10.2 throwaway |
 | Drivers | mysql2 3.24.4, oracledb 7.0.1, redis 6.2.1, kafkajs 2.2.4 |
+
+Not claimed: Oracle LOB queries; Oracle 19c / SID / temporal maintenance; Redis Cluster / Sentinel on a business cluster; Kafka produce / Kerberos / OAuth / client certs; PostgreSQL / ClickHouse / Mongo / ES / charts; live Desktop GUI and real `callId` correlation.
 
 ## Troubleshooting
 
-| Problem | What to do |
+| Problem | |
 | --- | --- |
-| `/plugins/database/connections` collides | Do not install an older remote-exec that still embeds the database workbench. This plugin can sit beside `dsh-remote-exec` |
-| `dsh` is not recognized on Desktop | Open **DSH Terminal** from the tray; Desktop does not put `dsh` on PATH |
-| Plugin does not appear after add | Restart the Web Profile and refresh. Confirm `cordis.patch.yml` was not duplicated by hand |
-| Oracle query fails on LOB columns | Unsupported in the current version; metadata-only for views/synonyms |
-| Redis `SELECT` in the console does not change the key tree | Expected: the console closes its connection; pick a DB in the tree |
-| Kafka peek moves a business consumer | It does not. Peek uses a temporary `dsh-peek-*` group, `autoCommit: false`, then disconnects |
+| `/plugins/database/connections` collision | Uninstall an older remote-exec that still embeds this workbench. This plugin can sit beside current `dsh-remote-exec` |
+| Desktop: `dsh` not found | DSH Terminal from the tray |
+| Plugin missing after add | Restart the Web Profile, refresh, do not duplicate `cordis.patch.yml` |
+| Oracle query hits LOB columns | Unsupported |
+| Console `SELECT` does not change the key tree | Expected; pick the DB in the tree |
+| Peek and business consumers | Peek does not join them |
 
 ## FAQ
 
-**Will the model see my passwords?**
+**Does the model see passwords?** No. They are stripped from snapshots, logs, history, and model output. Windows remember-password does not round-trip to the browser.
 
-No. Passwords and custom CAs are stripped from connection snapshots, logs, query history, and model-facing output. Remember-password (Windows DPAPI, current user) never round-trips to the browser.
+**Does the model see rows?** On SIT, yes. UAT / PVT stop AI writes and grid DML; the SQL editor can still commit. Use a database user that matches what you want done.
 
-**Will the model see row data?**
+**Navicat?** No. Catalog and query next to the chat. Heavy DBA work stays in a dedicated client.
 
-On **SIT**, yes — cells go unredacted. That is the point of asking the model about a result. Use **UAT / PVT** to stop **AI** writes and grid DML (Redis execute refused; SQL tool results pass `redactQueryResult`). The human SQL page can still auto-commit on UAT/PVT — the database account is the real gate.
+**PostgreSQL / Mongo / ES?** Not in this package. Copy Kafka's `standard` + `standard-text` module if you add one. Do not clone MySQL.
 
-**Is this a replacement for Navicat?**
+**Peek disconnect is slow?** Worker `stop` / `disconnect` with a timeout; failure recycles the worker.
 
-No. It is the workbench *inside* DSH: catalog, query, AI Query, history next to the conversation. Heavy DBA work still belongs in a dedicated client. Controlled DML/DDL here is parameterized, previewed, and confirmation-gated — not a second general SQL IDE.
-
-**Is this a replacement for SQL-in-chat / data-agent plugins?**
-
-No. Those optimize for natural language, charts, and reports in the transcript. This plugin optimizes for a **shared workbench** (takeover, Redis SCAN, Kafka peek isolation, Host drivers). You can install both; they do different jobs.
-
-**Can I add PostgreSQL / Mongo / ES?**
-
-The platform is built for that: copy Kafka's `standard` + `standard-text` module (descriptor, worker, authorize, explorer, knowledge). Do not clone MySQL. There is no PostgreSQL/Mongo/ES implementation in this package today.
-
-**Why is Kafka peek slow to disconnect?**
-
-The worker stops and disconnects the temporary consumer with a timeout. If cleanup fails, the worker is recycled (`recycleWorker`) instead of leaking a group on a dead connection.
-
-## Development and community
+## Development
 
 ```sh
 npm ci --legacy-peer-deps
@@ -518,9 +264,9 @@ DSH_TEST_DATABASES=1 npm run test:host
 
 Isolated host: `DSH_DESKTOP_APP=... npm run test:host`. `DSH_TEST_ALLOW_VERSION` is diagnostic only.
 
-- Bugs and usage questions: [GitHub Issues](https://github.com/zhuoxiaoshuai/dsh-database/issues)
-- Vulnerabilities: privately via [SECURITY.md](SECURITY.md)
-- After the repository is at least one day old, list it on [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) as `data/plugins/zhuoxiaoshuai__dsh-database.yml` (topic `dsh-plugin` is already set)
+Issues: [GitHub Issues](https://github.com/zhuoxiaoshuai/dsh-database/issues). Vulnerabilities: [SECURITY.md](SECURITY.md), privately.
+
+After the repo is at least a day old, list it on [awesome-dsh-plugin](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin) as `data/plugins/zhuoxiaoshuai__dsh-database.yml` (topic `dsh-plugin` is set):
 
 ```yaml
 url: https://github.com/zhuoxiaoshuai/dsh-database
