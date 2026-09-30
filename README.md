@@ -2,9 +2,12 @@
 
 [![MIT](https://img.shields.io/badge/license-MIT-0B7285?style=flat-square)](LICENSE)
 [![DSH](https://img.shields.io/badge/DSH-Web-5B4CF0?style=flat-square)](cordis.patch.yml)
+![written entirely with AI](https://img.shields.io/badge/written-entirely%20with%20AI-555?style=flat-square)
 [![stars](https://img.shields.io/github/stars/zhuoxiaoshuai/dsh-database?style=flat-square)](https://github.com/zhuoxiaoshuai/dsh-database)
 
 A DeepSeek Harness plugin, not part of `dsh web` itself. After you add it to the web profile and restart, a **Database** tab appears in the conversation’s right sidebar. It talks to MySQL, Oracle, Redis, and Kafka. Remove the plugin and `dsh web` is unchanged.
+
+This repository was written entirely with AI.
 
 ![Workbench](docs/screenshots/workbench.png)
 
@@ -179,8 +182,8 @@ url: https://github.com/zhuoxiaoshuai/dsh-database
 name: zhuoxiaoshuai/dsh-database
 category: dev
 description:
-  en: MySQL, Oracle, Redis and Kafka inside DeepSeek Harness.
-  zh: DeepSeek Harness 插件，用来连接 MySQL、Oracle、Redis 和 Kafka。
+  en: MySQL, Oracle, Redis and Kafka inside DeepSeek Harness. Written entirely with AI.
+  zh: DeepSeek Harness 插件，用来连接 MySQL、Oracle、Redis 和 Kafka。全程由 AI 编写。
 ```
 
 ## Status

@@ -3,7 +3,7 @@
   "version": "0.1.0-alpha.12.15",
   "license": "MIT",
   "author": "liu",
-  "description": "MySQL, Oracle, Redis and Kafka inside DeepSeek Harness.",
+  "description": "MySQL, Oracle, Redis and Kafka inside DeepSeek Harness. Written entirely with AI.",
   "homepage": "https://github.com/zhuoxiaoshuai/dsh-database#readme",
   "repository": {
     "type": "git",
