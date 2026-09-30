@@ -8,7 +8,7 @@
 
 🚀 一个「数据库」页签 ｜ 四种源 ｜ 同一条执行路
 
-[亮点](#亮点) ｜ [适合谁用](#适合谁用) ｜ [实际效果](#实际效果) ｜ [快速开始](#快速开始三步完成) ｜ [数据源](#数据源) ｜ [工作原理](#工作原理) ｜ [限制](#配置与限制)
+[为什么存在](#为什么存在) ｜ [怎么比](#和其他做法比) ｜ [亮点](#亮点) ｜ [实际效果](#实际效果) ｜ [快速开始](#快速开始三步完成) ｜ [数据源](#数据源) ｜ [工作原理](#工作原理) ｜ [限制](#配置与限制)
 
 🌐 [English](README.md) ｜ **中文**
 
@@ -16,25 +16,58 @@
 
 > 如果这个插件有用，点个 Star 方便其他 DSH 用户找到。
 
+> [!IMPORTANT]
+> **SIT 会把查询单元格原值送给模型。** UAT / PVT 拒绝 AI 写入。密码不会回到浏览器快照。每条已保存连接都等于把该账号交给 Host 进程。详见 [SECURITY.md](SECURITY.md)。
+
+## 为什么存在
+
+DeepSeek Harness 已经在会话旁边推理。常见摸库方式却把这条路打断：
+
+- **把 SQL 贴进对话。** 模型看见（或编造）连接串，打不开目录，取消不干净，还会覆盖你正在改的文本。
+- **旁边开着 Navicat。** 模型是瞎的。你截网格图。没有共用历史。
+- **做成四个小插件。** 每个都抄一套 AI Query 和历史。Redis 被假扮成 SQL。Kafka peek 悄悄进了业务消费组。
+
+这个插件在会话里放**一个「数据库」页签**。人和模型共用同一条连接、同一份文档、同一次执行记录、同一份结果。Redis 还是 Redis。Kafka peek 用一次性 `dsh-peek-*` 组、`autoCommit: false`，不提交 offset。
+
+社区里 star 高的插件（Vision Toolkit、Vision Router）卖的是**边界**：谁是大脑、像素留在哪、什么数据离开本机。数据库插件做同样的事：**Driver 和秘密留在 Host，文档留在工作台，原生语义留在各源模块。**
+
+## 和其他做法比
+
+| | 贴进对话 | 外部 IDE | 这个插件 |
+| --- | --- | --- | --- |
+| 模型能否跑你看见的内容 | 只有贴出去才行 | 不能 | **AI Query** 就是那份文档 |
+| 人能否接管 | 和下一个 token 打架 | 无 | 一打字 `controller: user`，AI 不能覆盖 |
+| Redis / Kafka | 假装是 SQL | 另买工具 | SCAN 游标 / 有界 peek |
+| 秘密 | 经常进上下文 | 本地文件 | 只在 Host；Windows DPAPI；快照里剥掉 |
+| 环境 | 无 | 无 | SIT 可写 / UAT·PVT 只读 / DDL 人工闸 |
+| 取消 / 超时 / 未知 | 看聊天状态 | 看工具 | 执行状态是一等对象 |
+
+**一句话：** 不是 SQL 聊天机器人，也不是第二套 Navicat。是会话旁的工作台，模型是同一条路上的同事。
+
 ## 亮点
 
-- **一个页签，四种源。** MySQL、Oracle、Redis、Kafka 进会话旁的「数据库」页签。加一种源是登记真实差异，不是再复制一套产品。
-- **不是第二套产品。** 正式 AI 入口是工作台里的 **AI Query**。人改过的内容模型接着执行；模型跑过的内容人可以打开、接管、继续改。
-- **执行为一等对象。** 每次运行有身份、代次、取消、超时、历史。成功、失败、取消、空、部分、未知分开说。
-- **环境是闸。** SIT 可写。UAT / PVT 对 AI 和类生产连接只读。DDL 仍须人工确认。
-- **秘密留在 Host。** 密码和自定义 CA 不回快照、日志、查询历史或模型输出。Windows 勾选记住密码时用当前用户 DPAPI。
+- **按你本来的方式打开表。** 左目录，右页签（总览 / 查询 / **AI Query** / 经验 / 历史）。四种源，一套外框。
+- **模型跑的是你的文档，不是影子副本。** 点历史即打开当时那份文本。其他连接上的活动只出提示条，不抢当前连接。
+- **输入即接管。** `ExecutionDocument` 有 `text`、`context`、`revision`、`controller`。人一改，`controller` 变成 `user`。交还之前 AI 发布会被拒绝。运行还核对 revision，过期页签打不出去。
+- **浏览器不加载 Driver。** mysql2、oracledb、redis、kafkajs 只在 Host Worker 里。客户端走带认证的插件 HTTP。
+- **环境是闸，不是徽章。** SIT 跟数据库账号（AI 可 DML / `redis_execute`）。UAT / PVT：类生产连接只读，AI 禁写。
+- **分页跟源走，单元格说实话。** SQL 用 `LIMIT` / `OFFSET FETCH`。Redis 用 SCAN（空页会发生，界面会说）。Kafka peek 有界。BIGINT 和精确小数是字符串。BLOB 是 `[BLOB n bytes]`，不把二进制倒进对话。
+- **秘密留在 Host。** 「记住密码」默认关。Windows 用当前用户 DPAPI，密钥走 stdin 不走命令行。自定义 CA 同样剥离。
 
 本项目两层：
 
-1. **抽出的工作台：** Workspace、AI Query、接管、执行、History、Knowledge、页面外框只存在一次。
-2. **四个数据源模块：** 各负责协议、对象、命令、授权和结果形状。
+1. **抽出的工作台** — Workspace、AI Query、接管、执行、History、Knowledge、外框。一次。
+2. **数据源模块** — 协议、对象、授权、结果形状。现在四个；新源应抄 Kafka（`standard` + `standard-text`），不要克隆 MySQL。
 
 ```sh
+npm pack
 dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
 ```
 
 **目录**
 
+- [为什么存在](#为什么存在)
+- [和其他做法比](#和其他做法比)
 - [亮点](#亮点)
 - [适合谁用](#适合谁用)
 - [实际效果](#实际效果)
@@ -43,12 +76,14 @@ dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
 - [工作原理](#工作原理)
 - [配置与限制](#配置与限制)
 - [常见问题](#常见问题)
+- [还想知道的](#还想知道的)
 - [开发与社区](#开发与社区)
 
 ## 适合谁用
 
-1. 已经在用 DeepSeek Harness，希望 MySQL / Oracle / Redis / Kafka 就在会话旁边，而不是另开一套 IDE。
-2. 希望模型和人跑同一份 SQL、Redis 命令或 Kafka peek：能打开、改、接管，而不是按方言再做一套 Agent 控制台。
+1. 已经泡在 DeepSeek Harness 里，希望 MySQL / Oracle / Redis / Kafka **就在会话旁边**，而不是模型看不见的另一个窗口。
+2. 希望模型和人跑**同一份** SQL、Redis 命令或 Kafka peek：能打开、改、接管，而不是再做一套 Agent 控制台。
+3. 在意 peek 不进业务消费组、Redis `MULTI` 不粘在 Key 浏览上、以及 `9007199254740993` 不会变成 `9007199254740992`。
 
 ## 实际效果
 
@@ -185,6 +220,40 @@ dsh plugin --profile desktop add ./dsh-database-0.1.0-alpha.12.15.tgz
 
 这是一套**抽出的数据源平台**，不是四个迷你 IDE。加一种源不是再复制一套产品。拿掉一种源，平台仍然成立。
 
+### 一次运行怎么走完
+
+```mermaid
+flowchart LR
+  UI["工作台 / AI Query"] --> Doc["文档 text + context + revision + controller"]
+  Doc --> Auth["Host 授权：会话、generation、SIT/UAT/PVT、actor"]
+  Auth --> Worker["Worker 白名单：mysql2 / oracledb / redis / kafkajs"]
+  Worker --> Proj["源结果投影"]
+  Proj --> Chrome["公共结果外框 + 执行记录"]
+  Chrome --> Hist["对话历史"]
+```
+
+1. 「数据库」页签挂在 DSH 右侧栏。连接在工作区文件；查询页签和 AI 文档按对话隔离，两个会话不会共用一份脏编辑器。
+2. 浏览器不加载 Driver。走带认证的 `/plugins/database/...`。没凭证就是 401。
+3. Host `ConnectionService` 绑死当前会话、连接 `generation`（重连会作废进行中的请求）、环境。actor 只有 `user` / `ai`，浏览器不能伪造可信 AI 身份。
+4. 源模块把文本变成 **worker action + input**（`prepareText` 或 SQL 适配）。Runtime 再对白名单。Kafka 只允许它解析出来的读操作，不会去发消息。
+5. Worker 带取消和截止时间。Peek 创建 `dsh-peek-{uuid}`，`autoCommit: false`，seek 到 offset，然后 stop/disconnect。Redis 命令台每次独立连接、一条 CLI 引号命令、立刻关掉——`SELECT` / `MULTI` 不会留在 SCAN 上。
+6. 进网格前 `formatFetchedValue` 把数字变成字符串，所以 `9007199254740993` 还是这串数字。BLOB 是占位符，不把二进制倒进对话。
+7. 一次执行一条记录：身份、状态、事件。成功 / 失败 / 取消 / 空 / 部分 / **未知**（写入超时后库端可能已经生效——界面写未知，不假装已回滚）。
+
+### 人和模型共用的那份文档
+
+标准源（Redis、Kafka）用 `ExecutionDocument`：`{ text, context, revision, controller }`。
+
+- 只有 `controller === 'ai'` 时模型才能写这份文档。人一打字变成 `user`（`user-edit`）。交还前 AI 再发布会被拒绝：「用户已接管 AI Query」。
+- 交还是显式的（`return-ai`）。运行要求 `controller === 'user'` 且 revision 对得上，漏了远程改动的页签打不出去。
+- `context` 也是文档的一部分（Redis DB；Kafka 目前没有额外目标）。换 DB 会加 revision、**保留**控制权，并取消旧请求作用域。
+
+SQL 仍走 `SharedQuery`，但在同一个 AI Query 页签上（兼容路径：同一套接管和历史）。产品承诺一样：**一份文档、一次运行、一条记录。**
+
+`SourceWorkspace` 是公共外框：总览 / 查询 / AI Query / 经验。源只提供 Editor、Result、`runText` 和树绑定，不再包第二套工作台。
+
+### 抽出什么、原生留下什么
+
 ```mermaid
 flowchart TB
   subgraph dsh [DeepSeek Harness]
@@ -217,24 +286,26 @@ flowchart TB
   EX --> KN
 ```
 
-**只实现一次的：** 「数据库」页签；工作区连接（`$DSH_HOME/database/database-workspace.json`）与对话工作台（`conversation-workbenches/`）；添加 / 测试 / 连接 / 编辑；AI Query 与接管；执行身份与记录；一份 `knowledge.json`（首次仍可读 `sql-templates.json`）；SIT / UAT / PVT。
+| 只实现一次 | 留给各源 |
+| --- | --- |
+| 页签、添加/测试/连接、DPAPI、对话隔离 | host/port vs Service/SID vs SASL vs Redis 模式 |
+| 页签外框、Loading/Error/Empty、结果框 | 树：库 / Schema / DB / Topic |
+| 执行身份、取消、历史 | `LIMIT`、SCAN 游标、peek offset |
+| AI Query、接管、修订 | 命令语言、授权、AI 参数 → 原生文本 |
+| `knowledge.json` 发布（人工确认） | 指纹 / 分析按源 |
 
-**留给各源的：** 连接字段、Driver/Worker、对象、命令语言、授权、一页怎么读（`LIMIT`、`SCAN`、peek offset）、结果形状、补全、AI 参数 → 原生文本。
+**不要求**每个源都有 `database`、每棵树都是 Schema/Table、每个结果都是二维表。
 
-平台**不要求**每个源都有 host/port/database、每棵树都是 Schema/Table，也不把 Redis/Kafka 做成 SQL。
+| 源 | 客户端 | Host 执行 | 为什么 |
+| --- | --- | --- | --- |
+| MySQL | `legacy-sql` | `legacy-adapter` | 目录、批量、InnoDB DML/DDL 网格、事务——仍走 SQL 兼容路径 |
+| Oracle | `legacy-sql` | `legacy-adapter` | 同一条路；方言管标识符、`OFFSET FETCH`、注释 |
+| Redis | `standard` | `legacy-adapter` | 标准页签；命令隔离和 SCAN 仍走 Redis 适配 |
+| Kafka | `standard` | `standard-text` | `normalizeContext` / `prepareText` / `authorize` → Worker 白名单。**新源抄这条。** |
 
-| 源 | 客户端 | Host 执行 |
-| --- | --- | --- |
-| MySQL | `legacy-sql` | `legacy-adapter` |
-| Oracle | `legacy-sql` | `legacy-adapter` |
-| Redis | `standard` | `legacy-adapter` |
-| Kafka | `standard` | `standard-text` |
+经验保存不执行。试运行走同一条授权。旧 `sql-templates.json` 仍会读入 `knowledge.json` 一次。
 
-新源应按 **standard + standard-text** 接入。SQL/Redis 适配是兼容边界，不是模板。
-
-人或模型：文档 → 授权 → Worker action 白名单 → 源结果投影 → 公共结果外框 → 记录。一条路。
-
-一直守着的：同一业务状态一个权威来源；AI 和人是同一条流水线；失败要可见（维护超时后的未知也如实写）；不为了代码整齐去统一 Kafka offset 和 Redis SCAN；加一种源原则上不改 MySQL。
+一直守着的：同一业务状态一个权威来源；AI 和人是同一条流水线；失败要可见；不为了代码整齐去统一 Kafka offset 和 Redis SCAN；加一种源原则上不改 MySQL。
 
 更细的说明：[docs/README.md](docs/README.md)、[架构](docs/data-source-architecture.md)、[接入指南](docs/data-source-onboarding.md)。
 
@@ -276,7 +347,29 @@ flowchart TB
 | add 之后看不到插件 | 重启 Web Profile 并刷新。确认没有手写重复的 `cordis.patch.yml` |
 | Oracle 查询碰到 LOB 列失败 | 当前版本不支持；视图/同义词只看元数据 |
 | 命令台里 `SELECT` 了，Key 树没变 | 预期行为：命令台用完即关连接；在树里选 DB |
-| Kafka peek 会不会带动业务消费组 | 不会。Peek 用临时消费者，不提交 offset |
+| Kafka peek 会不会带动业务消费组 | 不会。Peek 用临时 `dsh-peek-*` 组、`autoCommit: false`，然后断开 |
+
+## 还想知道的
+
+**模型会看到密码吗？**
+
+不会。密码和自定义 CA 从连接快照、日志、查询历史和给模型的输出里剥掉。记住密码（Windows 当前用户 DPAPI）也不会回到浏览器。
+
+**模型会看到行数据吗？**
+
+**SIT 会**——单元格原值送给模型。这正是让模型看结果的意义。类生产连接用 **UAT / PVT**：AI 禁写，也拒绝 Redis execute。
+
+**这能替代 Navicat 吗？**
+
+不能。这是 DSH **里面**的工作台：目录、查询、AI Query、历史就在会话旁。重型 DBA 工作仍该用专用客户端。这里的受控 DML/DDL 是参数化、预览、确认闸，不是第二套通用 SQL IDE。
+
+**能加 PostgreSQL / Mongo / ES 吗？**
+
+平台是按这个建的：抄 Kafka 的 `standard` + `standard-text`（描述、Worker、授权、explorer、经验）。不要克隆 MySQL。本包今天没有 PostgreSQL/Mongo/ES 实现。
+
+**Kafka peek 断开很慢？**
+
+Worker 会带超时地 stop/disconnect 临时消费者。清理失败就回收 Worker（`recycleWorker`），避免死连接上漏一个组。
 
 ## 开发与社区
 
