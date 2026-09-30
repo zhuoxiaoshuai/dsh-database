@@ -15,14 +15,14 @@ MySQL, Oracle, Redis, and Kafka workbench for [DeepSeek Harness](https://github.
 Current version **0.1.0-alpha.12.15**.
 
 <p align="center">
-  <img src="docs/screenshots/dsh-sidebar.png" alt="Database tab in the DeepSeek Harness right sidebar" width="100%" />
+  <img src="docs/screenshots/workbench.png" alt="One workbench with MySQL, Oracle, Redis, and Kafka connections" width="100%" />
 </p>
 
-<p align="center"><sub>The plugin registers a <b>Database</b> tab next to the conversation. Connections are workspace-scoped; query workbenches follow the conversation.</sub></p>
+<p align="center"><sub>The plugin registers a <b>Database</b> tab next to the conversation. Four sources share the same tree, tabs, and AI Query. Connections are workspace-scoped; query workbenches follow the conversation.</sub></p>
 
 ## Highlights
 
-- **One workbench, four sources.** MySQL, Oracle, Redis, and Kafka sit in the same right-sidebar tab. Adding a source means registering its real differences, not cloning the product.
+- **Extracted platform, four channels.** MySQL, Oracle, Redis, and Kafka sit in one Database tab. The flow is implemented once; each source only registers what is actually different.
 - **Humans and the model share the lane.** The supported AI surface is **AI Query** in the workbench. Whatever the user typed, the model executes; whatever the model ran, the user can open, take over, and keep.
 - **Execution is a first-class object.** Each run has identity, generation, cancel, timeout, history, and a result that is honest about success, failure, cancel, empty, and unknown.
 - **Environment is a gate, not a label.** SIT can write. UAT / PVT stay read-only for AI and for production-like connections. DDL still needs a human confirmation step.
@@ -31,94 +31,151 @@ Current version **0.1.0-alpha.12.15**.
 
 ## Screenshots
 
-These were taken from an isolated DSH Web profile running the installed plugin against throwaway Docker fixtures (MySQL 8.4 / Oracle Free 23). They are not production clusters.
+Current workbench UI. Sample connection names, topics, and keys are disposable fixtures, not a business cluster.
 
-| Database tab beside the session | MySQL catalog, SQL, AI Query |
+| Four sources, one tree | Kafka topic / partitions |
 | --- | --- |
-| <img src="docs/screenshots/dsh-sidebar.png" alt="Empty Database tab" /> | <img src="docs/screenshots/mysql-workbench.png" alt="MySQL workbench" /> |
+| <img src="docs/screenshots/workbench.png" alt="Workbench with MySQL Oracle Redis Kafka" /> | <img src="docs/screenshots/kafka-topic.png" alt="Kafka topic partitions" /> |
 
-| Result grid (exact decimals as strings) | Oracle catalog |
-| --- | --- |
-| <img src="docs/screenshots/mysql-results.png" alt="MySQL result grid" /> | <img src="docs/screenshots/oracle-catalog.png" alt="Oracle catalog" /> |
-
-## What you can do
-
-### Connections
-
-- Add MySQL, Oracle, Redis, or Kafka from the same form shell. Dialect-specific fields (Service Name / SID, Redis DB / ACL / TLS, Kafka SASL) stay with the source.
-- Test, then connect. Failed edits keep the previous live session.
-- Workspace list: `$DSH_HOME/database/database-workspace.json`. Query tabs, drafts, and history: `conversation-workbenches/` per conversation.
-- Remember password is off by default. When on (Windows), DPAPI encrypts the secret for the current OS user only.
-- SIT / UAT / PVT is chosen on the connection. Production-like connections stay read-only in the workbench.
-
-### MySQL and Oracle
-
-- Catalog tree: databases / schemas, tables, search. Object home shows columns, indexes, constraints, and `SHOW CREATE` / DDL text when the account can read them. Missing access is shown as a reason, not as zero.
-- SQL editor with format, cancel (does not drop the shared login), conversation-private history, and a workspace-shared experience library (normalize, similar-merge suggestion, human publish).
-- SELECT with server-side filter / sort / page. Default 100 rows, cap 500 rows and 1 MiB, 30-second request deadline.
-- Controlled DML: insert / update / delete generate parameterized statements, preview, one confirmation, primary-key locate and original-row check. Conflicts roll back and keep the draft.
-- Controlled DDL: create table, columns, indexes, comments, rename, truncate / drop, up to 20 steps, 5-minute one-shot approval. Destructive names are typed in the same window. First error stops. There is no promise of whole-DDL rollback.
-- Large integers and exact decimals render as strings. Results are not executed as HTML.
-
-### Redis 7.2+
-
-- Standalone, one sentinel, or one cluster seed. Optional ACL user, TLS, custom CA. Sentinel asks one address for the master; username/password apply to both sentinel and Redis. Cluster uses the host as a seed; DB is 0.
-- Command console: one command at a time, Redis-CLI quoting, not a shell. Each command opens its own connection and closes it, so `SELECT` / `AUTH` / `MULTI` do not leak onto the key browser.
-- Key browser via `SCAN` (empty pages and duplicates are possible; the UI dedupes and says when the cursor is unfinished). String / Hash / List / Set / ZSet / TTL, paged large collections, set/remove TTL, delete, edit basic values. Binary shows as Base64.
-- Host command blacklist defaults empty; `DSH_REDIS_COMMAND_BLACKLIST` can list commands. AI on UAT/PVT cannot call `redis_execute`.
-
-### Kafka
-
-- List topics, inspect topic / partition metadata, bounded peek of one partition.
-- Does not produce, create/delete topics, change configs, or commit consumer offsets. Peek does not join the business consumer group.
-- Auth: none, TLS, custom CA, SASL PLAIN, SCRAM-SHA-256 / 512. PLAIN/SCRAM may skip TLS; when TLS is on, certificates are verified (custom CA allowed, skip-verify is not).
-- Kerberos, OAuth, and client-certificate auth are out of scope.
-
-### AI and takeover
-
-- Entry: workbench **AI Query**, not a separate agent console.
-- SIT: cell values are sent to the model unredacted; `database_execute_sql` may run up to 8 statements (100 rows each), including INSERT/UPDATE/DELETE, stop on first error.
-- UAT / PVT: AI writes refused. Redis is limited to status / keys / value-read tools.
-- Clicking history opens the document that was or will be executed. Activity on another connection only shows a hint bar; it does not steal the current connection.
-- Typing in the editor takes over immediately: the model stops writing that document. Hand back before the model may continue.
-
-### Knowledge
-
-SQL experience and Redis knowledge share `knowledge.json` (first read still accepts the old `sql-templates.json`). Fingerprints and save checks are source-specific. Publish is a human confirmation.
+<p align="center">
+  <img src="docs/screenshots/redis-keys.png" alt="Redis key browser" width="100%" />
+</p>
+<p align="center"><sub>Redis: SCAN tree, key type, TTL, JSON value. Command console is a separate tab and a separate connection.</sub></p>
 
 ## Architecture
 
-The product is a **shared data-source workbench**, not four mini-IDEs. Workspace, AI collaboration, takeover, execution lifecycle, history, knowledge, and the chrome of the UI exist once. A source only implements what is actually different: connection protocol, object model, command language, authorization, result shape, completion, and AI translation.
+This is one **extracted data-source platform**, not four mini-IDEs glued together. Workspace, AI collaboration, takeover, execution, history, knowledge, secrets, environment gates, and UI chrome exist **once**. MySQL, Oracle, Redis, and Kafka are modules on that platform: each registers real differences and reuses the rest.
+
+Adding a source is not cloning the product. Removing a source should leave the platform standing.
 
 ```mermaid
 flowchart TB
-  subgraph platform [Shared platform]
+  subgraph dsh [DeepSeek Harness]
     Tab[Database tab]
+  end
+  subgraph platform [Extracted once]
+    Conn[Connection shell / secrets / SIT UAT PVT]
     WS[Workspace / documents / tabs]
-    EX[Execution lifecycle and history]
-    AI[AI Query and human takeover]
-    KN[Knowledge]
+    EX[Execution identity / cancel / history]
+    AI[AI Query / takeover / revision]
+    KN[Knowledge publish]
+    UI[Shared tree / toolbar / result chrome]
   end
-  subgraph sources [Source modules]
-    SQL[MySQL / Oracle]
-    Redis[Redis]
-    Kafka[Kafka]
+  subgraph modules [Source modules]
+    MySQL
+    Oracle
+    Redis
+    Kafka
   end
-  Tab --> WS
-  WS --> sources
+  subgraph host [Host workers]
+    W[Drivers never in the browser]
+  end
+  Tab --> Conn
+  Conn --> WS
+  WS --> modules
   AI --> WS
-  sources --> EX
+  UI --> WS
+  modules --> EX
+  EX --> W
   EX --> KN
 ```
 
+### Extracted once
+
+These do not belong to any dialect. They should keep working if Kafka or Redis is deleted tomorrow.
+
+| Piece | What is shared |
+| --- | --- |
+| Surface | Right-sidebar **Database** tab. Connections: `$DSH_HOME/database/database-workspace.json` (workspace). Query tabs, drafts, history: `conversation-workbenches/` (conversation). |
+| Connection shell | Add / test / connect / edit / copy / disconnect. Failed edits keep the previous live session. Remember-password off by default; Windows uses current-user DPAPI. Passwords and custom CAs never return in snapshots, logs, query history, or model output. |
+| Workspace chrome | Left catalog, tabs (overview / query / **AI Query** / knowledge / history), shared loading / error / empty / dialogs. |
+| Execution | Identity, generation, cancel, timeout, conversation-scoped history. Success, failure, cancel, empty, partial, and unknown are distinct. |
+| AI lane | One document, one execution pipeline. Typing takes over; hand-back before the model may continue. History opens that document. Activity on another connection is a hint bar, not a steal. |
+| Knowledge | One `knowledge.json` (first read still accepts `sql-templates.json`). Publish is a human confirmation. Fingerprints stay with the source. |
+| Environment | SIT / UAT / PVT on the connection. Production-like connections stay read-only in the workbench. DDL still needs a human step. |
+
+The browser never loads drivers. Host workers do.
+
+### Left at the source
+
+A module owns only what depends on its protocol:
+
+connection fields, driver/worker, validate/fingerprint, object model, command language, authorize, how a page is read (`LIMIT`, `SCAN`, peek offset), result shape, completion, AI arguments → native text, knowledge fingerprint, and capabilities that exist only there.
+
+The platform does **not** require host/port/database on every source, Schema/Table on every tree, a 2-D grid on every result, or SQL for Redis/Kafka.
+
 | Layer | Owns | Does not own |
 | --- | --- | --- |
-| Platform | Flow, lifecycle, conversation isolation, revision, cancel, history, shared chrome | Host/port fields, SQL vs RESP vs peek, how a page of keys is scanned |
-| Source module | Driver/worker, validate/fingerprint, objects, authorize, result projection, completion | A second AI page, a second history store, a copied toolbar |
+| Platform | Flow, lifecycle, conversation isolation, revision, cancel, history, shared chrome | Field lists, SQL vs RESP vs peek, how a SCAN page looks |
+| Source module | Worker, objects, authorize, result projection, completion | A second AI page, a second history store, a copied toolbar |
 
-Host workers load drivers. The browser does not. SQL still uses a legacy adapter for batch/maintenance/grid; Redis/Kafka use the standard workbench bindings. New sources are expected to follow standard + standard-text rather than copy MySQL.
+### How the four channels plug in
+
+| Source | Client | Host execution | Meaning |
+| --- | --- | --- | --- |
+| MySQL | `legacy-sql` | `legacy-adapter` | Catalog, SQL batch, InnoDB DML/DDL grid, transactions — still on the SQL compatibility path |
+| Oracle | `legacy-sql` | `legacy-adapter` | Same SQL path; Service/SID, schema case, pagination, and types stay Oracle |
+| Redis | `standard` | `legacy-adapter` | Standard workbench pages; command isolation and SCAN still go through the Redis adapter |
+| Kafka | `standard` | `standard-text` | Intended new-source path: `normalizeContext` / `prepareText` / `authorize`, then a worker action whitelist |
+
+New sources should follow **standard + standard-text**, not copy MySQL. The SQL/Redis adapters are a compatibility boundary, not a template.
+
+Manual or model: document → authorize → worker action whitelist → source result projection → shared result chrome → history. One lane.
 
 Longer notes: [docs/README.md](docs/README.md), [architecture](docs/data-source-architecture.md), [onboarding a source](docs/data-source-onboarding.md).
+
+## Connected sources
+
+Each channel below reuses the platform. Only real differences are listed.
+
+### MySQL
+
+Relational SQL. Objects: **database → table → column**. Identifiers use backticks. Pages: `LIMIT … OFFSET …`. System schemas (`mysql`, `information_schema`, `performance_schema`, `sys`) stay visible. Defaults: `VARCHAR(255)` / `BIGINT`. `#` comments and `EXPLAIN` are MySQL's.
+
+- **Connect:** host / port / user / password, default 3306. Driver `mysql2` in the Host worker.
+- **Catalog:** tree, search, object home. Columns, indexes, constraints, and `SHOW CREATE` when the account can read them. Missing access is a reason, not a zero. Column comments sit on the type line.
+- **Query:** SQL editor, format, cancel (does not drop the shared login), conversation-private history. SELECT uses server-side filter / sort / page. Default 100 rows, cap 500 rows and 1 MiB, 30-second deadline.
+- **Writes:** parameterized INSERT/UPDATE/DELETE, preview, one confirmation, primary-key locate and original-row check. Conflicts roll back and keep the draft. DDL: create table, columns, indexes, comments, rename, truncate / drop, up to 20 steps, 5-minute one-shot approval. Type the destructive name in the same window. First error stops. No whole-DDL rollback promise. InnoDB lock-wait is verified on throwaway 8.4.
+- **Results:** BIGINT and exact decimals as strings. Cells are not executed as HTML.
+- **AI:** `database_execute_sql`, up to 8 statements on SIT (100 rows each, DML allowed), stop on first error.
+
+### Oracle
+
+Same SQL workbench as MySQL, different dialect. Objects: **Schema** (case-insensitive). Default schema is the username when it exists. Identifiers use `"`. Pages: `OFFSET … ROWS FETCH FIRST … ROWS ONLY`. `EXPLAIN PLAN FOR`. q-quotes yes, `#` comments no.
+
+- **Connect:** Service Name or SID, port 1521, Thin mode. SID is unverified. Driver `oracledb`. Fingerprint includes service vs SID.
+- **Catalog / query / writes:** same platform path as MySQL. Column comments are a separate dictionary, not inline. Defaults: `VARCHAR2(255)` / `NUMBER(19)`.
+- **Limits:** views and synonyms, metadata only. Queries with LOB columns are unsupported. 19c, SID, and temporal-column maintenance are unverified. Free 23 Thin is not a substitute for 19c.
+
+### Redis
+
+Not SQL. Objects: **DB → Key**, plus type and TTL. A page is a **SCAN cursor** (empty pages and duplicates happen; the UI dedupes and says when the cursor is unfinished). Requires Redis 7.2+.
+
+- **Connect:** standalone, one sentinel, or one cluster seed. Optional ACL user, TLS, custom CA. Sentinel asks one address for the master; username/password apply to both sentinel and Redis. Cluster uses the host as a seed; DB is 0.
+- **Two connections on purpose:** the command console runs one Redis-CLI-quoted command per request and closes it, so `SELECT` / `AUTH` / `MULTI` do not leak onto the key browser. Not a shell.
+- **Keys:** String / Hash / List / Set / ZSet / TTL, paged large collections, set/remove TTL, delete, edit basic values. Binary as Base64.
+- **Host:** `DSH_REDIS_COMMAND_BLACKLIST` (default empty). AI `redis_execute` is SIT-only; UAT/PVT keep status / keys / value-read tools.
+- **Unverified:** Cluster / Sentinel against production clusters.
+
+### Kafka
+
+Read-only inspect. Objects: **topic / partition / existing consumer group**. Peek is a bounded read of **one** partition. It does not join the business consumer group or commit offsets.
+
+- **Connect:** none, TLS + custom CA, SASL PLAIN, SCRAM-SHA-256 / 512. PLAIN/SCRAM may skip TLS; when TLS is on, certificates are verified (custom CA allowed, skip-verify is not). Kerberos, OAuth, and client certificates are out of scope.
+- **Work:** list topics, describe partitions, bounded peek. The result is messages plus partition metadata, not a SQL grid.
+- **Does not:** produce, create/delete topics, change configs, or move consumer offsets.
+- **Plug-in:** client `standard` + host `standard-text`. This is the example a new source should copy, not MySQL.
+
+## AI and takeover
+
+- Entry: workbench **AI Query**, not a per-source agent console.
+- SIT: cell values go to the model unredacted. SQL may DML; Redis may `redis_execute`.
+- UAT / PVT: AI writes refused. Redis execute refused.
+- Clicking history opens the document that was or will be executed. Typing takes over immediately.
+
+## Knowledge
+
+SQL experience and Redis/Kafka knowledge share `knowledge.json`. Fingerprints and save checks are source-specific. Publish is a human confirmation. Save does not execute; a trial run goes through the same authorize path.
 
 ## Design rules we actually keep
 

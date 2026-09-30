@@ -15,14 +15,14 @@ DeepSeek Harness 的 MySQL、Oracle、Redis、Kafka 工作台。人和模型共�
 当前版本 **0.1.0-alpha.12.15**。
 
 <p align="center">
-  <img src="docs/screenshots/dsh-sidebar.png" alt="DSH 右侧栏数据库页签" width="100%" />
+  <img src="docs/screenshots/workbench.png" alt="同一工作台里的 MySQL、Oracle、Redis、Kafka 连接" width="100%" />
 </p>
 
-<p align="center"><sub>插件在会话旁注册「<b>数据库</b>」页签。连接按工作区保存，查询工作台按对话隔离。</sub></p>
+<p align="center"><sub>插件在会话旁注册「<b>数据库</b>」页签。四种源共用同一棵树、同一套页签和 AI Query。连接按工作区保存，查询工作台按对话隔离。</sub></p>
 
 ## 亮点
 
-- **一个工作台，四种数据源。** MySQL、Oracle、Redis、Kafka 进同一个右侧栏页签。加一种源是登记真实差异，不是再复制一套产品。
+- **抽出一套平台，四个接入渠道。** MySQL、Oracle、Redis、Kafka 进同一个「数据库」页签。流程只实现一次；各源只登记真实差异。
 - **人和模型走同一条路。** 正式 AI 入口是工作台里的 **AI Query**。人改过的内容模型接着执行；模型跑过的内容人可以打开、接管、继续改。
 - **执行为一等对象。** 每次运行有身份、代次、取消、超时、历史，以及成功 / 失败 / 取消 / 空 / 未知的诚实结果。
 - **环境是闸，不是标签。** SIT 可写。UAT / PVT 对 AI 和类生产连接只读。DDL 仍须人工确认。
@@ -31,94 +31,151 @@ DeepSeek Harness 的 MySQL、Oracle、Redis、Kafka 工作台。人和模型共�
 
 ## 截图
 
-来自隔离 DSH Web profile、已安装插件、一次性 Docker 夹具（MySQL 8.4 / Oracle Free 23），不是业务集群。
+当前工作台界面。连接名、Topic、Key 是一次性夹具，不是业务集群。
 
-| 会话旁的数据库页签 | MySQL 目录、SQL、AI Query |
+| 四个源，一棵树 | Kafka Topic / 分区 |
 | --- | --- |
-| <img src="docs/screenshots/dsh-sidebar.png" alt="空数据库页签" /> | <img src="docs/screenshots/mysql-workbench.png" alt="MySQL 工作台" /> |
+| <img src="docs/screenshots/workbench.png" alt="同一工作台的 MySQL Oracle Redis Kafka" /> | <img src="docs/screenshots/kafka-topic.png" alt="Kafka Topic 分区" /> |
 
-| 结果网格（精确小数按字符串） | Oracle 目录 |
-| --- | --- |
-| <img src="docs/screenshots/mysql-results.png" alt="MySQL 结果网格" /> | <img src="docs/screenshots/oracle-catalog.png" alt="Oracle 目录" /> |
-
-## 能做什么
-
-### 连接
-
-- 同一套表单外壳添加 MySQL、Oracle、Redis、Kafka。方言字段（Service Name / SID、Redis DB / ACL / TLS、Kafka SASL）留在各源。
-- 先测试再连接。编辑失败保留原来的活动会话。
-- 工作区列表：`$DSH_HOME/database/database-workspace.json`。查询页签、草稿、历史：按对话的 `conversation-workbenches/`。
-- 「记住密码」默认不勾。勾选后（Windows）只给当前系统用户 DPAPI 加密。
-- 连接上选择 SIT / UAT / PVT。类生产连接在工作台保持只读。
-
-### MySQL / Oracle
-
-- 目录树：库 / Schema、表、搜索。对象页展示字段、索引、约束，以及账号有权读取的建表原文。读不到的信息给原因，不当作零。
-- SQL 编辑器：格式化、取消（不断开共享登录）、对话私有历史、工作区共享经验库（标准化、相似合并建议、人工发布）。
-- SELECT 走库端筛选排序分页。默认 100 行，最多 500 行、1 MiB，单请求 30 秒。
-- 受控 DML：增改删生成参数化语句，预览后一次确认，主键定位并核对原记录。冲突回滚并保留草稿。
-- 受控 DDL：建表、字段、索引、注释、重命名、清空/删除，最多 20 步，审批 5 分钟一次消费。破坏性操作在同一窗口填写目标名。首错停止，不承诺 DDL 整体回滚。
-- 大整数和精确小数按字符串展示。结果不作为 HTML 执行。
-
-### Redis 7.2+
-
-- 单机、一台哨兵或一个集群种子。可选 ACL、TLS、自定义 CA。哨兵用一个地址问主库；用户名密码同时用于哨兵和 Redis。集群把主机当种子，DB 固定 0。
-- 命令台每次一条，按 Redis CLI 引号解析，不经 Shell。每次命令独立连接，结束即关，`SELECT` / `AUTH` / `MULTI` 不会留在 Key 浏览连接上。
-- Key 浏览用 `SCAN`（可能空页和重复；界面去重并提示尚未扫完）。String / Hash / List / Set / ZSet / TTL，大集合分页，设/删 TTL，删除，编辑基础值。二进制显示 Base64。
-- Host 命令黑名单默认空，可用 `DSH_REDIS_COMMAND_BLACKLIST`。UAT/PVT 的 AI 不能调用 `redis_execute`。
-
-### Kafka
-
-- 列出 Topic、查看 Topic / 分区、对单个分区有界 peek。
-- 不发消息、不建删 Topic、不改配置、不提交消费位置。peek 不加入业务消费组。
-- 认证：无认证、TLS、自定义 CA、SASL PLAIN、SCRAM-SHA-256 / 512。PLAIN/SCRAM 可不启用 TLS；启用 TLS 时必须验证书（可自定义 CA，不提供跳过验证）。
-- Kerberos、OAuth、客户端证书不在范围内。
-
-### AI 与接管
-
-- 入口是工作台 **AI Query**，不是另一套 Agent 控制台。
-- SIT：单元格原值给模型；`database_execute_sql` 一次最多 8 条（每条 100 行），可含 INSERT/UPDATE/DELETE，首错停止。
-- UAT / PVT：AI 禁写。Redis 只保留 status / keys / 读值工具。
-- 点执行历史即打开将执行或已执行的文档。其他连接上的 AI 活动只出提示条，不抢当前连接。
-- 人在编辑器里输入即接管，模型停止写入该文档。交还后模型才能继续。
-
-### 经验库
-
-SQL 经验与 Redis 知识写入同一份 `knowledge.json`（首次仍可读旧 `sql-templates.json`）。指纹和保存校验按源实现。发布要人工确认。
+<p align="center">
+  <img src="docs/screenshots/redis-keys.png" alt="Redis Key 浏览" width="100%" />
+</p>
+<p align="center"><sub>Redis：SCAN 树、类型、TTL、JSON 值。命令台是另一个页签、另一条连接。</sub></p>
 
 ## 架构
 
-这是一套**统一数据源工作平台**，不是四个迷你 IDE。Workspace、AI 协作、接管、执行生命周期、History、Knowledge、页面外框只实现一次。数据源只实现真正不同的部分：连接协议、对象模型、命令语言、授权、结果结构、补全、AI 转换。
+这是一套**抽出的数据源平台**，不是四个迷你 IDE 粘在一起。Workspace、AI 协作、接管、执行、History、Knowledge、秘密、环境闸、页面外框只存在**一次**。MySQL、Oracle、Redis、Kafka 是这套平台上的模块：各登记真实差异，其余复用。
+
+加一种源不是再复制一套产品。拿掉一种源，平台仍然成立。
 
 ```mermaid
 flowchart TB
-  subgraph platform [公共平台]
+  subgraph dsh [DeepSeek Harness]
     Tab[数据库页签]
+  end
+  subgraph platform [只实现一次]
+    Conn[连接外壳 / 秘密 / SIT UAT PVT]
     WS[工作区 / 文档 / 页签]
-    EX[执行生命周期与记录]
-    AI[AI Query 与人工接管]
-    KN[经验库]
+    EX[执行身份 / 取消 / 记录]
+    AI[AI Query / 接管 / 修订]
+    KN[经验发布]
+    UI[公共树 / Toolbar / 结果外框]
   end
-  subgraph sources [数据源模块]
-    SQL[MySQL / Oracle]
-    Redis[Redis]
-    Kafka[Kafka]
+  subgraph modules [数据源模块]
+    MySQL
+    Oracle
+    Redis
+    Kafka
   end
-  Tab --> WS
-  WS --> sources
+  subgraph host [Host Worker]
+    W[Driver 不进浏览器]
+  end
+  Tab --> Conn
+  Conn --> WS
+  WS --> modules
   AI --> WS
-  sources --> EX
+  UI --> WS
+  modules --> EX
+  EX --> W
   EX --> KN
 ```
 
+### 抽出的公共底座
+
+下列能力不属于任何方言。明天删掉 Kafka 或 Redis，它们仍应成立。
+
+| 块 | 公共内容 |
+| --- | --- |
+| 入口 | 会话旁「**数据库**」页签。连接：`$DSH_HOME/database/database-workspace.json`（工作区）。查询页签、草稿、历史：`conversation-workbenches/`（对话）。 |
+| 连接外壳 | 添加 / 测试 / 连接 / 编辑 / 复制 / 断开。编辑失败保留原来的活动会话。「记住密码」默认不勾；Windows 用当前用户 DPAPI。密码和自定义 CA 不回快照、日志、查询历史或模型输出。 |
+| 工作台外框 | 左侧目录，页签（总览 / 查询 / **AI Query** / 经验 / 历史），公共 Loading / Error / Empty / Dialog。 |
+| 执行 | 身份、代次、取消、超时、按对话的记录。成功、失败、取消、空、部分、未知分开说。 |
+| AI 车道 | 同一份文档、同一条执行链。人一打字就接管；交还后模型才能继续。点历史即打开该文档。其他连接上的活动只出提示条，不抢当前连接。 |
+| 经验 | 一份 `knowledge.json`（首次仍可读 `sql-templates.json`）。发布要人工确认。指纹留在各源。 |
+| 环境 | 连接上选 SIT / UAT / PVT。类生产连接在工作台只读。DDL 仍须人工一步。 |
+
+Driver 只在 Host Worker 里加载，浏览器不加载。
+
+### 留给各源的
+
+模块只负责依赖自身协议的部分：
+
+连接字段、Driver/Worker、校验/指纹、对象模型、命令语言、授权、一页怎么读（`LIMIT`、`SCAN`、peek offset）、结果形状、补全、AI 参数 → 原生文本、经验指纹，以及只有该源才有的能力。
+
+平台**不要求**每个源都有 host/port/database、每棵树都是 Schema/Table、每个结果都是二维表，也不把 Redis/Kafka 做成 SQL。
+
 | 层 | 负责 | 不负责 |
 | --- | --- | --- |
-| 平台 | 流程、生命周期、对话隔离、修订、取消、历史、公共外框 | host/port 字段长什么样、SQL vs RESP vs peek、SCAN 怎么翻页 |
-| 数据源模块 | 驱动/Worker、校验/指纹、对象、授权、结果投影、补全 | 第二套 AI 页、第二套 History、再抄一份 Toolbar |
+| 平台 | 流程、生命周期、对话隔离、修订、取消、历史、公共外框 | 字段长什么样、SQL vs RESP vs peek、SCAN 怎么翻页 |
+| 数据源模块 | Worker、对象、授权、结果投影、补全 | 第二套 AI 页、第二套 History、再抄一份 Toolbar |
 
-Driver 只在 Host Worker 里加载，浏览器不加载。SQL 的批量/维护/网格仍走兼容适配；Redis/Kafka 走标准工作台绑定。新源应按 standard + standard-text 接入，不要复制 MySQL。
+### 四个渠道怎么接进来
+
+| 源 | 客户端 | Host 执行 | 含义 |
+| --- | --- | --- | --- |
+| MySQL | `legacy-sql` | `legacy-adapter` | 目录、SQL 批量、InnoDB DML/DDL 网格、事务——仍走 SQL 兼容路径 |
+| Oracle | `legacy-sql` | `legacy-adapter` | 同一条 SQL 路径；Service/SID、Schema 大小写、分页、类型跟 Oracle |
+| Redis | `standard` | `legacy-adapter` | 标准工作台页签；命令隔离和 SCAN 仍走 Redis 适配 |
+| Kafka | `standard` | `standard-text` | 新源该走的路：`normalizeContext` / `prepareText` / `authorize`，再进 Worker action 白名单 |
+
+新源应按 **standard + standard-text** 接入，不要复制 MySQL。SQL/Redis 适配是兼容边界，不是模板。
+
+人或模型：文档 → 授权 → Worker action 白名单 → 源结果投影 → 公共结果外框 → 记录。一条路。
 
 更细的说明：[docs/README.md](docs/README.md)、[架构](docs/data-source-architecture.md)、[接入指南](docs/data-source-onboarding.md)。
+
+## 接入渠道
+
+下面各章只写真实差异。公共流程见上一节。
+
+### MySQL
+
+关系型 SQL。对象：**数据库 → 表 → 列**。标识符用反引号。分页：`LIMIT … OFFSET …`。系统库（`mysql`、`information_schema`、`performance_schema`、`sys`）保持可见。默认类型：`VARCHAR(255)` / `BIGINT`。`#` 注释和 `EXPLAIN` 跟 MySQL。
+
+- **连接：** host / port / 用户 / 密码，默认 3306。Driver `mysql2` 在 Host Worker。
+- **目录：** 树、搜索、对象页。字段、索引、约束，以及账号有权读取的 `SHOW CREATE`。读不到给原因，不当作零。列注释写在类型行上。
+- **查询：** SQL 编辑器，格式化，取消（不断开共享登录），对话私有历史。SELECT 走库端筛选 / 排序 / 分页。默认 100 行，最多 500 行、1 MiB，单请求 30 秒。
+- **写入：** 参数化增改删，预览后一次确认，主键定位并核对原记录。冲突回滚并保留草稿。DDL：建表、字段、索引、注释、重命名、清空/删除，最多 20 步，审批 5 分钟一次消费。破坏性操作在同一窗口填写目标名。首错停止，不承诺 DDL 整体回滚。InnoDB 锁等待在一次性 8.4 容器上验过。
+- **结果：** BIGINT 和精确小数按字符串。单元格不当 HTML 执行。
+- **AI：** `database_execute_sql`，SIT 最多 8 条（每条 100 行，可含 DML），首错停止。
+
+### Oracle
+
+和 MySQL 同一套 SQL 工作台，方言不同。对象：**Schema**（大小写不敏感）。有用户名时默认落到该 Schema。标识符用 `"`。分页：`OFFSET … ROWS FETCH FIRST … ROWS ONLY`。`EXPLAIN PLAN FOR`。支持 q-quote，不支持 `#` 注释。
+
+- **连接：** Service Name 或 SID，端口 1521，Thin 模式。SID 未验收。Driver `oracledb`。指纹含 service / SID。
+- **目录 / 查询 / 写入：** 与 MySQL 走同一条平台路径。列注释是独立字典，不写在类型行上。默认类型：`VARCHAR2(255)` / `NUMBER(19)`。
+- **限制：** 视图、同义词只看元数据。含 LOB 的查询不支持。19c、SID、时间字段维护未验收。Free 23 Thin 不替代 19c。
+
+### Redis
+
+不是 SQL。对象：**DB → Key**，加上类型和 TTL。一页是 **SCAN 游标**（可能空页和重复；界面去重并提示尚未扫完）。需要 Redis 7.2+。
+
+- **连接：** 单机、一台哨兵或一个集群种子。可选 ACL、TLS、自定义 CA。哨兵用一个地址问主库；用户名密码同时用于哨兵和 Redis。集群把主机当种子，DB 固定 0。
+- **两条连接是故意的：** 命令台每次一条，按 Redis CLI 引号解析，跑完即关，所以 `SELECT` / `AUTH` / `MULTI` 不会留在 Key 浏览连接上。不经 Shell。
+- **Key：** String / Hash / List / Set / ZSet / TTL，大集合分页，设/删 TTL，删除，编辑基础值。二进制显示 Base64。
+- **Host：** `DSH_REDIS_COMMAND_BLACKLIST`（默认空）。AI 的 `redis_execute` 仅 SIT；UAT/PVT 只留 status / keys / 读值。
+- **未验收：** Cluster / Sentinel 对着业务集群。
+
+### Kafka
+
+只读观察。对象：**Topic / 分区 / 已有消费组**。Peek 是对**一个**分区的有界读取。不加入业务消费组，不提交 offset。
+
+- **连接：** 无认证、TLS + 自定义 CA、SASL PLAIN、SCRAM-SHA-256 / 512。PLAIN/SCRAM 可不启用 TLS；启用 TLS 时必须验证书（可自定义 CA，不提供跳过验证）。Kerberos、OAuth、客户端证书不在范围内。
+- **工作：** 列出 Topic、查看分区、有界 peek。结果是消息和分区元数据，不是 SQL 网格。
+- **不做：** 发消息、建删 Topic、改配置、移动消费位置。
+- **接入形态：** 客户端 `standard` + Host `standard-text`。新源应抄这条，不要抄 MySQL。
+
+## AI 与接管
+
+- 入口是工作台 **AI Query**，不是按源再做一套 Agent 控制台。
+- SIT：单元格原值给模型。SQL 可 DML；Redis 可 `redis_execute`。
+- UAT / PVT：AI 禁写。拒绝 Redis execute。
+- 点历史即打开将执行或已执行的文档。人在编辑器里输入即接管。
+
+## 经验库
+
+SQL 经验与 Redis/Kafka 知识写入同一份 `knowledge.json`。指纹和保存校验按源实现。发布要人工确认。保存不执行；试运行走同一条授权路径。
 
 ## 一直守着的设计
 
