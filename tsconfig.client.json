@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/client", "src/dsh-types.d.ts", "preview/index.tsx"],
+  "exclude": ["node_modules", "artifacts", "lib"]
+}

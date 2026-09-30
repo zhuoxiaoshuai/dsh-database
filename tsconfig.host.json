@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "include": ["src/index.ts", "src/host-contract.ts", "src/password-protector.ts", "src/connection-service.ts", "src/workbench.ts", "src/host", "src/shared", "src/dsh-types.d.ts", "preview/fixture.ts"],
+  "exclude": ["node_modules", "artifacts", "lib"]
+}

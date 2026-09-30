@@ -1,0 +1,9 @@
+node_modules/
+lib/
+artifacts/
+.env*
+*.tgz
+*.log
+.npm-cache/
+.cursor/*.log
+打包.cmd

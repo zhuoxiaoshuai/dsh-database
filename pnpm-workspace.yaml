@@ -1,0 +1,7 @@
+# esbuild validates its platform binary during installation.
+# Oracle uses Thin mode; its optional Thick-mode install check is not required.
+allowBuilds:
+  esbuild: true
+  oracledb: false
+# DSH alpha/rc 包刚发布就会被装进 profile；pnpm 默认的 minimumReleaseAge 会直接失败。
+minimumReleaseAge: 0

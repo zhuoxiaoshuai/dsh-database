@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN" style="color-scheme:light"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Database Workspace · DSH 数据库原型</title><link rel="stylesheet" href="/preview.css"><style>
+html,body,#app{height:100%;margin:0}
+html{color-scheme:light}
+body{background:var(--dsw-alias-bg-base,#f6f8fa);display:flex;flex-direction:column}
+#preview-theme{flex:none;display:flex;gap:8px;padding:8px 12px;font:13px/1.4 sans-serif}
+#preview-theme button{padding:4px 10px;cursor:pointer}
+#app{flex:1;min-height:0;width:100%;max-width:1600px;margin:0 auto}
+body[data-ds-dark-theme]{background:#151b24}
+</style></head><body>
+<nav id="preview-theme">
+  <button type="button" id="preview-theme-dark">切换深色主题</button>
+  <button type="button" id="preview-theme-light">切换浅色主题</button>
+</nav>
+<div id="app"></div>
+<script>
+function setPreviewTheme(dark) {
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+  if (dark) document.body.setAttribute('data-ds-dark-theme', '')
+  else document.body.removeAttribute('data-ds-dark-theme')
+}
+document.getElementById('preview-theme-dark').onclick = function () { setPreviewTheme(true) }
+document.getElementById('preview-theme-light').onclick = function () { setPreviewTheme(false) }
+</script>
+<script type="module" src="/preview.js"></script>
+</body></html>
