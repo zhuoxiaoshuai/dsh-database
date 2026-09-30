@@ -181,6 +181,7 @@ DSH_TEST_DATABASES=1 npm run test:host
 url: https://github.com/zhuoxiaoshuai/dsh-database
 name: zhuoxiaoshuai/dsh-database
 category: dev
+tarball: https://github.com/zhuoxiaoshuai/dsh-database/releases/download/v0.1.0-alpha.12.15/dsh-database.tgz
 description:
   en: MySQL, Oracle, Redis and Kafka inside DeepSeek Harness. Written entirely with AI.
   zh: DeepSeek Harness 插件，用来连接 MySQL、Oracle、Redis 和 Kafka。全程由 AI 编写。
