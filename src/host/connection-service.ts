@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto'
 import type { Connection, ConnectionTest, CatalogRequest, CatalogResult, ConnectionWorkbench, DatabaseWorkspaceSnapshot, QueryEditSource, Result, SharedQuery, SourceConnectionInput, SourceConnectionSettings } from '../shared/workbench.ts'
 import type { DataSourceId } from '../shared/data-sources/types.ts'
 import { connectionFingerprint, validateConnection, canReuseSavedLogin } from '../shared/connection-input.ts'
-import { isWritableEnvironment } from '../shared/connection-permission.ts'
 import { publicConnection, SavedDatabaseConnections, uniqueCopyName, type StoredDatabaseConnection } from './saved-connections.ts'
 import { ConversationWorkbenchStore, sanitizeConversationWorkbench, type ConversationLayout } from './conversation-workbench-store.ts'
 import { SqlTemplateStore } from './sql-template-store.ts'
@@ -13,19 +12,25 @@ import type { ExplorerListInput, ExplorerReadInput } from '../shared/explorer.ts
 import type { PasswordProtector } from '../password-protector.ts'
 import type { ExecutionStore } from './execution-store.ts'
 import { authorizeStatement, splitStatements } from './query-policy.mjs'
-import { applySharedQueryPatch, catalogSchemaName, coerceVisibleSchemas, connectionOwnsSchema, emptySharedQuery, returnSharedQueryControl, takeSharedQueryControl, sharedQuerySurface } from '../shared/workbench.ts'
-import { inferExecutionType, executionStop } from '../shared/execution.ts'
+import { catalogSchemaName, coerceVisibleSchemas, connectionOwnsSchema, sharedQuerySurface } from '../shared/workbench.ts'
+import { inferExecutionType } from '../shared/execution.ts'
 import { HOST_TIMEOUTS, connectTimeoutMessage, hostDeadlineFor, hostTimeoutMessage } from './request-timeouts.mjs'
-import { databaseErrorDetail } from './connect-error.mjs'
+import { nativeErrorText } from './connect-error.mjs'
 import { CONNECTION_ERROR_CODES, ServiceError, type ConnectionErrorCode } from '../shared/connection-errors.ts'
 import type { ServiceRequestAction } from '../shared/database-actions.ts'
 import { DEFAULT_QUERY_PAGE_SIZE } from '../shared/limits.ts'
-import { authorizeRedisCommand } from './redis-policy.ts'
 import { controlExecutionDocument, emptyExecutionDocument, updateExecutionDocument, type ExecutionDocument } from '../shared/execution-document.ts'
-import { redisLivePreview } from './redis-live-preview.ts'
 import { getSourceRuntime } from './data-sources/runtime-registry.mjs'
 import { runOperation } from './operation-runtime.ts'
-import { assertRedisClusterDatabase, assertRedisDatabaseId, recordUserRedisCommand, redisAiDispatchAllowed, redisCommandRecordsHistory, redisPreparedInput } from './redis-request.ts'
+import { assertRedisClusterDatabase, assertRedisDatabaseId, redisPreparedInput } from './redis-request.ts'
+import { prepareTextOperation, authorizeTextOperation } from './text-execution.ts'
+import type { TextEntryOptions } from './data-sources/module-types.ts'
+import type { DocumentExecutionIdentity, ExecutionType } from '../shared/execution.ts'
+import { sqlOperationBinding, sqlOperationMetadata, sqlCompletion, sqlModel, sqlFailureMessage } from './sql-operation.ts'
+import { prepareCatalogTool, catalogToolFailure, type CatalogToolInput } from './sql-catalog-operation.ts'
+import { prepareRedisReadOperation, type RedisReadTool } from './data-sources/redis/read-operation.ts'
+import { unwrapExplainSql } from '../shared/sql-text.ts'
+import { parseBrowserQueryUpdate, validateBrowserFormat } from './sql-browser-request.ts'
 import { hostModules } from './data-sources/modules.ts'
 export { connectionFingerprint, validateConnection } from '../shared/connection-input.ts'
 
@@ -90,10 +95,7 @@ type ServiceRequest = {
   value?: string
   seconds?: number
   database?: string
-}
-
-function sanitizeWorkerError(error: unknown): string {
-  return databaseErrorDetail(error, { maxLength: 1000, normalizeWhitespace: false })
+  lane?: 'manual' | 'query'
 }
 
 async function waitWhile(blocked: () => boolean, timeoutMs: number, timeoutError: () => Error, started = Date.now()): Promise<number> {
@@ -105,7 +107,7 @@ async function waitWhile(blocked: () => boolean, timeoutMs: number, timeoutError
 }
 
 function workerInitFailureMessage(error: unknown): string {
-  const detail = sanitizeWorkerError(error)
+  const detail = nativeErrorText(error)
   const base = '数据库驱动初始化失败，请检查插件依赖。'
   return detail && !detail.includes('数据库驱动初始化失败') ? `${base}（${detail}）` : base
 }
@@ -190,6 +192,7 @@ export class ConnectionService {
     for (const item of incoming) {
       const raw = item && typeof item === 'object' ? item as Record<string, unknown> : {}
       try {
+        if (['password', 'caPem', 'rememberPassword', 'useSavedPassword'].some(key => raw[key] !== undefined && raw[key] !== '' && raw[key] !== false)) throw new Error('导入不接收密码或凭据，请在连接时输入。')
         const rawInput = {
           name: typeof raw.name === 'string' ? raw.name : '',
           dialect: raw.dialect,
@@ -288,384 +291,127 @@ export class ConnectionService {
     this.conversations.save(session, current, new Set(rows.keys()))
     return publicConnection(row, undefined, workbench).workbench || workbench
   }
+  get storageDegraded(): boolean { return this.conversations.storageDegraded }
   getSharedQuery(session: string, id: string): SharedQuery {
-    if (this.#closed || !this.sessionValid(session) || !this.ensure().has(id)) throw new Error('连接不存在或当前对话已失效。')
-    return this.#layout(session, this.#rows!).workbenches[id]?.sharedQuery || emptySharedQuery()
+    const d = this.getExecutionDocument(session, id)
+    const record = this.#executions?.list(session).find(r => r.connectionId === id && r.generation === this.#entries.get(id)?.connection.generation
+      && r.queryRevision === d.revision && r.documentText === d.text && r.schema === (d.context.schema || '')
+      && ['query', 'write', 'explain'].includes(r.type || '') && !(r.initiator === 'ai' && d.controller === 'user'))
+    const result = record && this.#executions?.get(session, record.executionId, true)?.result
+    return { sql: d.text, schema: d.context.schema || '', revision: d.revision, controller: d.controller, controllerReason: d.controllerReason,
+      ...(record ? { lastExecutionId: record.executionId, lastRun: { executionId: record.executionId, columns: result?.columns || [], rowCount: result?.rows.length || 0,
+        truncated: result?.truncated || false, elapsedMs: result?.elapsedMs || 0, message: record.message || result?.message, at: record.updatedAt } } : {}) }
+
   }
   getExecutionDocument(session: string, id: string, generation?: unknown): ExecutionDocument {
     if (this.#closed || !this.sessionValid(session)) throw new Error('当前对话已失效。')
     const saved = this.ensure().get(id)
     if (!saved) throw new Error('连接不存在。')
     if (generation !== undefined && this.#entries.get(id)?.connection.generation !== generation) throw new Error('连接已变化，请刷新。')
-    if (getSourceRuntime(saved.settings.dialect).documentKind === 'sql') {
-      const query = this.getSharedQuery(session, id)
-      return { sourceId: saved.settings.dialect, text: query.sql, context: { schema: query.schema || '' }, revision: query.revision, controller: query.controller, controllerReason: query.controllerReason }
-    }
-    const document = this.#layout(session, this.#rows!).workbenches[id]?.aiDocument
-    return document?.sourceId === saved.settings.dialect ? document : emptyExecutionDocument(saved.settings.dialect, 'database' in saved.settings ? { database: saved.settings.database } : {})
+    const workbench = this.#layout(session, this.#rows!).workbenches[id]
+    if (workbench?.aiDocument?.sourceId === saved.settings.dialect) return workbench.aiDocument
+    const old = workbench?.sharedQuery
+    return old && getSourceRuntime(saved.settings.dialect).documentKind === 'sql'
+      ? { sourceId: saved.settings.dialect, text: old.sql, context: { schema: old.schema || ('database' in saved.settings ? saved.settings.database : '') }, revision: old.revision, controller: old.controller, controllerReason: old.controllerReason }
+      : emptyExecutionDocument(saved.settings.dialect, getSourceRuntime(saved.settings.dialect).documentKind === 'sql' ? { schema: 'database' in saved.settings ? saved.settings.database : '' } : saved.settings.dialect === 'redis' ? { database: saved.settings.database } : {})
+  }
+  #saveDocument(session: string, id: string, document: ExecutionDocument): ExecutionDocument {
+    const layout = this.#layout(session, this.#rows!)
+    layout.workbenches[id] = sanitizeConversationWorkbench({ ...layout.workbenches[id], aiDocument: document })
+    this.conversations.save(session, layout, new Set(this.#rows!.keys()))
+    this.#executions?.emitWorkbench(session, { type: 'EXECUTION_DOCUMENT_CHANGED', connectionId: id, generation: this.#entries.get(id)?.connection.generation, document })
+    return document
   }
   updateExecutionDocument(session: string, id: string, text: string, source: 'ai' | 'user' | 'system', expectedRevision?: number, generation?: unknown, context?: unknown): ExecutionDocument {
+    if (!Number.isSafeInteger(expectedRevision) || !expectedRevision) throw new Error('缺少有效文档修订，请刷新。')
     const previous = this.getExecutionDocument(session, id, generation)
-    if (getSourceRuntime(previous.sourceId).documentKind === 'sql') {
-      this.updateSharedQuery(session, id, { sql: text }, source, expectedRevision)
-      return this.getExecutionDocument(session, id)
-    }
     const binding = this.#entries.get(id)?.connection || this.list(session).find(item => item.id === id)!
-    const normalize = hostModules.get(previous.sourceId).execution.normalizeContext
-    if (context !== undefined && !normalize) throw new Error('此数据源不支持文档上下文更新。')
-    const normalized = context === undefined ? undefined : normalize!(context, binding)
+    const normalized = context === undefined ? undefined : hostModules.get(previous.sourceId).execution.normalizeContext(context, binding)
     const next = updateExecutionDocument(previous, text, source, expectedRevision, normalized)
-    if (next === previous) return previous
-    const layout = this.#layout(session, this.#rows!)
-    layout.workbenches[id] = sanitizeConversationWorkbench({ ...layout.workbenches[id], aiDocument: next })
-    this.conversations.save(session, layout, new Set(this.#rows!.keys()))
-    this.#executions?.emitWorkbench(session, { type: 'EXECUTION_DOCUMENT_CHANGED', connectionId: id,
-      generation: this.#entries.get(id)?.connection.generation, document: next })
-    return next
+    return next === previous ? previous : this.#saveDocument(session, id, next)
   }
-  patchExecutionDocumentContext(session: string, id: string, database: string | Record<string, unknown>, generation?: unknown, expectedRevision?: number): ExecutionDocument {
-    const previous = this.getExecutionDocument(session, id, generation)
-    return this.updateExecutionDocument(session, id, previous.text, 'system', expectedRevision, generation, typeof database === 'string' ? { database } : database)
-  }
-  controlExecutionDocument(session: string, id: string, controller: 'ai' | 'user', reason = 'user-takeover', generation?: unknown): ExecutionDocument {
-    const previous = this.getExecutionDocument(session, id, generation)
-    if (getSourceRuntime(previous.sourceId).documentKind === 'sql') {
-      if (controller === 'ai') this.returnSharedQuery(session, id)
-      else this.takeSharedQuery(session, id, reason)
-      return this.getExecutionDocument(session, id)
-    }
-    const next = controlExecutionDocument(previous, controller, reason)
-    if (next === previous) return previous
-    const layout = this.#layout(session, this.#rows!)
-    layout.workbenches[id] = sanitizeConversationWorkbench({ ...layout.workbenches[id], aiDocument: next })
-    this.#executions?.emitWorkbench(session, { type: 'EXECUTION_DOCUMENT_CHANGED', connectionId: id,
-      generation: this.#entries.get(id)?.connection.generation, document: next })
-    return next
-  }
-  async runExecutionDocument(session: string, id: string, generation: unknown, revision: number, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  assertBrowserDocumentRequest(session: string, id: string, generation: unknown, revision: unknown): void {
+    if (!Number.isSafeInteger(revision) || (revision as number) < 1) throw new Error('缺少有效文档修订，请刷新。')
     const document = this.getExecutionDocument(session, id, generation)
-    if (document.revision !== revision) throw new Error('AI Query 已变化，请刷新后再执行。')
+    if (document.revision !== revision) throw new Error('AI Query 已变化，请刷新后再试。')
+    if (this.#entries.has(id) && typeof generation !== 'string') throw new Error('缺少连接代次，请刷新。')
+  }
+  updateExecutionDocumentFromBrowser(session: string, id: string, input: Record<string, unknown>): ExecutionDocument {
+    this.assertBrowserDocumentRequest(session, id, input.generation, input.revision)
+    if (typeof input.text !== 'string' || !['user', 'format'].includes(String(input.source ?? 'user'))) throw new Error('浏览器不能使用此文档更新来源。')
+    const previous = this.getExecutionDocument(session, id)
+    if (input.source === 'format') {
+      if (getSourceRuntime(previous.sourceId).documentKind !== 'sql') throw new Error('此数据源不支持 SQL 格式化。')
+      validateBrowserFormat(this.getSharedQuery(session, id), { sql: input.text, schema: (input.context as {schema?: string})?.schema }, previous.sourceId, input.revision as number)
+    }
+    return this.updateExecutionDocument(session, id, input.text, input.source === 'format' ? 'system' : 'user', input.revision as number, input.generation, input.context)
+  }
+  updateSharedQueryFromBrowser(session: string, id: string, input: Record<string, unknown>): SharedQuery {
+    const update = parseBrowserQueryUpdate(input)
+    const current = this.getSharedQuery(session, id)
+    // Old offline callers carry a revision without a live generation.
+    if (this.#entries.has(id)) this.assertBrowserDocumentRequest(session, id, input.generation, update.revision)
+    if (update.source === 'format') validateBrowserFormat(current, update.patch, this.getExecutionDocument(session, id).sourceId, update.revision)
+    return this.updateSharedQuery(session, id, update.patch, update.source === 'format' ? 'system' : 'user', update.revision)
+  }
+  patchExecutionDocumentContext(session: string, id: string, context: string | Record<string, unknown>, generation?: unknown, expectedRevision?: number): ExecutionDocument {
+    const previous = this.getExecutionDocument(session, id, generation)
+    return this.updateExecutionDocument(session, id, previous.text, 'system', expectedRevision, generation, typeof context === 'string' ? { database: context } : context)
+  }
+  controlExecutionDocument(session: string, id: string, controller: 'ai' | 'user', reason = 'user-takeover', generation?: unknown, revision?: number): ExecutionDocument {
+    if (!Number.isSafeInteger(revision) || !revision) throw new Error('缺少有效文档修订，请刷新。')
+    const previous = this.getExecutionDocument(session, id, generation)
+    if (revision !== undefined && revision !== previous.revision) throw new Error('AI Query 已变化，请刷新后再试。')
+    const next = controlExecutionDocument(previous, controller, reason)
+    return next === previous ? previous : this.#saveDocument(session, id, next)
+  }
+  async runExecutionDocument(session: string, id: string, generation: unknown, revision: number, signal?: AbortSignal, text?: string): Promise<Record<string, unknown>> {
+    this.assertBrowserDocumentRequest(session, id, generation, revision)
+    const document = this.getExecutionDocument(session, id, generation)
     if (document.controller !== 'user') throw new Error('请先接管 AI Query。')
-    const connection = this.#entries.get(id)?.connection
-    if (!connection || connection.generation !== generation) throw new Error('连接已变化，请刷新。')
+    if (getSourceRuntime(document.sourceId).documentKind === 'sql' && text !== undefined && !document.text.includes(unwrapExplainSql(text))) throw new Error('执行文本不属于当前文档。')
     if (getSourceRuntime(document.sourceId).documentKind === 'sql') return this.runSharedQuery(session, {
-      connectionId: id, generation, schema: document.context.schema || '', sql: document.text,
-      revision: document.revision, initiator: 'user', purpose: 'result',
+      connectionId: id, generation, schema: document.context.schema || '', sql: text ?? document.text, revision, initiator: 'user', purpose: 'result',
     }, signal)
-    if (getSourceRuntime(document.sourceId).textExecution === true) {
-      const current = this.getExecutionDocument(session, id, generation)
-      if (current.revision !== revision || current.controller !== 'user') throw new Error('AI Query 已变化，请刷新后再执行。')
-      return this.executeText(session, id, generation, current.text, signal, 'user', undefined, current.revision, undefined, current.context)
-    }
-    const command = authorizeRedisCommand(document.text)[0].toUpperCase()
-    const record = this.#executions?.create({ conversationId: session, connectionId: id, generation: connection.generation,
-      connectionName: connection.name, dialect: 'redis', environment: connection.environment, operation: 'redis_execute',
-      initiator: 'user', type: 'query', queryRevision: document.revision, title: `Redis ${command}` })
-    const executionId = record?.executionId || ''
-    const controller = new AbortController()
-    if (signal?.aborted) controller.abort()
-    else signal?.addEventListener('abort', () => controller.abort(), { once: true })
-    if (executionId) { this.#executions?.attachAbort(executionId, controller); this.#executions?.transition(executionId, 'running'); this.#executions?.event(executionId, 'dispatched') }
-    try {
-      const current = this.getExecutionDocument(session, id, generation)
-      if (current.revision !== revision || current.controller !== 'user' || current.text !== document.text) throw new Error('AI Query 已变化，请刷新后再执行。')
-      const database = current.context.database || connection.database
-      const result = await this.redisRequest(session, id, generation, 'redis-command', { command: current.text, ...(database ? { database } : {}) }, controller.signal, 'user', { record: false, queryRevision: revision })
-      this.#executions?.complete(executionId, result.failed === true ? 'failed' : 'succeeded', `${command} 已完成。`)
-      this.#executions?.emitWorkbench(session, { type: 'EXECUTION_FINISHED', connectionId: id,
-        generation: connection.generation, executionId, queryRevision: document.revision,
-        status: result.failed === true ? 'failed' : 'succeeded', sourceResult: redisLivePreview(result) })
-      return { ...result, executionId }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : 'Redis 命令失败。'
-      this.#executions?.complete(executionId, /未知|超时|已取消|已关闭|断开/.test(message) ? 'unknown' : 'failed', message)
-      throw error
-    }
+    return this.executeText(session, id, generation, text ?? document.text, signal, 'user', undefined, revision, undefined, document.context)
   }
-  updateSharedQuery(session: string, id: string, patch: Partial<SharedQuery>, source: QueryEditSource, expectedRevision?: number): SharedQuery {
-    if (this.#closed || !this.sessionValid(session) || !this.ensure().has(id)) throw new Error('连接不存在或当前对话已失效。')
-    const rows = this.#rows!
-    const current = this.#layout(session, rows)
-    const previous = current.workbenches[id]?.sharedQuery || emptySharedQuery()
-    const next = applySharedQueryPatch(previous, patch, source, expectedRevision)
-    current.workbenches[id] = sanitizeConversationWorkbench({ ...current.workbenches[id], sharedQuery: next })
-    const contentChanged = next.sql !== previous.sql || next.schema !== previous.schema || next.lastExecutionId !== previous.lastExecutionId || next.lastRun !== previous.lastRun
-    if (contentChanged) this.conversations.save(session, current, new Set(rows.keys()))
-    this.#emitQueryState(session, id, previous, next)
-    return next
+  updateSharedQuery(session: string, id: string, patch: Partial<SharedQuery>, source: QueryEditSource, revision?: number): SharedQuery {
+    const previous = this.getExecutionDocument(session, id)
+    this.updateExecutionDocument(session, id, patch.sql ?? previous.text, source === 'format' ? 'system' : source, revision, undefined,
+      patch.schema === undefined ? undefined : { schema: patch.schema })
+    return this.getSharedQuery(session, id)
   }
-  takeSharedQuery(session: string, id: string, reason = 'user-takeover'): SharedQuery {
-    if (this.#closed || !this.sessionValid(session) || !this.ensure().has(id)) throw new Error('连接不存在或当前对话已失效。')
-    const rows = this.#rows!
-    const current = this.#layout(session, rows)
-    const previous = current.workbenches[id]?.sharedQuery || emptySharedQuery()
-    const next = takeSharedQueryControl(previous, reason)
-    current.workbenches[id] = sanitizeConversationWorkbench({ ...current.workbenches[id], sharedQuery: next })
-    this.#emitQueryState(session, id, previous, next)
-    return next
+  takeSharedQuery(session: string, id: string, reason = 'user-takeover', revision?: number): SharedQuery {
+    this.controlExecutionDocument(session, id, 'user', reason, undefined, revision)
+    return this.getSharedQuery(session, id)
   }
-  returnSharedQuery(session: string, id: string): SharedQuery {
-    if (this.#closed || !this.sessionValid(session) || !this.ensure().has(id)) throw new Error('连接不存在或当前对话已失效。')
-    const rows = this.#rows!
-    const current = this.#layout(session, rows)
-    const previous = current.workbenches[id]?.sharedQuery || emptySharedQuery()
-    const next = returnSharedQueryControl(previous)
-    // 归还 AI 只改内存：控制权是会话级状态，重启后默认回到 AI（落盘快照已统一重置）
-    current.workbenches[id] = sanitizeConversationWorkbench({ ...current.workbenches[id], sharedQuery: next })
-    this.#emitQueryState(session, id, previous, next)
-    return next
+  returnSharedQuery(session: string, id: string, revision?: number): SharedQuery {
+    this.controlExecutionDocument(session, id, 'ai', 'return-ai', undefined, revision)
+    return this.getSharedQuery(session, id)
   }
-  async runSharedQuery(session: string, input: {
-    connectionId: string
-    generation: unknown
-    schema: string
-    sql: string
-    revision?: number
-    initiator: 'ai' | 'user'
-    callId?: string
-    rootCallId?: string
-    limit?: number
-    purpose?: string
-  }, signal?: AbortSignal): Promise<Record<string, unknown>> {
-    if (this.#closed || !this.sessionValid(session)) throw new Error('当前对话已失效。')
-    const id = input.connectionId
+  async runSharedQuery(session: string, input: { connectionId: string; generation: unknown; schema: string; sql: string; revision?: number; initiator: 'ai' | 'user'; callId?: string; rootCallId?: string; limit?: number; purpose?: string }, signal?: AbortSignal): Promise<Record<string, unknown>> {
+    const id = input.connectionId, document = this.getExecutionDocument(session, id, input.generation)
     const connection = this.#entries.get(id)?.connection
-    if (!connection?.live) throw new Error('请先连接数据库。')
-    if (getSourceRuntime(connection.dialect).documentKind !== 'sql') throw new Error('此数据源不使用 SQL 工作台。')
-    if (connection.generation !== input.generation) throw new Error('连接已变化或当前对话已失效，请刷新。')
-    const query = this.getSharedQuery(session, id)
-    if (input.initiator === 'ai') {
-      if (query.controller !== 'ai') throw new Error('用户已接管 AI Query，无法覆盖 SQL。')
-      if (input.revision !== undefined && input.revision !== query.revision) throw new Error('AI Query 已变化，请重新读取后再试。')
-    }
-    const schema = input.schema || query.schema || connection.database
-    const sql = input.sql || query.sql
+    if (!connection?.live || getSourceRuntime(document.sourceId).documentKind !== 'sql') throw new Error('请先连接数据库。')
+    if (input.revision !== undefined && input.revision !== document.revision) throw new Error('AI Query 已变化，请重新读取后再试。')
+    if (document.controller !== input.initiator) throw new Error(input.initiator === 'ai' ? '用户已接管 AI Query。' : '请先接管 AI Query。')
+    const sql = input.sql || document.text, schema = input.schema || document.context.schema || connection.database
+    if (input.initiator === 'user' && !document.text.includes(unwrapExplainSql(sql))) throw new Error('执行文本不属于当前文档。')
     if (input.initiator === 'ai' && splitStatements(sql, connection.dialect).length > MAX_AI_STATEMENTS) throw new Error(`一次最多执行 ${MAX_AI_STATEMENTS} 条 SQL。`)
-    const publishSql = true
-    const publishGrid = input.initiator !== 'ai' || sharedQuerySurface(sql, input.purpose) === 'result'
-    const executionType = inferExecutionType(input.initiator === 'ai' ? 'database_execute_sql' : 'workbench_shared_query', publishGrid ? 'result' : 'verify')
-    const occupyRun = executionType !== 'verify'
-    if (occupyRun) this.#acquireRun(id)
-    let executionId = ''
-    let published = query
-    let record: ReturnType<NonNullable<ExecutionStore['create']>> | undefined
-    try {
-    if (publishSql && input.initiator === 'ai') {
-      this.updateSharedQuery(session, id, { sql, schema }, 'ai', query.revision)
-    }
-    published = this.getSharedQuery(session, id)
-    const operation = executionType === 'verify' ? 'database_execute_sql' : (input.initiator === 'ai' ? 'database_execute_sql' : 'workbench_shared_query')
-    record = this.#executions?.create({
-      conversationId: session,
-      callId: input.callId,
-      rootCallId: input.rootCallId,
-      connectionId: id,
-      generation: connection.generation,
-      connectionName: connection.name,
-      dialect: connection.dialect,
-      environment: connection.environment,
-      schema,
-      operation,
-      sql,
-      initiator: input.initiator,
-      type: executionType,
-      queryRevision: published.revision,
-      executedSql: sql,
-      draft: { kind: 'query', sql, schema },
-      title: input.initiator === 'ai'
-        ? (executionType === 'verify' ? '验证查询' : `在 ${schema} 中执行查询，取得当前数据`)
-        : '执行当前 SQL',
-      reason: input.initiator === 'ai' ? '为在可见 AI Query 中取得当前数据。' : '用户在 AI Query 中执行当前 SQL。',
-    })
-    executionId = record?.executionId || ''
-    if (occupyRun) this.#connectionRunning.set(id, executionId)
-    } catch (error) {
-      if (occupyRun) this.#releaseRun(id)
-      throw error
-    }
-    if (publishGrid) this.#executions?.emitWorkbench(session, {
-      type: 'EXECUTION_STARTED', connectionId: id, executionId, queryRevision: published.revision, executedSql: sql, initiator: input.initiator, sql, schema,
-    })
-    const controller = new AbortController()
-    if (signal?.aborted) controller.abort()
-    else signal?.addEventListener('abort', () => controller.abort(), { once: true })
-    if (executionId) this.#executions?.attachAbort(executionId, controller)
-    try {
-      const authorized = await authorizeStatement(connection.dialect, sql, schema)
-      if (record) this.#executions?.annotate(executionId, { tables: authorized.tables, sql: authorized.sql, executedSql: authorized.sql })
-      if (authorized.kind === 'show') throw new Error('AI Query 暂不执行 SHOW，请使用对象详情或 SQL 查询页。')
-      const showGrid = publishGrid || authorized.kind === 'write'
-      if (authorized.kind === 'write') {
-        if (!isWritableEnvironment(connection.environment)) throw new Error('只读权限连接不能提交写入。')
-        this.#executions?.annotate(executionId, { type: 'write', draft: { kind: 'query', sql: authorized.sql, schema }, conclusion: 'SIT 写操作已直接执行。' })
-        this.updateSharedQuery(session, id, { sql: authorized.sql, schema, lastExecutionId: executionId }, 'system')
-      }
-      if (authorized.kind === 'explain') this.#executions?.annotate(executionId, { type: 'explain' })
-      this.#executions?.event(executionId, 'check-passed')
-      this.#executions?.transition(executionId, 'running')
-      this.#executions?.event(executionId, 'dispatched')
-      if (showGrid) this.updateSharedQuery(session, id, { sql: authorized.sql, schema, lastExecutionId: executionId }, 'system')
-      const trusted: TrustedAuthorization = {
-        kind: authorized.kind,
-        sql: authorized.sql,
-        tables: authorized.tables,
-        ...(authorized.targets ? { targets: authorized.targets } : {}),
-      }
-      const result = await this.request(session, id, connection.generation, 'query', { schema, sql: authorized.sql, limit: input.limit ?? DEFAULT_QUERY_PAGE_SIZE }, controller.signal, trusted) as unknown as Result
-      const sets = Array.isArray(result.batch) && result.batch.length > 1 ? result.batch : [result]
-      const batchMessage = sets.length > 1 ? `已执行 ${sets.length} 条` : result.message
-      const latest = this.getSharedQuery(session, id)
-      const generationAlive = this.#entries.get(id)?.connection.generation === connection.generation
-      if (showGrid && generationAlive && latest.lastExecutionId === executionId) {
-        this.updateSharedQuery(session, id, {
-          lastExecutionId: executionId,
-          lastRun: {
-            columns: result.columns,
-            rowCount: result.rows.length,
-            truncated: result.truncated,
-            elapsedMs: result.elapsedMs,
-            message: batchMessage,
-            at: new Date().toISOString(),
-            executionId,
-          },
-        }, 'system')
-      }
-      this.#executions?.complete(executionId, 'succeeded', batchMessage || result.message, result, sets.length > 1
-        ? `已执行 ${sets.length} 条。`
-        : authorized.kind === 'write'
-          ? (result.message || `已提交 · 影响 ${result.affectedRows ?? 0} 行。`)
-          : `返回 ${result.rows.length} 行${result.truncated ? '（已截断）' : ''}。`)
-      const after = this.getSharedQuery(session, id)
-      const controlLost = input.initiator === 'ai' && after.controller !== 'ai'
-      if (showGrid) this.#executions?.emitWorkbench(session, {
-        type: 'EXECUTION_FINISHED',
-        connectionId: id,
-        executionId,
-        queryRevision: published.revision,
-        executedSql: authorized.sql,
-        initiator: input.initiator,
-        status: 'succeeded',
-        result,
-        kind: authorized.kind === 'write' ? 'write' : authorized.kind === 'explain' ? 'explain' : 'query',
-        schema,
-      })
-      const statements = sets.map(item => ({
-        ...(item.sql ? { sql: item.sql } : {}),
-        columns: item.columns,
-        rowCount: item.rows.length,
-        truncated: item.truncated,
-        elapsedMs: item.elapsedMs,
-        ...(item.affectedRows !== undefined ? { affectedRows: item.affectedRows } : {}),
-        rows: item.rows.slice(0, DEFAULT_QUERY_PAGE_SIZE),
-      }))
-      const model = {
-        columns: result.columns,
-        rowCount: result.rows.length,
-        truncated: result.truncated,
-        elapsedMs: result.elapsedMs,
-        executionId,
-        rows: result.rows.slice(0, DEFAULT_QUERY_PAGE_SIZE),
-        ...(sets.length > 1 ? { statements } : {}),
-        ...(batchMessage ? { message: batchMessage } : {}),
-        ...(result.affectedRows !== undefined ? { affectedRows: result.affectedRows } : {}),
-        ...(controlLost ? { controlLost: true } : {}),
-      }
-      return {
-        executionId,
-        status: 'succeeded',
-        sql: authorized.sql,
-        tables: authorized.tables,
-        controlLost,
-        result,
-        model,
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '执行失败'
-      const stop = executionStop({
-        aborted: !!signal?.aborted,
-        dispatched: !!this.#executions?.dispatched(executionId),
-        message,
-      })
-      this.#executions?.complete(executionId, stop.status, stop.message)
-      if (publishGrid) this.#executions?.emitWorkbench(session, {
-        type: 'EXECUTION_FAILED', connectionId: id, executionId, queryRevision: published.revision, executedSql: sql, initiator: input.initiator, status: stop.status, kind: 'query', schema, message: stop.message,
-      })
-      const latest = this.getSharedQuery(session, id)
-      const generationAlive = this.#entries.get(id)?.connection.generation === connection.generation
-      if (publishGrid && generationAlive && latest.lastExecutionId === executionId) {
-        this.updateSharedQuery(session, id, {
-          lastExecutionId: executionId,
-          lastRun: { columns: [], rowCount: 0, truncated: false, elapsedMs: 0, message: stop.message, at: new Date().toISOString(), executionId },
-        }, 'system')
-      }
-      throw new Error(stop.message)
-    } finally {
-      this.#releaseRun(id, executionId)
-    }
+    const surface = input.initiator === 'user' ? 'result' : sharedQuerySurface(sql, input.purpose)
+    if (input.initiator === 'ai' && surface === 'result') this.updateExecutionDocument(session, id, sql, 'ai', document.revision, input.generation, { schema })
+    else if (input.initiator === 'user' && schema !== document.context.schema) throw new Error('AI Query 执行目标已变化。')
+    const published = this.getExecutionDocument(session, id)
+    return this.executeText(session, id, input.generation, sql, signal, input.initiator, input.callId, published.revision, input.rootCallId, { schema },
+      { type: inferExecutionType(input.initiator === 'ai' ? 'database_execute_sql' : 'workbench_shared_query', surface),
+        sql: { sourceKind: 'sql', entry: 'shared-query', input: { sql, schema, limit: input.limit ?? DEFAULT_QUERY_PAGE_SIZE } } })
   }
-  async explainPlan(session: string, connectionId: string, generation: unknown, input: { schema: string; sql: string; initiator?: 'ai' | 'user'; callId?: string; rootCallId?: string }, signal?: AbortSignal): Promise<Result & { executionId?: string }> {
-    if (this.#closed || !this.sessionValid(session)) throw new Error('当前对话已失效。')
-    const connection = this.#entries.get(connectionId)?.connection
-    if (!connection?.live) throw new Error('请先连接数据库。')
-    if (connection.generation !== generation) throw new Error('连接已变化或当前对话已失效，请刷新。')
-    const query = this.getSharedQuery(session, connectionId)
-    this.#acquireRun(connectionId)
-    const record = this.#executions?.create({
-      conversationId: session,
-      callId: input.callId,
-      rootCallId: input.rootCallId,
-      connectionId,
-      generation: connection.generation,
-      connectionName: connection.name,
-      dialect: connection.dialect,
-      environment: connection.environment,
-      schema: input.schema,
-      operation: 'database_explain_plan',
-      sql: input.sql,
-      initiator: input.initiator || 'ai',
-      type: 'explain',
-      queryRevision: query.revision,
-      executedSql: input.sql,
-      title: '查看执行计划，诊断索引与扫描',
-      reason: '为诊断索引与扫描方式。',
-    })
-    const executionId = record?.executionId || ''
-    this.#connectionRunning.set(connectionId, executionId)
-    const controller = new AbortController()
-    if (signal?.aborted) controller.abort()
-    else signal?.addEventListener('abort', () => controller.abort(), { once: true })
-    if (executionId) this.#executions?.attachAbort(executionId, controller)
-    try {
-      this.#executions?.event(executionId, 'check-passed')
-      this.#executions?.transition(executionId, 'running')
-      this.#executions?.event(executionId, 'dispatched')
-      this.#executions?.emitWorkbench(session, { type: 'EXECUTION_STARTED', connectionId, executionId, executedSql: input.sql, initiator: input.initiator || 'ai' })
-      const result = await this.request(session, connectionId, generation, 'query', { schema: input.schema, sql: input.sql, limit: DEFAULT_QUERY_PAGE_SIZE }, controller.signal) as unknown as Result
-      this.#executions?.complete(executionId, 'succeeded', result.message, result, result.message || '已采集执行计划。')
-      this.#executions?.emitWorkbench(session, {
-        type: 'EXECUTION_FINISHED', connectionId, executionId, queryRevision: query.revision, executedSql: input.sql, initiator: input.initiator || 'ai', status: 'succeeded', result, kind: 'explain',
-      })
-      return { ...result, executionId }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '解释失败'
-      this.#executions?.complete(executionId, 'failed', message)
-      this.#executions?.emitWorkbench(session, { type: 'EXECUTION_FAILED', connectionId, executionId, executedSql: input.sql, initiator: input.initiator || 'ai', status: 'failed', message })
-      throw error
-    } finally {
-      this.#releaseRun(connectionId, executionId)
-    }
-  }
-  #emitQueryState(session: string, connectionId: string, previous: SharedQuery, next: SharedQuery): void {
-    if (!this.#executions) return
-    if (next.sql !== previous.sql || next.schema !== previous.schema) {
-      this.#executions.emitWorkbench(session, {
-        type: 'QUERY_CHANGED', connectionId, queryRevision: next.revision, sql: next.sql, controller: next.controller, schema: next.schema,
-      })
-    } else if (next.controller !== previous.controller) {
-      this.#executions.emitWorkbench(session, {
-        type: 'CONTROL_CHANGED', connectionId, queryRevision: next.revision, sql: next.sql, controller: next.controller, schema: next.schema,
-      })
-    }
+  async explainPlan(session: string, id: string, generation: unknown, input: { schema: string; sql: string; revision?: number; initiator?: 'ai' | 'user'; callId?: string; rootCallId?: string }, signal?: AbortSignal): Promise<Result & { executionId?: string }> {
+    const d = this.getExecutionDocument(session, id, generation)
+    if (input.revision !== undefined && input.revision !== d.revision) throw new Error('AI Query 已变化，请刷新。')
+    const result = await this.executeText(session, id, generation, input.sql, signal, input.initiator || 'ai', input.callId, d.revision, input.rootCallId, { schema: input.schema },
+      { type: 'explain', sql: { sourceKind: 'sql', entry: 'explain', input: { sql: input.sql, schema: input.schema, limit: DEFAULT_QUERY_PAGE_SIZE } } })
+    return { ...(result.result as Result), executionId: result.executionId as string }
   }
   #acquireRun(connectionId: string): void {
     if (this.#connectionRunning.has(connectionId)) throw new Error('此连接已有查询正在执行。')
@@ -762,6 +508,13 @@ export class ConnectionService {
       for (const [id, draft] of this.#legacyDrafts) {
         if (!layout.workbenches[id]) { layout.workbenches[id] = draft; changed = true }
       }
+    }
+    for (const [id, workbench] of Object.entries(layout.workbenches)) {
+      const saved = rows.get(id), old = workbench.sharedQuery
+      if (!saved || workbench.aiDocument || !old) continue
+      layout.workbenches[id] = sanitizeConversationWorkbench({ ...workbench, aiDocument: { sourceId: saved.settings.dialect, text: old.sql,
+        context: { schema: old.schema || ('database' in saved.settings ? saved.settings.database : '') }, revision: Math.max(1, old.revision), controller: old.controller, controllerReason: old.controllerReason } })
+      changed = true
     }
     if (changed) this.conversations.save(session, layout, new Set(rows.keys()))
     return layout
@@ -1037,8 +790,8 @@ export class ConnectionService {
     await Promise.allSettled(workers.map(worker => worker.terminate()))
     this.#executions?.cancelConversation(session, '对话已删除。')
   }
-  async catalog(session: string, id: string, generation: unknown, input: CatalogRequest, signal?: AbortSignal): Promise<CatalogResult> {
-    return this.request(session, id, generation, 'catalog', input, signal)
+  async catalog(session: string, id: string, generation: unknown, input: CatalogRequest, signal?: AbortSignal, hooks?: { onDispatched?(): void }): Promise<CatalogResult> {
+    return this.request(session, id, generation, 'catalog', input, signal, undefined, hooks)
   }
   async redisRequest(session: string, id: string, generation: unknown, action: 'redis-command' | 'redis-scan' | 'redis-key-suggest' | 'redis-key', raw: unknown, signal?: AbortSignal, initiator: 'user' | 'ai' = 'user', options?: { queryRevision?: number; record?: boolean; context?: Record<string, string> }): Promise<Record<string, unknown>> {
     const entry = this.#entries.get(id)
@@ -1048,72 +801,111 @@ export class ConnectionService {
     if (database !== undefined) database = assertRedisDatabaseId(database)
     const mode = entry.connection.settings && 'redisMode' in entry.connection.settings ? entry.connection.settings.redisMode : undefined
     assertRedisClusterDatabase(database, mode)
-    if (initiator === 'ai') {
-      const current = this.getExecutionDocument(session, id, generation)
-      if (action === 'redis-command' && options?.queryRevision !== undefined) redisAiDispatchAllowed(current, options.queryRevision, String(input.command || ''))
-      else if (current.controller !== 'ai') throw new Error('用户已接管 AI Query，无法继续操作 Redis。')
-      const selected = current.context.database || entry.connection.database
-      if (selected) database = assertRedisDatabaseId(selected)
-      assertRedisClusterDatabase(database, mode)
-    }
+    if (action === 'redis-command') return this.executeText(session, id, generation, input.command, signal, initiator, undefined, options?.queryRevision, undefined, { database: database ?? entry.connection.database })
+    if (initiator === 'ai' && this.getExecutionDocument(session, id, generation).controller !== 'ai') throw new Error('用户已接管 AI Query，无法继续操作 Redis。')
     const prepared = redisPreparedInput(action, input, database)
-    const capturedDocument = initiator === 'ai' || options?.queryRevision !== undefined
-      ? this.getExecutionDocument(session, id, generation) : undefined
-    const send = (workSignal?: AbortSignal) => this.#withReadonly(id, () => {
-      if (capturedDocument) {
-        const current = this.getExecutionDocument(session, id, generation)
-        if (current.revision !== (options?.queryRevision ?? capturedDocument.revision)
-          || current.controller !== initiator || current.text !== capturedDocument.text
-          || JSON.stringify(current.context) !== JSON.stringify(options?.context ?? capturedDocument.context)) {
-          throw new Error('AI Query 已被修改、接管或切换目标，操作没有发出。')
-        }
-      }
-      return this.#dispatch(session, id, generation, action, prepared, workSignal ?? signal)
-    }, 'manual') as Promise<Record<string, unknown>>
-    if (redisCommandRecordsHistory(action, initiator, options?.record)) {
-      const commandName = String((prepared.args as string[])[0] || '').toUpperCase()
-      return recordUserRedisCommand(this.#executions, {
-        owner: session, connectionId: id, generation: entry.connection.generation!, connectionName: entry.connection.name,
-        sourceId: 'redis', environment: entry.connection.environment,
-      }, commandName, send, signal)
-    }
-    return send()
+    return this.#withReadonly(id, () => this.#dispatch(session, id, generation, action, prepared, signal), 'manual') as Promise<Record<string, unknown>>
   }
-  async executeText(session: string, id: string, generation: unknown, text: unknown, signal?: AbortSignal, initiator: 'user' | 'ai' = 'user', callId?: string, queryRevision?: number, rootCallId?: string, context?: unknown): Promise<Record<string, unknown>> {
+  async executeCatalogTool(session: string, id: string, generation: unknown, input: CatalogToolInput, signal?: AbortSignal, callId?: string, rootCallId?: string): Promise<Record<string, unknown>> {
+    const connection = this.#entries.get(id)?.connection
+    if (!connection || connection.generation !== generation || (connection.dialect !== 'mysql' && connection.dialect !== 'oracle')) throw new Error('连接已变化，请刷新。')
+    const prepared = prepareCatalogTool(connection as Connection & {dialect: 'mysql' | 'oracle'}, input)
+    let result
+    try { result = await runOperation(this.#executions, sqlOperationBinding(session, connection), { ...prepared.metadata, callId, rootCallId },
+      async (workSignal, onDispatched, context) => prepared.read(args => this.catalog(session, id, generation, args, workSignal, { onDispatched }),
+        patch => { if (context.executionId) this.#executions?.annotate(context.executionId, patch) }),
+      result => result.conclusion, signal, result => result.status, { classifyInterruption: (error, lifecycle) => catalogToolFailure(error, lifecycle).status,
+        projectCompletion: result => ({ message: result.message, conclusion: result.conclusion }), summarizeFailure: (error, lifecycle, status) => status === 'unknown' ? `目录读取结果未知。${error instanceof Error ? error.message : ''}` : catalogToolFailure(error, lifecycle).message }) } catch (error) {
+      if (error instanceof Error && (error as Error & {executionId?: string}).executionId) error.message = this.#executions?.get(session, (error as Error & {executionId: string}).executionId)?.message || error.message
+      throw error
+    }
+    return { ...result.value, executionId: result.executionId }
+  }
+  async executeRedisReadTool(session: string, id: string, generation: unknown, operation: RedisReadTool, input: Record<string, unknown>, signal?: AbortSignal, callId?: string, rootCallId?: string): Promise<Record<string, unknown>> {
+    const connection = this.#entries.get(id)?.connection, document = this.getExecutionDocument(session, id, generation)
+    if (!connection || connection.dialect !== 'redis' || document.controller !== 'ai') throw new Error('Redis 连接或控制权已变化。')
+    const prepared = prepareRedisReadOperation(operation, input, document.context, connection)
+    const response = await runOperation(this.#executions, sqlOperationBinding(session, connection), { operation, title: prepared.title, initiator: 'ai', callId, rootCallId, type: 'tool' },
+      (workSignal, onDispatched) => this.#withReadonly(id, () => this.#dispatch(session, id, generation, prepared.action, prepared.input as ServiceRequest, workSignal, undefined, {
+        beforeDispatch: () => { const current = this.getExecutionDocument(session, id, generation); if (current.controller !== 'ai' || current.revision !== document.revision) throw new Error('AI Query 已变化。') }, onDispatched,
+      }), 'ai') as Promise<Record<string, unknown>>, prepared.summarize, signal, prepared.classifyResult,
+      { classifyInterruption: (_error, lifecycle) => lifecycle.aborted ? 'cancelled' : 'failed', summarizeFailure: prepared.summarizeFailure })
+    const { executionStatus: _status, ...result } = response
+    return result
+  }
+  async executeText(session: string, id: string, generation: unknown, text: unknown, signal?: AbortSignal, initiator: 'user' | 'ai' = 'user', callId?: string, queryRevision?: number, rootCallId?: string, context?: unknown, options?: { type?: ExecutionType; sql?: TextEntryOptions }): Promise<Record<string, unknown>> {
     const entry = this.#entries.get(id)
     if (!entry || this.#closed || !this.sessionValid(session) || entry.connection.generation !== generation) throw fail('连接已变化或当前对话已失效，请刷新。', CONNECTION_ERROR_CODES.stale)
     const execution = hostModules.get(entry.connection.dialect).execution
-    if (execution.mode !== 'standard-text') throw new Error('此数据源尚未接入通用文本执行入口。')
     const normalized = execution.normalizeContext(context, entry.connection)
-    const prepared = execution.prepareText(text, normalized)
-    execution.authorize(prepared, initiator, entry.connection)
-    if (!prepared || !getSourceRuntime(entry.connection.dialect).actions.includes(prepared.action)) throw new Error('此数据源尚未接入通用文本执行入口。')
-    const binding = { owner: session, connectionId: id, generation: entry.connection.generation!, connectionName: entry.connection.name,
-      sourceId: entry.connection.dialect, environment: entry.connection.environment }
-    return runOperation(this.#executions, binding, { operation: prepared.operation, title: prepared.title,
-      initiator, callId, queryRevision, rootCallId }, async workSignal => {
-      const result = await this.#withReadonly(id, () => {
-        if (queryRevision !== undefined) {
-          const current = this.getExecutionDocument(session, id, generation)
-          if (current.controller !== initiator || current.revision !== queryRevision || current.text !== text
-            || JSON.stringify(execution.normalizeContext(current.context, entry.connection)) !== JSON.stringify(normalized)) {
-            throw new Error('AI Query 已被人工修改或接管，操作没有发出。')
-          }
+    const document = queryRevision === undefined ? undefined : this.getExecutionDocument(session, id, generation)
+    const prepared = await prepareTextOperation(execution, text, normalized, options?.sql, signal)
+    const sql = prepared.sourceKind === 'sql'
+    const identity: DocumentExecutionIdentity | undefined = document ? { conversationId: session, connectionId: id, generation: entry.connection.generation!, sourceId: entry.connection.dialect,
+      context: { ...normalized }, queryRevision: document.revision, documentText: document.text, executedSql: prepared.text, initiator } : undefined
+    const validate = () => {
+      if (!document) return
+      const now = this.getExecutionDocument(session, id, generation)
+      if (now.revision !== queryRevision || now.controller !== initiator || now.text !== document.text || JSON.stringify(now.context) !== JSON.stringify(document.context)) throw new Error('AI Query 已被修改、接管或切换目标，操作没有发出。')
+    }
+    const send = (workSignal?: AbortSignal, onDispatched?: () => void) => this.#withReadonly(id, () => this.#dispatch(session, id, generation, prepared.action, prepared.input, workSignal,
+      prepared.sourceKind === 'sql' ? prepared.authorized as TrustedAuthorization : undefined, { beforeDispatch: validate, onDispatched }), prepared.queue ?? 'manual') as Promise<Record<string, unknown>>
+    if (prepared.recordPolicy === 'none') {
+      await authorizeTextOperation(execution, prepared, initiator, entry.connection, options?.sql, signal)
+      return send(signal)
+    }
+    let kind: 'query' | 'write' | 'explain' = options?.type === 'explain' ? 'explain' : 'query'
+    const show = options?.type !== 'verify'
+    const metadata = sql ? sqlOperationMetadata({ schema: normalized.schema, sql: prepared.text, revision: queryRevision!, initiator, type: options?.type || 'query', callId, rootCallId, documentText: document?.text, explain: options?.type === 'explain' })
+      : { operation: prepared.operation, title: prepared.title, initiator, callId, queryRevision, rootCallId, type: options?.type }
+    if (sql && options?.type !== 'verify') this.#acquireRun(id)
+    try {
+      const response = await runOperation(this.#executions, sqlOperationBinding(session, entry.connection), { ...metadata, identity, context: normalized }, async (workSignal, onDispatched, operation) => {
+        const authorization = await authorizeTextOperation(execution, prepared, initiator, entry.connection, options?.sql, workSignal)
+        if (sql && authorization) {
+          kind = authorization.kind === 'write' ? 'write' : authorization.kind === 'explain' ? 'explain' : kind
+          if (identity) identity.executedSql = prepared.text
+          if (operation.executionId) this.#executions?.annotate(operation.executionId, { identity, sql: prepared.text, executedSql: prepared.text, tables: authorization.tables, type: kind === 'query' ? options?.type || 'query' : kind })
         }
-        return this.#dispatch(session, id, generation, prepared.action, prepared.input, workSignal)
-      }, 'manual')
-      return result as Record<string, unknown>
-    }, prepared.summarize, signal, prepared.classifyResult)
+        operation.markChecked()
+        validate()
+        if (identity && show) this.#executions?.emitWorkbench(session, { type: 'EXECUTION_STARTED', ...identity, identity, executionId: operation.executionId })
+        return send(workSignal, onDispatched)
+      }, prepared.summarize, signal, prepared.classifyResult, {
+        deferCheckPassed: true, classifyInterruption: (error, lifecycle) => prepared.classifyInterruption?.(error, lifecycle) ?? (lifecycle.dispatched ? 'unknown' : lifecycle.aborted ? 'cancelled' : 'failed'),
+        completedResultIsDefinitive: prepared.completedResultIsDefinitive,
+        summarizeFailure: sql ? sqlFailureMessage : (_error, _state, status) => status === 'unknown' ? (entry.connection.dialect === 'kafka' ? '执行结果未知，请核对目标 Topic，勿重复提交。' : 'Redis 执行结果未知，请核验，勿重复提交。') : _error instanceof Error ? _error.message : '执行失败。',
+        projectCompletion: sql ? result => sqlCompletion(result as unknown as Result, kind, options?.type === 'explain') : undefined,
+        onFinished: (executionId, status, result, message) => {
+          if (!identity || !show || !executionId) return
+          try { validate() } catch { return }
+          const stored = this.#executions?.get(session, executionId, true)
+          this.#executions?.emitWorkbench(session, { type: !sql || status === 'succeeded' ? 'EXECUTION_FINISHED' : 'EXECUTION_FAILED', ...identity, identity, executionId, status, kind, message,
+            ...(sql ? { result: status === 'unknown' ? (stored?.result || { columns: [], rows: [], elapsedMs: 0, truncated: false, message }) : (stored?.result || result) as Result } : { sourceResult: result && prepared.projectLiveResult ? prepared.projectLiveResult({ ...result, executionStatus: status }) : { kind: 'error', message, executionStatus: status } }) })
+        },
+      })
+      const { executionStatus: status, ...result } = response
+      if (status === 'unknown') throw Object.assign(new Error(this.#executions?.get(session, result.executionId as string)?.message || '执行结果未知，请核验，勿重复提交。'), { effect: 'unknown', phase: 'receipt', executionId: result.executionId, executionStatus: status, steps: result.steps, batch: result.batch })
+      if (!sql) return { ...(prepared.projectLiveResult ? prepared.projectLiveResult(response) : response), ...(identity ? { ...identity, identity, result: prepared.projectLiveResult ? prepared.projectLiveResult(response) : response } : {}) }
+      return { ...(identity || {}), ...(identity ? { identity } : {}), schema: normalized.schema, ...(identity && this.getExecutionDocument(session, id).revision !== identity.queryRevision ? { controlLost: true } : {}), executionId: result.executionId, status, kind, sql: prepared.text, result, model: sqlModel(result as unknown as Result, result.executionId as string, !!document && this.getExecutionDocument(session, id).revision !== document.revision) }
+    } catch (error) {
+      if (error && typeof error === 'object') Object.assign(error, { ...(identity || {}), ...(identity ? { identity } : {}), kind, schema: normalized.schema })
+      if (error instanceof Error && (error as {executionId?: string}).executionId) { const message = this.#executions?.get(session, (error as Error & {executionId: string}).executionId)?.message; if (message) error.message = message }
+      throw error
+    } finally { if (sql && options?.type !== 'verify') this.#releaseRun(id) }
   }
-  async request(session: string, id: string, generation: unknown, action: ServiceRequestAction, input: ServiceRequest, signal?: AbortSignal, authorized?: TrustedAuthorization): Promise<CatalogResult> {
+  async request(session: string, id: string, generation: unknown, action: ServiceRequestAction, input: ServiceRequest, signal?: AbortSignal, authorized?: TrustedAuthorization, hooks?: { beforeDispatch?(): void; onDispatched?(): void }): Promise<CatalogResult> {
     if (!input || (action === 'catalog' && !['schemas', 'schema', 'tables', 'table', 'indexes'].includes(input.kind || ''))) throw new Error('目录请求无效。')
     if (signal?.aborted) throw fail('请求已取消。', CONNECTION_ERROR_CODES.cancelled)
-    const run = () => this.#dispatch(session, id, generation, action, input, signal, authorized)
+    const run = () => this.#dispatch(session, id, generation, action, input, signal, authorized, hooks)
+    if ((action === 'query' || action === 'manual-query') && !authorized && !hooks) {
+      return await this.executeText(session, id, generation, input.sql, signal, 'user', undefined, undefined, undefined, { schema: input.schema ?? this.#entries.get(id)?.connection.database ?? '' }, { sql: { sourceKind: 'sql', entry: action, input: input as Record<string, unknown> } }) as CatalogResult
+    }
     if (action === 'catalog') return this.#withCatalog(id, run)
     if (action === 'maintenance') return this.#withMaintenance(id, run)
     return this.#withReadonly(id, run, action === 'query' ? 'ai' : 'manual')
   }
-  async #dispatch(session: string, id: string, generation: unknown, action: string, input: ServiceRequest, signal?: AbortSignal, authorized?: TrustedAuthorization): Promise<CatalogResult> {
+  async #dispatch(session: string, id: string, generation: unknown, action: string, input: ServiceRequest, signal?: AbortSignal, authorized?: TrustedAuthorization, hooks?: { beforeDispatch?(): void; onDispatched?(): void }): Promise<CatalogResult> {
     if (signal?.aborted) throw fail('请求已取消。', CONNECTION_ERROR_CODES.cancelled)
     const entry = this.#entries.get(id)
     if (!entry || this.#closed || !this.sessionValid(session)) throw fail('连接已变化或当前对话已失效，请刷新。', CONNECTION_ERROR_CODES.stale)
@@ -1142,6 +934,7 @@ export class ConnectionService {
           signal?.removeEventListener('abort', cancel)
           entry.worker.off('message', message)
           entry.worker.off('exit', exited)
+          if (error && progress && (action === 'query' || action === 'manual-query')) Object.assign(error, { effect: (error as {effect?: string}).effect || 'unknown', phase: (error as {phase?: string}).phase || 'receipt', steps: (error as {steps?: unknown}).steps || progress.steps, batch: (error as {batch?: unknown}).batch || progress.batch })
           error ? reject(error) : resolve(value!)
         }
         const terminateWorker = (text: string) => {
@@ -1160,21 +953,28 @@ export class ConnectionService {
           if (action === 'maintenance') terminateWorker('连接已关闭；已开始的维护步骤结果可能未知，请重新连接并核验。')
           else finish(action === 'redis-command' || action === 'redis-key' ? new Error('Redis 连接已关闭，执行结果未知，请核验。') : fail('连接已关闭。', CONNECTION_ERROR_CODES.closed))
         }
-        const message = (reply: { requestId?: string; error?: string; code?: string; result?: CatalogResult; progress?: Record<string, unknown>; cancelled?: boolean }) => {
+        const message = (reply: { requestId?: string; error?: string; code?: string; result?: CatalogResult; progress?: Record<string, unknown>; sqlProgress?: Record<string, unknown>; effect?: string; phase?: string; category?: string; databaseCode?: string; steps?: unknown; batch?: unknown; cancelled?: boolean }) => {
           if (reply.requestId !== requestId) return
           if (this.#entries.get(id) !== entry || !this.sessionValid(session)) finish(fail('连接或对话已变化，已丢弃迟到结果。', CONNECTION_ERROR_CODES.stale))
-          else if (reply.progress) { progress = reply.progress; return }
-          else if (reply.cancelled || signal?.aborted) finish(action === 'redis-command' || action === 'redis-key' ? new Error('Redis 操作已取消，执行结果未知，请核验。') : fail('读取已取消。', CONNECTION_ERROR_CODES.cancelled))
-          else finish(reply.error ? workerError(reply.error, reply.code) : undefined, reply.result)
+          else if (reply.progress || reply.sqlProgress) { progress = reply.progress || reply.sqlProgress; return }
+          else if (!reply.error && (reply.cancelled || signal?.aborted)) finish(action === 'redis-command' || action === 'redis-key' ? new Error('Redis 操作已取消，执行结果未知，请核验。') : fail('读取已取消。', CONNECTION_ERROR_CODES.cancelled))
+          else if (reply.error) finish(Object.assign(workerError(reply.error, reply.code), { effect: reply.effect, phase: reply.phase, category: reply.category, databaseCode: reply.databaseCode, steps: reply.steps, batch: reply.batch }))
+          else if (reply.result === undefined) finish(Object.assign(new Error('缺少有效执行回执，结果未知。'), { effect: 'unknown', phase: 'receipt' }))
+          else finish(undefined, reply.result)
         }
         const timer = setTimeout(() => {
           try { entry.worker.postMessage({ cancel: true, requestId }) } catch { /* ignore */ }
           const deadline = hostDeadlineFor(action)
           if (action === 'maintenance') terminateWorker(hostTimeoutMessage(action, deadline))
-          else finish(new Error(action === 'redis-command' || action === 'redis-key' ? 'Redis 操作超时，执行结果未知，请核验。' : hostTimeoutMessage(action, deadline)))
+          else finish(Object.assign(new Error(authorized?.kind === 'write' ? `写入超过 ${Math.round(deadline / 1000)} 秒，结果未知，请核验，勿重复提交。` : action === 'redis-command' || action === 'redis-key' ? 'Redis 操作超时，执行结果未知，请核验。' : hostTimeoutMessage(action, deadline)), { effect: 'unknown', phase: 'receipt' }))
         }, hostDeadlineFor(action))
         entry.worker.on('message', message); entry.worker.once('exit', exited); signal?.addEventListener('abort', cancel, { once: true })
-        entry.worker.postMessage({ requestId, action, input: { ...input, conversationId: session }, ...(authorized ? { authorized } : {}) })
+        try { hooks?.beforeDispatch?.() } catch (error) { finish(error as Error); return }
+        if (signal?.aborted) { finish(fail('请求已取消。', CONNECTION_ERROR_CODES.cancelled)); return }
+        try {
+          entry.worker.postMessage({ requestId, action, input: { ...input, conversationId: session }, ...(authorized ? { authorized, lane: input.lane === 'manual' ? 'manual' : 'query' } : {}) })
+          hooks?.onDispatched?.()
+        } catch (error) { finish(error as Error) }
       })
       if (this.#cache.size >= 64) this.#cache.delete(this.#cache.keys().next().value!)
       if (action === 'catalog') this.#cache.set(key, { time: Date.now(), value: result })
@@ -1187,8 +987,10 @@ export class ConnectionService {
         const executionId = typeof input.executionId === 'string' ? input.executionId : ''
         if (executionId && input.kind === 'execute') this.#executions?.observeMaintenance(session, executionId, { status: typeof result.status === 'string' ? result.status : undefined, message: typeof result.message === 'string' ? result.message : undefined })
       }
-      this.#reviveAttempts.delete(id)
-      this.#clearRevive(id)
+      if (entry.connection.health === 'ready') {
+        this.#reviveAttempts.delete(id)
+        this.#clearRevive(id)
+      }
       return action === 'catalog' ? structuredClone(result) : result
     } finally { this.#busyDone(entry.worker) }
   }

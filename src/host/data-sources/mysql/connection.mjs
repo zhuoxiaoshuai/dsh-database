@@ -6,6 +6,7 @@ export function mysqlConnectionConfig(input, options = {}) {
     password: input.password,
     ...options,
     multipleStatements: false,
+    jsonStrings: true,
   }
 }
 

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { resolvePrimaryKeys } from './primary-keys.mjs'
 import { getDataSource } from './data-sources/sql-registry.mjs'
+import { isBinaryColumnType } from './cell-value.mjs'
 
 const systemSchemas = new Set(['mysql', 'information_schema', 'performance_schema', 'sys', 'sysaux', 'system', 'xdb', 'outln'])
 
@@ -181,6 +182,7 @@ export function finalizeMaintenanceCapability({
   const columns = (shape?.columns || rawColumns.map(column => ({ resultColumn: String(column.name), sourceColumn: String(column.name), editable: true }))).map(column => {
     const sourceColumn = column.sourceColumn ? known.get(column.sourceColumn.toLowerCase()) : undefined
     if (!sourceColumn) return { ...column, editable: false, reason: column.reason || '不是目标表的真实字段。' }
+    if (isBinaryColumnType(rawColumns.find(item => String(item.name).toLowerCase() === sourceColumn.toLowerCase())?.type)) return { ...column, sourceColumn, editable: false, reason: '二进制字段只支持查看。' }
     if (primaryKeys.some(key => key.toLowerCase() === sourceColumn.toLowerCase())) return { ...column, sourceColumn, editable: false, reason: '主键第一版不允许直接修改。' }
     if (identityColumns.some(key => key.toLowerCase() === sourceColumn.toLowerCase())) return { ...column, sourceColumn, editable: false, reason: '自增或生成列不可修改。' }
     return { ...column, sourceColumn }

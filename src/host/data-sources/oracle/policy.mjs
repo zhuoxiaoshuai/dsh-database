@@ -1,4 +1,4 @@
-import { authorizeByLead, splitStatements, systemSchemas } from '../sql-policy-common.mjs'
+import { splitStatements, systemSchemas } from '../sql-policy-common.mjs'
 
 export { splitStatements }
 export function extractExplainSql(sql) {
@@ -23,20 +23,28 @@ export async function authorize(sql, schema) {
   const { CharStream, CommonTokenStream } = await import('antlr4')
   const { PlSqlLexer, PlSqlParser } = await import('@griffithswaite/ts-plsql-parser')
   const lexer = new PlSqlLexer(new CharStream(sql)), tokens = new CommonTokenStream(lexer), parser = new PlSqlParser(tokens)
-  // The bundled grammar does not cover every Oracle version/extension. Lexer
-  // diagnostics are therefore kept silent but are not treated as database
-  // syntax errors. If ANTLR can still identify one SELECT/DML statement, let
-  // Oracle validate it and return the authoritative ORA error.
-  const listener = { syntaxError() {}, reportAmbiguity() {}, reportAttemptingFullContext() {}, reportContextSensitivity() {} }
+  // Any parser diagnostic prevents a complete authorization decision.
+  let invalid = false
+  const listener = { syntaxError() { invalid = true }, reportAmbiguity() {}, reportAttemptingFullContext() {}, reportContextSensitivity() {} }
   lexer.removeErrorListeners(); lexer.addErrorListener(listener); parser.removeErrorListeners(); parser.addErrorListener(listener)
   const root = parser.sql_script(), units = root.unit_statement_list()
-  if (units.length !== 1) return authorizeByLead(sql, schema)
+  if (invalid || units.length !== 1) throw new Error('无法完整校验该语法，不执行。')
   const statement = units[0]?.children?.[0]?.children?.[0]
   const kindName = statement?.constructor.name || ''
   const isRead = kindName === 'Select_statementContext'
-  if (!isRead && kindName !== 'Insert_statementContext' && kindName !== 'Update_statementContext' && kindName !== 'Delete_statementContext') return authorizeByLead(sql, schema)
+  if (!isRead && kindName !== 'Insert_statementContext' && kindName !== 'Update_statementContext' && kindName !== 'Delete_statementContext') throw new Error('无法完整校验该语法，不执行。')
   const identifier = s => s.startsWith('"') ? s.slice(1, -1).replaceAll('""', '"') : s.toUpperCase()
   if (/@/.test(units[0].getText())) throw new Error('不允许数据库链接。')
+  const checkAll = node => {
+    if (!node) return
+    if (/^For_update/.test(node.constructor.name)) throw new Error('不支持锁定读。')
+    if (node.constructor.name === 'Tableview_nameContext') {
+      const names = (node.getText().match(/"(?:[^"]|"")*"|[^.]+/g) || []).map(identifier)
+      if (names.length >= 2 && systemSchemas.has(names[0].toLowerCase())) throw new Error('不允许访问系统库对象。')
+    }
+    for (const child of node.children || []) checkAll(child)
+  }
+  checkAll(statement)
   if (!isRead) {
     const writeTargets = []
     let foundTarget = false

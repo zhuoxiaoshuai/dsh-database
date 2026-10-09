@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { peekKafkaPartition } from '../src/host/data-sources/kafka/driver.mjs'
+import { withKafkaReadScope } from '../src/host/data-sources/kafka/operation-scope.mjs'
+import { describeKafkaTopic } from '../src/host/data-sources/kafka/driver.mjs'
 
 test('Kafka PEEK seeks before collecting messages and never commits a group offset', async () => {
   let onMessage, seeked = false, stopped = 0, disconnected = 0, committed = 0
@@ -81,4 +83,43 @@ test('Kafka PEEK disables consumer restart and retains bounded partial data afte
   assert.deepEqual(result.messages.map(item => item.value.text), ['one'])
   assert.equal(disconnected, 1)
   assert.equal(onCrash, undefined)
+})
+
+test('Kafka metadata cancellation discards a late response without starting another Admin call', async () => {
+  let resolve, next = 0
+  const abort = new AbortController()
+  const pending = describeKafkaTopic({ admin: {
+    fetchTopicMetadata: () => new Promise(done => { resolve = done }),
+    fetchTopicOffsets: async () => { next += 1; return [] },
+  } }, 'demo', abort.signal)
+  abort.abort()
+  await assert.rejects(pending, /取消/)
+  resolve({ topics: [{ name: 'demo', partitions: [] }] })
+  await new Promise(done => setImmediate(done))
+  assert.equal(next, 0)
+  await assert.rejects(withKafkaReadScope(undefined, read => read(() => new Promise(() => {})), 10), /截止时间/)
+})
+
+test('Kafka PEEK filters pre-seek, other partitions and duplicates; crossing initial high completes the fixed range', async () => {
+  let receive
+  const message = offset => ({ topic: 'demo', partition: 0, message: { offset, value: Buffer.from(offset) } })
+  const consumer = {
+    async connect() {}, async subscribe() {},
+    async run({ eachMessage }) { receive = eachMessage; await receive(message('0')) },
+    seek() { queueMicrotask(async () => {
+      await receive({ ...message('0'), partition: 1 })
+      await receive(message('0')); await receive(message('0')); await receive(message('5'))
+    }) }, async stop() {}, async disconnect() {},
+  }
+  const result = await peekKafkaPartition({ admin: { async fetchTopicOffsets() { return [{ partition: 0, low: '0', high: '4' }] } }, kafka: { consumer: () => consumer } },
+    { kind: 'peek', topic: 'demo', partition: 0, from: 'beginning', limit: 20 })
+  assert.deepEqual(result.messages.map(item => item.offset), ['0'])
+  assert.equal(result.reason, 'high'); assert.equal(result.high, '4')
+})
+
+test('Kafka PEEK with only filtered or missing records reports deadline instead of guessing completion', async () => {
+  const consumer = { async connect() {}, async subscribe() {}, async run() {}, seek() {}, async stop() {}, async disconnect() {} }
+  const result = await peekKafkaPartition({ admin: { async fetchTopicOffsets() { return [{ partition: 0, low: '0', high: '4' }] } }, kafka: { consumer: () => consumer } },
+    { kind: 'peek', topic: 'demo', partition: 0, from: 'beginning', limit: 20 }, undefined, 15)
+  assert.equal(result.reason, 'deadline'); assert.equal(result.complete, false)
 })

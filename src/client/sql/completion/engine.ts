@@ -23,7 +23,7 @@ export type TableRef = {
   star?: { database?: string; table: string }[]
 }
 export type QueryScope = { tables: TableRef[]; aliases: Record<string, string> }
-export type CompletionKind = 'table' | 'column' | 'expression' | 'keyword'
+export type CompletionKind = 'table' | 'column' | 'expression' | 'value' | 'keyword'
 export type CompletionContext = {
   type: CompletionKind
   qualifier?: string
@@ -31,10 +31,10 @@ export type CompletionContext = {
   allowViews?: boolean
   lastKeyword?: string
 }
-export type Suggestion = { label: string; insert: string; kind: 'table' | 'column' | 'keyword'; detail?: string; boost: number }
+export type Suggestion = { label: string; insert: string; kind: 'table' | 'column' | 'keyword'; detail?: string; comment?: string; boost: number }
 export type CompletionResult = { suggestions: Suggestion[]; pending: string[] }
-type CatalogTable = { name: string; kind: 'table' | 'view' }
-type CatalogColumn = { name: string; type?: string }
+type CatalogTable = { name: string; kind: 'table' | 'view'; comment?: string }
+type CatalogColumn = { name: string; type?: string; comment?: string }
 type ProjectionSource = { open: number; close: number; group?: number; explicit?: { name: string }[] }
 type ScopedTable = TableRef & { path: number[]; block: number; source?: ProjectionSource }
 type CteDef = { name: string; path: number[]; block: number; order: number; open: number; close: number; group?: number; explicit?: { name: string }[]; columns?: { name: string }[]; star?: { database?: string; table: string }[] }
@@ -65,8 +65,8 @@ function tokenize(sql: string, dialect: Dialect = 'mysql'): Token[] {
     if (skipped.skipped) { i = skipped.index; continue }
     if (/\s/.test(sql[i])) { i += 1; continue }
     if (sql[i] === '.') { tokens.push({ type: 'dot', value: '.', from: i, to: i + 1 }); i += 1; continue }
-    if (/[(),*]/.test(sql[i])) { tokens.push({ type: 'punct', value: sql[i], from: i, to: i + 1 }); i += 1; continue }
-    const ident = sql.slice(i).match(/^(?:`(?:``|[^`])*`|"(?:""|[^"])*"|[A-Za-z_][A-Za-z0-9_]*)/)
+    if (/[(),*=<>!]/.test(sql[i])) { tokens.push({ type: 'punct', value: sql[i], from: i, to: i + 1 }); i += 1; continue }
+    const ident = sql.slice(i).match(/^(?:`(?:``|[^`])*`|"(?:""|[^"])*"|[\p{L}_][\p{L}\p{N}_$#]*)/u)
     if (ident) {
       const value = ident[0]
       const raw = unquote(value)
@@ -399,7 +399,7 @@ function parenDepthAfter(tokens: Token[], from: number): number {
 }
 
 export function analyzeContext(sql: string, offset: number, dialect: Dialect = 'mysql'): CompletionContext {
-  const before = tokenize(sql, dialect).filter(token => token.to <= offset)
+  const before = tokenize(sql.slice(0, offset), dialect)
   const last = before.at(-1)
   const lastKw = lastKeyword(before)
   const keyword = lastKw?.value.toUpperCase() || ''
@@ -432,6 +432,8 @@ export function analyzeContext(sql: string, offset: number, dialect: Dialect = '
     if (!ids.length || (ids.length === 1 && ids[0].type === 'id' && ids[0].to === offset)) return { type: 'table', allowViews, lastKeyword: keyword }
   }
   if (keyword === 'INTO' && lastKw && parenDepthAfter(before, lastKw.to) > 0) return { type: 'column', lastKeyword: keyword }
+  if (keyword === 'VALUES' || keyword === 'LIKE' || keyword === 'BETWEEN' || keyword === 'IN' || /(?:[=<>!]+|\bLIKE|\bVALUES\s*\(|\bBETWEEN|\bIN\s*\()\s*[\p{L}\p{N}_$#`"]*$/iu.test(sql.slice(0, offset))) return { type: 'value', lastKeyword: keyword }
+  if (keyword === 'SET') return { type: 'column', lastKeyword: keyword }
   if (EXPRESSION_KEYWORDS.includes(keyword)) return { type: 'expression', lastKeyword: keyword }
   return { type: 'keyword', lastKeyword: keyword || undefined }
 }
@@ -440,6 +442,7 @@ export function analyzeContext(sql: string, offset: number, dialect: Dialect = '
 export function shouldOfferCompletions(query: string, explicit: boolean, context: CompletionContext): boolean {
   if (explicit) return true
   if (query.replace(/^[`"]+|[`"]+$/g, '')) return true
+  if (context.type === 'value' || (context.type === 'column' && context.lastKeyword === 'SET')) return true
   if (context.type === 'table') return true
   if (context.type === 'column' && context.lastKeyword === 'INTO') return true
   return !!context.qualifier && context.type === 'column'
@@ -482,7 +485,7 @@ export function suggestionScore(query: string, item: Suggestion): number {
   const column = insert.includes('.') ? insert.slice(insert.lastIndexOf('.') + 1) : label
   let best = Math.max(scoreText(q, label), scoreText(q, insert), scoreText(q, column))
   for (const part of label.split(/[\s.]+/)) best = Math.max(best, scoreText(q, part))
-  return best
+  return Math.max(best, item.comment ? Math.min(2000, scoreText(q, item.comment.toLocaleLowerCase())) : 0)
 }
 
 export function suggestionMatches(query: string, item: Suggestion): boolean {
@@ -494,13 +497,13 @@ function finish(suggestions: Suggestion[], pending: string[]): CompletionResult 
 }
 
 function columnSuggestion(column: CatalogColumn, insert: string, detail: string | undefined, boost: number): Suggestion {
-  return { label: insert.includes('.') ? insert : column.name, insert, kind: 'column', detail, boost }
+  return { label: insert.includes('.') ? insert : column.name, insert, kind: 'column', detail: [detail, column.comment].filter(Boolean).join(' · ') || undefined, comment: column.comment, boost }
 }
 
 function suggestTables(tables: CatalogTable[], allowViews: boolean): Suggestion[] {
   return tables
     .filter(item => allowViews || item.kind === 'table')
-    .map(item => ({ label: item.name, insert: item.name, kind: 'table' as const, boost: 80 }))
+    .map(item => ({ label: item.name, insert: item.name, kind: 'table' as const, comment: item.comment, detail: item.comment, boost: 80 }))
 }
 
 function suggestQualifiedColumns(input: {
@@ -591,9 +594,9 @@ export function buildCompletion(input: {
   if (context.qualifier) {
     return suggestQualifiedColumns({ context, scope, schema, tables, columnsOf, resolveTable, pending, projected })
   }
-  if (context.type === 'expression' || context.type === 'column') {
+  if (context.type === 'expression' || context.type === 'column' || context.type === 'value') {
     const scoped = scope.tables.length ? scope.tables.flatMap(ref => columnsFor(ref)) : []
-    const keywords = context.type === 'expression' ? expressionKeywords(context.lastKeyword, dialect) : []
+    const keywords = context.type === 'value' ? ['NULL', ...(context.lastKeyword === 'VALUES' || context.lastKeyword === 'SET' ? ['DEFAULT'] : [])].map(label => ({ label, insert: label, kind: 'keyword' as const, boost: 40 })) : context.type === 'expression' ? expressionKeywords(context.lastKeyword, dialect) : []
     return finish([...scoped, ...keywords], pending)
   }
   return finish(keywordSuggestions(30, dialect), pending)

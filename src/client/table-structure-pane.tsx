@@ -3,12 +3,13 @@ import type { Connection } from '../shared/workbench.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 
 export function TableStructurePane({
-  cache, connection, schema, table,
+  cache, connection, schema, table, onClose,
 }: {
   cache: SchemaCache
   connection: Connection
   schema: string
   table: string
+  onClose(): void
 }) {
   const cached = cache.detailSnapshot(connection, schema, table)
   const [error, setError] = useState('')
@@ -22,7 +23,7 @@ export function TableStructurePane({
   }, [cache, connection, schema, table])
   const detail = cache.detailSnapshot(connection, schema, table)
   return <div className="db-structure-pane" aria-label={`${table} 表结构`}>
-    <h3>{table}</h3>
+    <h3>{table}<button type="button" className="db-icon-button" aria-label="关闭表结构" title="关闭表结构" onClick={onClose}>×</button></h3>
     {busy && <p className="db-info-note" role="status">正在读取字段…</p>}
     {error && <p className="db-error" role="alert">{error}</p>}
     {detail && <div className="db-grid-scroll"><table className="db-grid"><thead><tr><th>字段</th><th>类型</th><th>NULL</th><th>KEY</th><th>默认值</th><th>Extra</th></tr></thead>

@@ -72,7 +72,9 @@ export function createDdlPlan(dialect, schema, table, operations, metadata, sqlM
       }
       case 'dropTable': destructive = true; sql = `DROP TABLE ${target}`; break
       case 'truncateTable': destructive = true; sql = `TRUNCATE TABLE ${target}`; break
-      case 'analyzeTable': sql = sqlDialect.analyzeTable(target, schema, operation.name || table); break
+      case 'analyzeTable':
+        if (operation.name !== undefined && operation.name !== current) throw new Error('统计维护必须使用已检查的目标表。')
+        sql = sqlDialect.analyzeTable(target, schema, current); break
       default: throw new Error('结构操作尚未支持。')
     }
     steps.push({ kind: operation.kind, table: beforeTable, afterTable: current, sql, state: 'not-run' })

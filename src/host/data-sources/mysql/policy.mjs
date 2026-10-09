@@ -1,7 +1,8 @@
-import { authorizeByLead, ONLY_SHOW, recordTable, splitStatements, WRITE_ONLY } from '../sql-policy-common.mjs'
+import { ONLY_SHOW, recordTable, splitStatements, WRITE_ONLY, systemSchemas } from '../sql-policy-common.mjs'
 
-const SHOW_INDEX_FROM = /^SHOW\s+(STORAGE\s+)?INDEX\s+FROM\s+`?([A-Za-z0-9_]+)`?/i
-const SHOW_TABLE_STATUS = /^SHOW\s+TABLE\s+STATUS(?:\s+FROM\s+`?([A-Za-z0-9_]+)`?)?/i
+const identifier = '(?:`((?:[^`]|``)+)`|([A-Za-z0-9_$]+))'
+const SHOW_INDEX_FROM = new RegExp('^SHOW\\s+INDEX\\s+FROM\\s+' + identifier + '(?:\\s*\\.\\s*' + identifier + ')?(?:\\s+FROM\\s+' + identifier + ')?\\s*;?$', 'i')
+const SHOW_TABLE_STATUS = new RegExp('^SHOW\\s+TABLE\\s+STATUS(?:\\s+FROM\\s+' + identifier + ')?\\s*;?$', 'i')
 
 
 export { splitStatements }
@@ -23,10 +24,16 @@ export async function authorize(sql, schema) {
   if (/^SHOW\s/i.test(leading)) {
     const idx = leading.match(SHOW_INDEX_FROM)
     if (idx) {
-      tables.add(idx[2])
+      const first = idx[1] || idx[2], second = idx[3] || idx[4], from = idx[5] || idx[6]
+      const target = second ? first : from || schema
+      if (systemSchemas.has(target.toLowerCase())) throw new Error('不允许访问系统库对象。')
+      if (second && from && first !== from) throw new Error('执行目标不一致。')
+      tables.add(second || first)
       return { kind: 'show', tables: [...tables].filter(Boolean), references, aliases, sql: sql.trim().replace(/;\s*$/, '') }
     }
-    if (SHOW_TABLE_STATUS.test(leading)) {
+    const status = leading.match(SHOW_TABLE_STATUS)
+    if (status) {
+      if (systemSchemas.has((status[1] || status[2] || schema).toLowerCase())) throw new Error('不允许访问系统库对象。')
       return { kind: 'show', tables: [], references, aliases, sql: sql.trim().replace(/;\s*$/, '') }
     }
     throw new Error(ONLY_SHOW)
@@ -37,18 +44,18 @@ export async function authorize(sql, schema) {
   try {
     root = parser.astify(sql, { database: 'MySQL' })
     if (Array.isArray(root)) {
-      if (root.length !== 1) return authorizeByLead(sql, schema)
+      if (root.length !== 1) throw new Error('无法完整校验该语法，不执行。')
       root = root[0]
     }
   } catch {
-    return authorizeByLead(sql, schema)
+    throw new Error('无法完整校验该语法，不执行。')
   }
   if (root.type === 'select') {
-    if (root.into?.position) throw new Error('不允许 SELECT INTO OUTFILE/DUMPFILE 写文件。')
-    if (root.locking_read) throw new Error('只读会话不支持锁定读（FOR UPDATE / LOCK IN SHARE MODE）。')
     for (const cte of root.with || []) ctes.add(cte.name.value)
     const walk = (node, inherited = new Set()) => {
       if (!node || typeof node !== 'object') return
+      if (node.locking_read) throw new Error('只读会话不支持锁定读（FOR UPDATE / LOCK IN SHARE MODE）。')
+      if (node.into?.position) throw new Error('不允许 SELECT INTO OUTFILE/DUMPFILE 写文件。')
       if (node.type && ['insert', 'update', 'delete', 'replace', 'assign', 'var', 'call', 'set', 'use'].includes(node.type)) throw new Error('查询包含非只读语句。')
       const scope = new Set(inherited)
       for (const cte of node.with || []) scope.add(cte.name.value)
@@ -59,6 +66,13 @@ export async function authorize(sql, schema) {
     return { kind: 'select', tables: [...tables].filter(Boolean), references, aliases, sql: sql.trim().replace(/;\s*$/, '') }
   }
   if (root.type === 'insert' || root.type === 'update' || root.type === 'replace' || root.type === 'delete') {
+    const check = node => {
+      if (!node || typeof node !== 'object') return
+      if (node.locking_read || node.into?.position) throw new Error('写入中的查询不支持锁定读或写文件。')
+      if (node.table && typeof node.table === 'string') recordTable(tables, node)
+      for (const value of Object.values(node)) if (typeof value === 'object') Array.isArray(value) ? value.forEach(check) : check(value)
+    }
+    check(root)
     const source = root.type === 'delete'
       ? [...(Array.isArray(root.table) ? root.table : root.table ? [root.table] : []), ...(Array.isArray(root.from) ? root.from : [])]
       : root.table

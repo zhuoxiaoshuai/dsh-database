@@ -1,7 +1,29 @@
 import type { Result } from './workbench.ts'
 import type { DatabaseOperation } from './database-actions.ts'
 import type { ExecutionDocument } from './execution-document.ts'
+import type { DataSourceId } from './data-sources/types.ts'
 import { RESULT_PREVIEW_MAX_BYTES, RESULT_PREVIEW_MAX_COLUMNS, RESULT_PREVIEW_MAX_ROWS } from './limits.ts'
+
+/** Captured once before dispatch. Live replies must never reconstruct this from current state. */
+export interface DocumentExecutionIdentity {
+  conversationId: string
+  connectionId: string
+  sourceId: DataSourceId
+  generation: string
+  context: Record<string, string>
+  queryRevision: number
+  documentText: string
+  executedSql: string
+  initiator: 'ai' | 'user'
+}
+
+export interface DocumentExecutionResult {
+  identity: DocumentExecutionIdentity
+  executionId: string
+  result: unknown
+  kind?: ExecutionType
+  message?: string
+}
 
 export const EXECUTION_STATUSES = ['preparing', 'checking', 'awaiting_confirmation', 'running', 'succeeded', 'failed', 'cancelled', 'unknown'] as const
 export type ExecutionStatus = typeof EXECUTION_STATUSES[number]
@@ -69,6 +91,8 @@ export const EXECUTION_TYPES = ['query', 'verify', 'write', 'explain', 'catalog'
 export type ExecutionType = typeof EXECUTION_TYPES[number]
 
 export interface ExecutionRecord {
+  identity?: DocumentExecutionIdentity
+  context?: Record<string, string>
   executionId: string
   conversationId: string
   callId: string
@@ -102,11 +126,16 @@ export interface ExecutionRecord {
   type?: ExecutionType
   queryRevision?: number
   executedSql?: string
+  documentText?: string
 }
 
 export const WORKBENCH_EVENT_TYPES = ['QUERY_CHANGED', 'CONTROL_CHANGED', 'EXECUTION_DOCUMENT_CHANGED', 'EXECUTION_STARTED', 'EXECUTION_FINISHED', 'EXECUTION_FAILED'] as const
 export type WorkbenchEventType = typeof WORKBENCH_EVENT_TYPES[number]
 export interface WorkbenchEvent {
+  identity?: DocumentExecutionIdentity
+  context?: Record<string, string>
+  conversationId?: string
+  documentText?: string
   type: WorkbenchEventType
   connectionId?: string
   generation?: string
@@ -126,6 +155,13 @@ export interface WorkbenchEvent {
 }
 
 export interface DisplayResult {
+  identity?: DocumentExecutionIdentity
+  context?: Record<string, string>
+  generation?: string
+  schema?: string
+  documentText?: string
+  initiator?: 'ai' | 'user'
+  conversationId?: string
   connectionId: string
   executionId: string
   queryRevision: number
@@ -178,10 +214,12 @@ function clipOneResultPreview(result: Result): Result {
   }
   return {
     columns: (result.columns || []).slice(0, RESULT_PREVIEW_MAX_COLUMNS),
+    ...(Array.isArray(result.binaryColumns) ? { binaryColumns: result.binaryColumns.filter(index => Number.isInteger(index) && index >= 0 && index < Math.min((result.columns || []).length, RESULT_PREVIEW_MAX_COLUMNS)) } : {}),
     rows: kept,
     truncated: result.truncated || kept.length < (result.rows || []).length,
     elapsedMs: result.elapsedMs,
     ...(result.sql ? { sql: result.sql } : {}),
+    ...(result.stepIndex !== undefined ? { stepIndex: result.stepIndex } : {}),
     ...(result.message ? { message: result.message.slice(0, 500) } : {}),
     ...(result.affectedRows !== undefined ? { affectedRows: result.affectedRows } : {}),
   }
@@ -190,6 +228,7 @@ function clipOneResultPreview(result: Result): Result {
 export function clipResultPreview(result?: Result): Result | undefined {
   if (!result) return
   const clipped = clipOneResultPreview(result)
+  if (Array.isArray(result.steps)) clipped.steps = result.steps.slice(0, 16).map(step => ({ index: step.index, sql: step.sql.slice(0, 2048), status: step.status, ...(step.affectedRows !== undefined ? { affectedRows: step.affectedRows } : {}), ...(step.message ? { message: step.message.slice(0, 300) } : {}) }))
   if (Array.isArray(result.batch) && result.batch.length) {
     clipped.batch = result.batch.slice(0, 8).map(item => clipOneResultPreview(item))
   }

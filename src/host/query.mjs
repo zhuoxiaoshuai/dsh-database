@@ -2,7 +2,6 @@ import { authorizeSelect, authorizeStatement, splitStatements } from './query-po
 import { isWritableEnvironment } from './shared/connection-permission.mjs'
 import { cancelledError } from './query-pool.mjs'
 import { SESSION_QUOTA, createQueryPool } from './session-manager.mjs'
-import { rejectDatabaseError } from './connect-error.mjs'
 import { DEFAULT_QUERY_PAGE_SIZE } from './shared/limits.mjs'
 import { getDialect } from './dialects/registry.mjs'
 import { getDataSource } from './data-sources/sql-registry.mjs'
@@ -28,6 +27,7 @@ export function createDatabaseQueryPool(credentials) {
       await dialect.destroy(db)
     },
     isFatal: source.recovery.isFatalQuery,
+    watchConnection: dialect.watchConnection,
   })
 }
 
@@ -50,13 +50,14 @@ export async function executeExplain(input, credentials, signal, authorized) {
   signal?.addEventListener('abort', abort, { once: true })
   try {
     db = await dialect.openQuery(credentials, { schema: input.schema, rowsAsArray: true, probe: false })
+    if (signal?.aborted) throw cancelledError('执行已取消。')
     await dialect.prepareWrite(db, input.schema)
     const result = await dialect.executeExplain(db, policy.sql)
-    return { ...result, truncated: false, elapsedMs: Date.now() - start, message: dialect.explainMessage }
+    return { ...result, binaryColumns: result.binaryColumns || [], truncated: false, elapsedMs: Date.now() - start, message: dialect.explainMessage }
   } catch (error) {
     if (signal?.aborted) throw cancelledError('已取消。')
     if (error instanceof Error && error.message.startsWith('数据库实例或账号')) throw error
-    throw new Error(driverQueryError(error))
+    throw error
   } finally {
     signal?.removeEventListener('abort', abort)
     await dialect.destroy(db)
@@ -76,13 +77,13 @@ export async function executeShow(input, credentials, signal, authorized) {
   signal?.addEventListener('abort', abort, { once: true })
   try {
     db = await dialect.openQuery(credentials, { schema: input.schema, rowsAsArray: true, probe: false })
-    const { rows, columns } = await dialect.executeShow(db, policy.sql)
+    const { rows, columns, binaryColumns = [] } = await dialect.executeShow(db, policy.sql)
     const limited = rows.slice(0, 500)
-    return { columns, rows: limited.map(r => r.map(v => v === null ? null : String(v))), truncated: rows.length > 500, elapsedMs: Date.now() - start, message: 'SHOW 统计 · 只读会话 · 未发送 AI' }
+    return { columns, binaryColumns, rows: limited, truncated: rows.length > 500, elapsedMs: Date.now() - start, message: 'SHOW 统计 · 只读会话 · 未发送 AI' }
   } catch (error) {
     if (signal?.aborted) throw cancelledError('已取消。')
     if (error instanceof Error && error.message.startsWith('数据库实例或账号')) throw error
-    throw new Error(driverQueryError(error))
+    throw error
   } finally {
     signal?.removeEventListener('abort', abort)
     await dialect.destroy(db)
@@ -116,9 +117,6 @@ export async function assertWritableTargets(dialect, targets, queryRows) {
     const rows = await queryRows(statement.sql, statement.params)
     blockedWriteObjectMessage(objectTypeFromRow(rows?.[0]))
   }
-}
-function driverQueryError(error) {
-  return rejectDatabaseError(error)
 }
 
 function appendSelectRow(rows, bytes, limit, values) {
@@ -161,7 +159,7 @@ export async function executeSelect(input, credentials, signal, extras = {}) {
       truncated = fetched.truncated
       if (signal?.aborted) throw cancelledError('读取已取消。')
       signal?.removeEventListener('abort', abort)
-      return { columns: fetched.columns, rows: fetched.rows, truncated, elapsedMs: Date.now() - start, message: `${truncated ? '已到结果上限 · ' : ''}人工原值 · 只读会话 · 未发送 AI`, timings }
+      return { ...fetched, binaryColumns: fetched.binaryColumns || [], truncated, elapsedMs: Date.now() - start, message: `${truncated ? '已到结果上限 · ' : ''}人工原值 · 只读会话 · 未发送 AI`, timings }
     }
     let retried = false
     for (let attempt = 0; ; attempt += 1) {
@@ -179,7 +177,7 @@ export async function executeSelect(input, credentials, signal, extras = {}) {
         if (truncated) await leased.discard()
         else await leased.release()
         if (retried) timings.retried = true
-        return { columns: fetched.columns, rows: fetched.rows, truncated, elapsedMs: Date.now() - start, message: `${truncated ? '已到结果上限 · ' : ''}人工原值 · 只读会话 · 未发送 AI`, timings }
+        return { ...fetched, binaryColumns: fetched.binaryColumns || [], truncated, elapsedMs: Date.now() - start, message: `${truncated ? '已到结果上限 · ' : ''}人工原值 · 只读会话 · 未发送 AI`, timings }
       } catch (error) {
         // Only a broken session is thrown away; SQL errors keep the pooled connection usable.
         if (recovery.isFatalQuery(error, { aborted: signal?.aborted, truncated, cancelled: error?.cancelled })) await leased.discard()
@@ -199,7 +197,7 @@ export async function executeSelect(input, credentials, signal, extras = {}) {
   }
 }
 
-// SQL 页直接写入：人工通道全环境可写并自动提交；其它入口仍仅 SIT。连接中断即回滚未提交变更。
+// Human SQL follows account permissions in all environments; AI writes remain SIT-only.
 export async function executeDml(input, credentials, signal, authorized) {
   const manual = input?.lane === 'manual'
   if (!manual && !isWritableEnvironment(credentials.environment)) throw new Error('该连接为只读权限，SQL 页写入已禁用；请使用 SIT 可编辑连接。')
@@ -207,22 +205,27 @@ export async function executeDml(input, credentials, signal, authorized) {
   if (signal?.aborted) throw cancelledError('执行已取消。')
   const start = Date.now()
   const policy = authorized || await authorizeStatement(credentials.dialect, input.sql, input.schema)
+  if (signal?.aborted) throw cancelledError('执行已取消。')
   if (policy.kind !== 'write') throw new Error('此入口仅执行 INSERT/UPDATE/DELETE。')
-  let db
-  const abort = () => { try { dialect.cancel(db) } catch { /* 中断即回滚未提交变更 */ } }
+  let db, writeStarted = false
+  const abort = () => { try { dialect.cancel(db) } catch { /* outcome requires a receipt */ } }
   signal?.addEventListener('abort', abort, { once: true })
   try {
     db = await dialect.openQuery(credentials, { schema: input.schema, rowsAsArray: false, probe: false })
+    if (signal?.aborted) throw cancelledError('执行已取消。')
     await dialect.prepareWrite(db, input.schema)
+    if (signal?.aborted) throw cancelledError('执行已取消。')
     await dialect.verifyWritableTargets(db, policy.targets, assertWritableTargets)
+    if (signal?.aborted) throw cancelledError('执行已取消。')
+    writeStarted = true
     const affected = await dialect.executeWrite(db, policy.sql)
-    return { columns: [], rows: [], truncated: false, affectedRows: affected, elapsedMs: Date.now() - start, message: `已提交 · 影响 ${affected} 行 · 人工直接提交 · 未发送 AI` }
+    return { columns: [], binaryColumns: [], rows: [], truncated: false, affectedRows: affected, elapsedMs: Date.now() - start, message: `已提交 · 影响 ${affected} 行 · 人工直接提交 · 未发送 AI` }
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith('数据库实例或账号')) throw error
-    if (error instanceof Error && /视图只读|同义词不支持|无法确认写入目标/.test(error.message)) throw error
-    if (signal?.aborted) throw Object.assign(new Error('执行已取消，未提交的变更已回滚。'), { cancelled: true })
-    if (error instanceof Error && /timeout|timed out|ETIMEDOUT|PROTOCOL_SEQUENCE_TIMEOUT/i.test(`${error.message} ${error.code || ''}`)) throw new Error('写入超时已中断连接，未提交的变更已回滚。')
-    throw new Error(driverQueryError(error))
+    if (error instanceof Error && error.message.startsWith('数据库实例或账号')) throw Object.assign(error, { effect: 'none', phase: 'check' })
+    if (error instanceof Error && /视图只读|同义词不支持|无法确认写入目标/.test(error.message)) throw Object.assign(error, { effect: 'none', phase: 'check' })
+    const effect = writeStarted ? error?.effect || 'unknown' : 'none'
+    const failure = effect === 'unknown' ? new Error('写入结果未知，请核验数据库实际状态，不要直接重试。') : error
+    throw Object.assign(failure, { effect, phase: writeStarted ? 'execute' : 'check', category: error?.category || (writeStarted ? 'transport-or-interruption' : 'validation'), databaseCode: error?.databaseCode, cancelled: !!signal?.aborted })
   } finally {
     signal?.removeEventListener('abort', abort)
     await dialect.destroy(db)
@@ -230,16 +233,28 @@ export async function executeDml(input, credentials, signal, authorized) {
 }
 
 // SQL 页统一入口：按授权分类分流查询 / 写入 / 执行计划 / SHOW 统计。
-export async function executeSql(input, credentials, signal, pool, trustedAuthorization) {
+export async function executeSql(input, credentials, signal, pool, trustedAuthorization, progress) {
   const start = Date.now()
   const parts = splitStatements(input.sql, credentials.dialect)
   if (parts.length > 1) {
+    const policies = await Promise.all(parts.map(part => authorizeStatement(credentials.dialect, part, input.schema)))
     const batch = []
+    const steps = parts.map((sql, index) => ({ index, sql, status: 'not-run' }))
     let affectedRows = 0
-    for (const part of parts) {
-      const one = await executeSql({ ...input, sql: part }, credentials, signal, pool)
+    for (const [index, part] of parts.entries()) {
+      let one
+      steps[index] = { index, sql: part, status: 'unknown' }
+      progress?.({ steps, batch: batch.slice(0, 8).map(item => ({ ...item, rows: item.rows.slice(0, 20) })) })
+      try {
+        one = await executeSql({ ...input, sql: part }, credentials, signal, pool, policies[index])
+      } catch (error) {
+        steps[index] = { index, sql: part, status: error?.effect === 'unknown' ? 'unknown' : 'failed', message: error.message }
+        throw Object.assign(error, { steps, batch })
+      }
+      steps[index] = { index, sql: part, status: 'succeeded', affectedRows: one.affectedRows }
       const { batch: _nested, timings: _timings, ...set } = one
-      batch.push({ ...set, sql: part })
+      batch.push({ ...set, sql: part, stepIndex: index })
+      progress?.({ steps, batch: batch.slice(0, 8).map(item => ({ ...item, rows: item.rows.slice(0, 20) })) })
       affectedRows += Number(one?.affectedRows || 0)
     }
     const last = batch.at(-1)
@@ -251,6 +266,7 @@ export async function executeSql(input, credentials, signal, pool, trustedAuthor
       timings: { authorizeMs: 0 },
       message: `已执行 ${batch.length} 条 · ${last?.message || ''}`,
       batch,
+      steps,
     }
   }
   const authorized = trustedAuthorization || await authorizeStatement(credentials.dialect, input.sql, input.schema)

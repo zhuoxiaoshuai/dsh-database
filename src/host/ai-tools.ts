@@ -1,16 +1,13 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import { catalogStatement, visibleCatalogSql } from './catalog.mjs'
-import { redactQueryResult, sanitizeToolError, type RedactionRule } from './ai-redaction.ts'
+import { redactQueryResult, type RedactionRule } from './ai-redaction.ts'
 import type { ConnectionService } from './connection-service.ts'
 import type { ExecutionStore } from './execution-store.ts'
 import { isWritableEnvironment } from '../shared/connection-permission.ts'
-import { executionStop, isHostQueryTimeout } from '../shared/execution.ts'
-import type { DatabaseOperation } from '../shared/database-actions.ts'
-import { draftSelects, quoteIdentifier, type CatalogResult, type Connection, type Dialect, type SqlDialect } from '../shared/workbench.ts'
-import { dialectCapabilities } from '../shared/dialect-capabilities.ts'
+import { runLocalAiOperation } from './local-ai-operation.ts'
+import { type Connection, type Result } from '../shared/workbench.ts'
 import { databaseGuideTopics, lookupDatabaseGuide } from './ai-tool-guides.ts'
 import { workbenchEditorViews } from './workbench-editors.ts'
-import { getSourceRuntime } from './data-sources/runtime-registry.mjs'
+import { aiConnectionHeal, resolveAiConnection } from './ai-connection-resolve.ts'
 
 // 构建时由 build.mjs 从 package.json 注入；源码直跑（测试）时回落 'dev'
 declare const __PLUGIN_VERSION__: string
@@ -23,93 +20,22 @@ type ToolExecution = {
   agent?: { session?: { id?: string } }
 }
 
-function mergeSignal(source?: AbortSignal): AbortController {
-  const controller = new AbortController()
-  if (source?.aborted) controller.abort()
-  else source?.addEventListener('abort', () => controller.abort(), { once: true })
-  return controller
-}
-
 function sessionId(execution: ToolExecution, validOwner: (id: string) => boolean): string {
   const id = execution.agent?.session?.id || ''
   if (!validOwner(id)) throw new Error('当前工具调用缺少有效对话身份，未访问任何数据库。')
   return id
 }
 
-function liveConnection(service: ConnectionService, session: string, connectionId: unknown, generation: unknown): Connection {
-  if (typeof connectionId !== 'string' || typeof generation !== 'string') throw new Error('请提供有效的 connectionId 和 generation。')
-  const connection = ownedConnection(service, session, connectionId)
-  if (!connection.live) throw new Error('请先连接数据库。')
-  if (connection.generation !== generation) throw new Error('连接已变化或当前对话已失效，请刷新。')
-  return connection
-}
-
-function ownedConnection(service: ConnectionService, session: string, connectionId: unknown): Connection & { dialect: SqlDialect } {
-  if (typeof connectionId !== 'string' || !connectionId) throw new Error('请提供有效的 connectionId。')
-  const connection = service.list(session).find(item => item.id === connectionId)
-  if (!connection) throw new Error('连接不存在。')
-  if (getSourceRuntime(connection.dialect).documentKind !== 'sql') throw new Error('此工具仅适用于 SQL 数据源。')
-  return connection as Connection & { dialect: SqlDialect }
-}
-
-async function withRecord<T>(
-  executions: ExecutionStore,
-  execution: ToolExecution,
-  session: string,
-  connection: Connection | undefined,
-  operation: DatabaseOperation,
-  details: { schema?: string; tables?: string[]; sql?: string; params?: unknown; draft?: Record<string, unknown>; title?: string; reason?: string },
-  work: (id: string, signal: AbortSignal) => Promise<T>,
-): Promise<T> {
-  const record = executions.create({
-    conversationId: session,
-    callId: typeof execution.callId === 'string' ? execution.callId : '',
-    rootCallId: typeof execution.rootCallId === 'string' ? execution.rootCallId : '',
-    connectionId: connection?.id,
-    generation: connection?.generation,
-    connectionName: connection?.name,
-    dialect: connection?.dialect,
-    environment: connection?.environment,
-    schema: details.schema,
-    operation,
-    tables: details.tables,
-    sql: details.sql,
-    params: details.params,
-    draft: details.draft,
-    initiator: 'ai',
-    title: details.title,
-    reason: details.reason,
+function resolveSql<Live extends boolean = true>(service: ConnectionService, session: string, connectionId: unknown, generation: unknown, requireLive: Live = true as Live) {
+  return resolveAiConnection({
+    connections: service.list(session),
+    family: 'sql',
+    connectionId,
+    generation,
+    requireLive,
   })
-  const controller = mergeSignal(execution.signal)
-  executions.attachAbort(record.executionId, controller)
-  executions.transition(record.executionId, 'checking')
-  try {
-    const value = await work(record.executionId, controller.signal)
-    return value
-  } catch (error) {
-    const message = sanitizeToolError(error instanceof Error ? error.message : '操作失败')
-    const dispatched = executions.dispatched(record.executionId)
-    const stop = executionStop({ aborted: !!controller.signal.aborted, dispatched, message })
-    if (isHostQueryTimeout(message)) executions.complete(record.executionId, 'failed', message)
-    else if (stop.status !== 'failed') executions.complete(record.executionId, stop.status, stop.message)
-    else if (/超时|timeout/i.test(message)) {
-      executions.event(record.executionId, 'timeout', message)
-      executions.complete(record.executionId, 'unknown', message)
-    } else if (/连接已关闭|连接已变化/.test(message)) {
-      executions.event(record.executionId, 'disconnect', message)
-      executions.complete(record.executionId, 'unknown', message)
-    } else executions.complete(record.executionId, 'failed', message)
-    throw new Error(isHostQueryTimeout(message) || stop.status === 'failed' ? message : stop.message)
-  }
 }
 
-function catalogUnavailable(result: CatalogResult | undefined): string | undefined {
-  const bags = [result, result?.indexes, result?.constraints, result?.definition, result?.storage] as { status?: string; reason?: string }[]
-  const hit = bags.find(item => item && item.status === 'unavailable')
-  return hit?.reason
-}
-
-const SYSTEM_SCHEMA = /^(information_schema|mysql|performance_schema|sys|sysaux|system)$/i
 function clipName(value: unknown, max = 40): string {
   const text = String(value || '').replace(/\s+/g, ' ').trim()
   if (!text) return ''
@@ -118,25 +44,6 @@ function clipName(value: unknown, max = 40): string {
 
 function queryDraft(sql?: string): Record<string, unknown> | undefined {
   return sql?.trim() ? { kind: 'query', sql } : undefined
-}
-
-function recordCatalogSql(executions: ExecutionStore, id: string, dialect: Dialect, input: Record<string, unknown>, extra?: { draft?: Record<string, unknown>; tables?: string[] }) {
-  const statement = catalogStatement(dialect, input)
-  executions.annotate(id, { sql: visibleCatalogSql(statement), params: statement.params, draft: extra?.draft, tables: extra?.tables })
-}
-
-function schemasDraft(dialect: Dialect, items?: Record<string, unknown>[]) {
-  const rows = (items || []).filter(item => !SYSTEM_SCHEMA.test(String(item.name || '')))
-  if (!rows.length) return
-  const q = (name: string) => quoteIdentifier(dialect, name)
-  const limit = dialectCapabilities(dialect).pageClause(100, 0).replace(/^OFFSET 0 ROWS /, '')
-  const notes = rows.slice(0, 20).map(item => `-- ${item.name} · 基表 ${item.tables ?? '?'} · 视图 ${item.views ?? '?'}`).join('\n')
-  return queryDraft(`${notes}\n\n-- 把「请填写表名」改成真实表名后，选中下面语句运行\nSELECT * FROM ${q(String(rows[0].name))}.${q('请填写表名')}\n${limit};`)
-}
-
-function tablesDraft(dialect: Dialect, schema: string, items?: Record<string, unknown>[]) {
-  const names = (items || []).map(item => String(item.name || '')).filter(Boolean)
-  return queryDraft(draftSelects(dialect, schema, names.length ? names : ['请填写表名']))
 }
 
 export function registerAiTools(ctx: { tools: { register(tool: unknown): void } }, service: ConnectionService, executions: ExecutionStore, validOwner: (id: string) => boolean, rules: RedactionRule[] = []): void {
@@ -158,7 +65,7 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
   const editorViews = (session: string) => workbenchEditorViews(service.snapshot(session))
   ctx.tools.register(defineTool({
     name: 'database_status',
-    description: '查库用 database_*。当前 SQL 用 database_execute_sql action=read。',
+    description: '先调本工具取 connectionId。查库用 database_*。当前 SQL 用 database_execute_sql action=read。',
     parameters: {
       topic: { type: 'string', description: '工具名或 workflow。省略则只返回状态。' },
     },
@@ -174,6 +81,8 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
       const connections = liveSummaries(session)
       return json({
         stage: 'ready',
+        storageDegraded: service.storageDegraded || executions.storageDegraded,
+        capabilities: { sql: true, manualSqlDml: 'account privileges in all environments', aiSqlDml: 'SIT only' },
         pluginVersion: PLUGIN_VERSION,
         conversationId: session,
         defaultAccess: 'readonly',
@@ -183,13 +92,12 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
           tool: 'database_templates',
         },
         note: '查库用 database_*。当前 SQL、这个 SQL 用 database_execute_sql action=read。',
-        next: connections.length ? [
-          'database_execute_sql',
-          'database_catalog',
-          'database_templates',
-          'database_import_connections',
-        ] : [
-          'database_import_connections',
+        next: connections.length ? connections.flatMap(item => [
+          { tool: 'database_execute_sql', args: { action: 'read', connectionId: item.connectionId, generation: item.generation } },
+          { tool: 'database_catalog', args: { connectionId: item.connectionId, generation: item.generation, kind: 'schemas' } },
+          { tool: 'database_templates', args: { action: 'search', connectionId: item.connectionId } },
+        ]) : [
+          { tool: 'database_import_connections', args: { connections: [] } },
           '请用户在数据库工作台登录连接，然后调用 database_status',
         ],
         connections,
@@ -198,7 +106,7 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
   }))
   ctx.tools.register(defineTool({
     name: 'database_import_connections',
-    description: '只登记不登录。',
+    description: '登记主机，MySQL/Oracle/Redis/Kafka，不收密码不登录。',
     parameters: {
       connections: {
         type: 'array',
@@ -208,12 +116,15 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
           additionalProperties: false,
           properties: {
             name: { type: 'string' },
-            dialect: { type: 'string', enum: ['mysql', 'oracle', 'redis'] },
+            dialect: { type: 'string', enum: ['mysql', 'oracle', 'redis', 'kafka'] },
             host: { type: 'string' },
             port: { type: 'integer' },
             database: { type: 'string' },
             oracleMode: { type: 'string', enum: ['service', 'sid'] },
             redisMode: { type: 'string', enum: ['standalone', 'sentinel', 'cluster'] },
+            brokers: { type: 'array', items: { type: 'string' } },
+            tls: { type: 'boolean' },
+            saslMechanism: { type: 'string', enum: ['none', 'plain', 'scram-sha-256', 'scram-sha-512'] },
             sentinelMaster: { type: 'string' },
             username: { type: 'string' },
             environment: { type: 'string', enum: ['sit', 'uat', 'pvt'] },
@@ -224,12 +135,13 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
     output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
     async execute(args: { connections?: unknown[] }, execution: ToolExecution) {
       const session = sessionId(execution, validOwner)
-      return await withRecord(executions, execution, session, undefined, 'database_import_connections', {
+      return await runLocalAiOperation(executions, execution, session, undefined, 'database_import_connections', {
         title: '批量登记数据库连接，供稍后在工作台补密码登录',
         reason: '从外部清单导入连接信息，不保存密码、不发起登录。',
-      }, async id => {
-        executions.event(id, 'check-passed')
-        executions.transition(id, 'running')
+      }, async context => {
+        const id = context.executionId
+        context.markChecked()
+        context.markRunning()
         const result = service.importConnections(session, args.connections)
         const created = result.created.map(item => ({
           connectionId: item.id,
@@ -238,112 +150,37 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
           host: item.settings && 'host' in item.settings ? item.settings.host : undefined,
           port: item.settings && 'port' in item.settings ? item.settings.port : undefined,
           database: item.settings && 'database' in item.settings ? item.settings.database : item.database,
+          ...(item.settings && 'brokers' in item.settings ? { brokers: item.settings.brokers, tls: item.settings.tls, saslMechanism: item.settings.saslMechanism } : {}),
           username: item.settings?.username,
           environment: item.environment,
           live: false,
           hasPassword: false,
         }))
         const message = `已登记 ${created.length} 条，跳过 ${result.skipped.length} 条。`
-        executions.complete(id, 'succeeded', message, undefined, message)
-        return json({ executionId: id, created, skipped: result.skipped, message })
+        return { value: json({ executionId: id, created, skipped: result.skipped, message }), message, conclusion: message }
       })
     },
   }))
   ctx.tools.register(defineTool({
     name: 'database_catalog',
-    description: '字典结构，勿用 information_schema。',
+    description: '表/列/库结构，MySQL Oracle。勿用 information_schema。',
     parameters: {
-      connectionId: { type: 'string', required: true },
-      generation: { type: 'string', required: true },
-      kind: { type: 'string', enum: ['schemas', 'tables', 'table'], required: true },
+      connectionId: { type: 'string', description: '来自 database_status.connections。唯一已登录 SQL 连接可省略。' },
+      generation: { type: 'string', description: '来自 database_status.connections。省略则用当前 generation。' },
+      kind: { type: 'string', enum: ['schemas', 'tables', 'table'], required: true, description: 'schemas 可分页；tables 必须 schema；table 必须 schema 和 table。' },
       schema: { type: 'string' },
       table: { type: 'string' },
       search: { type: 'string' },
       offset: { type: 'integer' },
     },
     output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
-    async execute(args: { connectionId: string; generation: string; kind?: string; schema?: string; table?: string; search?: string; offset?: number }, execution: ToolExecution) {
+    async execute(args: { connectionId?: string; generation?: string; kind?: string; schema?: string; table?: string; search?: string; offset?: number }, execution: ToolExecution) {
       const session = sessionId(execution, validOwner)
-      const connection = liveConnection(service, session, args.connectionId, args.generation)
-      const kind = args.kind
-      if (kind !== 'schemas' && kind !== 'tables' && kind !== 'table') throw new Error('kind 须为 schemas、tables 或 table。')
-      if ((kind === 'tables' || kind === 'table') && !args.schema) throw new Error('请提供 schema。')
-      if (kind === 'table' && !args.table) throw new Error('请提供 table。')
-      const title = kind === 'schemas'
-        ? `列出 ${clipName(connection.name)} 的数据库，确认可见库和表数量`
-        : kind === 'tables'
-          ? (args.search
-            ? `查找 ${clipName(args.schema)} 中匹配“${clipName(args.search, 24)}”的表，定位业务表`
-            : `查找 ${clipName(args.schema)} 中的表，确认有哪些业务表`)
-          : `查看 ${clipName(args.schema)}.${clipName(args.table)} 的结构，确认字段后再写查询`
-      const reason = kind === 'schemas'
-        ? '为确认可见 Schema 和表数量。'
-        : kind === 'tables'
-          ? (args.search ? `按名称或字段匹配“${clipName(args.search, 24)}”，定位可用业务表。` : `浏览 ${clipName(args.schema)} 的表和视图，便于后续查询。`)
-          : '为确认字段、索引和约束后再写查询。'
-      return await withRecord(executions, execution, session, connection, 'database_catalog', {
-        schema: kind === 'schemas' ? undefined : args.schema,
-        tables: kind === 'table' && args.table ? [args.table] : undefined,
-        title,
-        reason,
-      }, async (id, signal) => {
-        executions.event(id, 'check-passed')
-        executions.transition(id, 'running')
-        executions.event(id, 'dispatched')
-        if (kind === 'schemas') {
-          const input = { kind: 'schemas' as const, offset: args.offset || 0 }
-          recordCatalogSql(executions, id, connection.dialect, input, { draft: schemasDraft(connection.dialect, []) })
-          const result = await service.catalog(session, connection.id, connection.generation, input, signal)
-          const unavailable = catalogUnavailable(result)
-          const sql = visibleCatalogSql(catalogStatement(connection.dialect, input))
-          recordCatalogSql(executions, id, connection.dialect, input, { draft: schemasDraft(connection.dialect, result.items) })
-          if (unavailable) {
-            executions.complete(id, 'failed', unavailable, undefined, `无法列出数据库：${unavailable}`)
-            return json({ executionId: id, unavailable: true, reason: unavailable, sql })
-          }
-          const count = (result.items || []).length
-          executions.complete(id, 'succeeded', undefined, undefined, count ? `列出 ${count} 个数据库。` : '没有可见数据库。')
-          return json({ executionId: id, items: result.items || [], more: !!result.more, source: result.source, collectedAt: result.collectedAt, sql })
-        }
-        if (kind === 'tables') {
-          const input = { kind: 'tables' as const, schema: args.schema || '', search: args.search, offset: args.offset || 0 }
-          recordCatalogSql(executions, id, connection.dialect, input)
-          const result = await service.catalog(session, connection.id, connection.generation, input, signal)
-          const unavailable = catalogUnavailable(result)
-          const sql = visibleCatalogSql(catalogStatement(connection.dialect, input))
-          const names = (result.items || []).map(item => String(item.name || '')).filter(Boolean)
-          recordCatalogSql(executions, id, connection.dialect, input, { draft: tablesDraft(connection.dialect, args.schema || '', result.items), tables: names })
-          if (unavailable) {
-            executions.complete(id, 'failed', unavailable, undefined, `无法查找表：${unavailable}`)
-            return json({ executionId: id, unavailable: true, reason: unavailable, sql })
-          }
-          executions.complete(id, 'succeeded', undefined, undefined, names.length ? `查询成功，返回 ${names.length} 张表，可继续查下一个库。` : '查询成功，未找到匹配的表。')
-          return json({ executionId: id, items: result.items || [], more: !!result.more, estimated: true, source: result.source, collectedAt: result.collectedAt, sql })
-        }
-        const input = { kind: 'table' as const, schema: args.schema || '', table: args.table || '' }
-        recordCatalogSql(executions, id, connection.dialect, input, { draft: queryDraft(draftSelects(connection.dialect, args.schema || '', [args.table || ''])) })
-        const result = await service.catalog(session, connection.id, connection.generation, input, signal)
-        let indexes = result.indexes
-        if (dialectCapabilities(connection.dialect).supportsShowIndex) {
-          const indexPage = await service.catalog(session, connection.id, connection.generation, { kind: 'indexes', schema: args.schema || '', table: args.table || '' }, signal)
-          indexes = indexPage.indexes
-        }
-        const sql = visibleCatalogSql(catalogStatement(connection.dialect, input))
-        const columns = result.columns || []
-        executions.complete(id, 'succeeded', undefined, undefined, Array.isArray(columns) ? `读取到 ${columns.length} 个字段。` : '已读取表结构。')
-        return json({
-          executionId: id,
-          columns: result.columns || [],
-          indexes,
-          constraints: result.constraints,
-          storage: result.storage,
-          definition: result.definition,
-          source: result.source,
-          collectedAt: result.collectedAt,
-          truncated: result.truncated,
-          sql,
-        })
-      })
+      const resolved = resolveSql(service, session, args.connectionId, args.generation)
+      if (!resolved.ok) return json(resolved)
+      const connection = resolved.connection
+      return json(await service.executeCatalogTool(session, connection.id, connection.generation, args,
+        execution.signal, execution.callId, execution.rootCallId))
     },
   }))
 
@@ -351,10 +188,10 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
     name,
     description,
     parameters: {
-      connectionId: { type: 'string' },
-      generation: { type: 'string' },
-      schema: { type: 'string' },
-      sql: { type: 'string' },
+      connectionId: { type: 'string', description: '来自 database_status.connections。action=read 或唯一已登录连接可省略。' },
+      generation: { type: 'string', description: '来自 database_status.connections。省略则用当前 generation。' },
+      schema: { type: 'string', description: '执行必填。action=read 可不传。' },
+      sql: { type: 'string', description: '要执行的语句。看当前 SQL 时不传，改传 action=read。' },
       action: { type: 'string', enum: ['read'], description: '当前 SQL、这个 SQL、看数据库 SQL 时传 read。' },
       purpose: { type: 'string', enum: ['verify', 'result'], description: 'verify 只回给模型；result 发布到工作台。' },
       limit: { type: 'integer' },
@@ -386,10 +223,20 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
         })
       }
       if (!sql) throw new Error('看当前 SQL 请传 action=read；执行请提供 sql。')
-      if (!args.connectionId || !args.generation || !args.schema) throw new Error('执行 SQL 需要 connectionId、generation 和 schema。')
-      const connection = liveConnection(service, session, args.connectionId, args.generation)
+      const resolved = resolveSql(service, session, args.connectionId, args.generation)
+      if (!resolved.ok) return json(resolved)
+      const connection = resolved.connection
+      if (typeof args.schema !== 'string' || args.schema === '') {
+        return json(aiConnectionHeal('sql', '执行 SQL 需要 schema。', [{
+          connectionId: connection.id,
+          generation: connection.generation,
+          name: connection.name,
+          dialect: connection.dialect,
+        }]))
+      }
       const current = service.getSharedQuery(session, connection.id)
-      const outcome = await service.runSharedQuery(session, {
+      let outcome: Record<string, unknown>
+      try { outcome = await service.runSharedQuery(session, {
         connectionId: connection.id,
         generation: connection.generation,
         schema: args.schema,
@@ -400,7 +247,19 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
         callId: execution.callId,
         rootCallId: execution.rootCallId,
         limit: args.limit,
-      }, mergeSignal(execution.signal).signal)
+      }, execution.signal) } catch (caught) {
+        const receipt = caught as { steps?: Result['steps']; batch?: Result[]; effect?: string; phase?: string; executionId?: string; executionStatus?: string; message?: string }
+        if (!receipt.steps) throw caught
+        const statements = (receipt.batch || []).slice(0, 8).map(result => {
+          const data = { ...result, rows: result.rows.slice(0, 100) }
+          if (isWritableEnvironment(connection.environment)) return data
+          const { rows: _rows, ...rest } = data
+          return { ...rest, ...redactQueryResult({ sql: result.sql || sql, tables: [], schema: args.schema, connectionId: connection.id,
+            columns: result.columns, rows: data.rows, truncated: result.truncated, elapsedMs: result.elapsedMs, executionId: receipt.executionId || '', rules }) }
+        })
+        return json({ ok: false, status: receipt.executionStatus || (receipt.effect === 'unknown' ? 'unknown' : 'failed'), executionId: receipt.executionId,
+          error: receipt.message, phase: receipt.phase, steps: receipt.steps, statements, help: '成功步骤已经提交，不得重复执行；未知步骤须先核验。' })
+      }
       const model = outcome.model && typeof outcome.model === 'object' ? { ...outcome.model as Record<string, unknown> } : {}
       const tables = Array.isArray(outcome.tables) ? outcome.tables : []
       const sit = isWritableEnvironment(connection.environment)
@@ -459,33 +318,36 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
       if (action !== 'search' && action !== 'get' && action !== 'save') throw new Error('action 须为 search、get 或 save。')
       if (action === 'get') {
         if (!args.id) throw new Error('请提供 id。')
-        return await withRecord(executions, execution, session, undefined, 'database_templates', {
+        return await runLocalAiOperation(executions, execution, session, undefined, 'database_templates', {
           title: '读取 SQL 经验原文，仍须通过当前连接策略',
           reason: '为查看可执行 SQL，仍须通过当前连接策略。',
-        }, async id => {
+        }, async context => {
+          const id = context.executionId
           const item = service.templates.get(args.id || '', true)
           if (!item) throw new Error('模板不存在、未发布或已归档。')
-          executions.event(id, 'check-passed')
-          executions.transition(id, 'running')
-          executions.annotate(id, { sql: item.originalSql, draft: queryDraft(item.originalSql) })
-          executions.complete(id, 'succeeded', undefined, undefined, `已读取模板「${clipName(item.title)}」。`)
-          return json({
+          context.markChecked()
+          context.markRunning()
+          context.annotate({ sql: item.originalSql, draft: queryDraft(item.originalSql) })
+          return { conclusion: `已读取模板「${clipName(item.title)}」。`, value: json({
             executionId: id,
             id: item.id, title: item.title, summary: item.summary, tags: item.tags, dialect: item.dialect,
             originalSql: item.originalSql, features: item.features, version: item.version, familyId: item.familyId,
-          })
+          }) }
         })
       }
       if (action === 'save') {
-        if (!args.connectionId || !args.sql || !args.title) throw new Error('保存经验需要 connectionId、title 和 sql。')
-        const connection = ownedConnection(service, session, args.connectionId)
-        return await withRecord(executions, execution, session, connection, 'database_templates', {
+        if (!args.sql || !args.title) throw new Error('保存经验需要 title 和 sql。')
+        const resolved = resolveSql(service, session, args.connectionId, undefined, false)
+        if (!resolved.ok) return json(resolved)
+        const connection = resolved.connection
+        return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
           sql: args.sql,
           title: `保存 SQL 经验“${clipName(args.title, 24)}”`,
           reason: '将稳定可复用的 SQL 写入经验库供后续检索。',
-        }, async id => {
-          executions.event(id, 'check-passed')
-          executions.transition(id, 'running')
+        }, async context => {
+          const id = context.executionId
+          context.markChecked()
+          context.markRunning()
           const saved = await service.templates.publishFromSql({
             sql: args.sql || '',
             dialect: connection.dialect,
@@ -495,24 +357,28 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
             tags: args.tags,
           })
           const message = saved.merged ? `已合并到已有经验「${clipName(saved.title)}」。` : `已保存经验「${clipName(saved.title)}」。`
-          executions.complete(id, 'succeeded', message, undefined, message)
-          return json({ executionId: id, id: saved.id, title: saved.title, merged: saved.merged, version: saved.version, message })
+          return { message, conclusion: message, value: json({ executionId: id, id: saved.id, title: saved.title, merged: saved.merged, version: saved.version, message }) }
         })
       }
-      const connection = args.connectionId ? ownedConnection(service, session, args.connectionId) : undefined
+      let connection: Connection | undefined
+      if (args.connectionId) {
+        const resolved = resolveSql(service, session, args.connectionId, undefined, false)
+        if (!resolved.ok) return json(resolved)
+        connection = resolved.connection
+      }
       const dialect = args.dialect || connection?.dialect
-      return await withRecord(executions, execution, session, connection, 'database_templates', {
+      return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
         title: args.query ? `检索 SQL 经验“${clipName(args.query, 24)}”，复用已发布写法` : '检索最近 SQL 经验，复用已发布写法',
         reason: '为复用已发布的查询写法。',
-      }, async id => {
-        executions.event(id, 'check-passed')
-        executions.transition(id, 'running')
+      }, async context => {
+        const id = context.executionId
+        context.markChecked()
+        context.markRunning()
         const items = service.templates.search(args.query || '', dialect, connection?.id).map(item => ({
           id: item.id, title: item.title, summary: item.summary, tags: item.tags, dialect: item.dialect,
           operation: item.features.operation, tables: item.features.tables, risk: item.features.risk, version: item.version,
         }))
-        executions.complete(id, 'succeeded', `检索到 ${items.length} 条模板。`, undefined, items.length ? `检索到 ${items.length} 条模板。` : '没有匹配的 SQL 经验。')
-        return json({ executionId: id, items })
+        return { message: `检索到 ${items.length} 条模板。`, conclusion: items.length ? `检索到 ${items.length} 条模板。` : '没有匹配的 SQL 经验。', value: json({ executionId: id, items }) }
       })
     },
   }))
@@ -524,20 +390,21 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
     output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
     async execute(_args: unknown, execution: ToolExecution) {
       const session = sessionId(execution, validOwner)
-      return await withRecord(executions, execution, session, undefined, 'database_read_collab', {
+      return await runLocalAiOperation(executions, execution, session, undefined, 'database_read_collab', {
         title: '读取当前 AI Query，核对用户是否已改写或接管',
         reason: '用户可能已改过语句或接管控制权。',
-      }, async id => {
-        executions.event(id, 'check-passed')
-        executions.transition(id, 'running')
+      }, async context => {
+        const id = context.executionId
+        context.markChecked()
+        context.markRunning()
         const items = editorViews(session)
-        executions.annotate(id, { sql: items[0]?.activeQuery?.sql || items[0]?.aiQuery?.sql, draft: queryDraft(items[0]?.activeQuery?.sql || items[0]?.aiQuery?.sql) })
-        executions.complete(id, 'succeeded', items.length ? `已读取 ${items.length} 个连接上的当前 SQL。` : '工作台还没有 SQL。', undefined, items.length ? `已读取 ${items.length} 个连接上的当前 SQL。` : '工作台还没有 SQL。')
-        return json({
+        context.annotate({ sql: items[0]?.activeQuery?.sql || items[0]?.aiQuery?.sql, draft: queryDraft(items[0]?.activeQuery?.sql || items[0]?.aiQuery?.sql) })
+        const message = items.length ? `已读取 ${items.length} 个连接上的当前 SQL。` : '工作台还没有 SQL。'
+        return { message, conclusion: message, value: json({
           executionId: id,
           note: 'activeQuery 是查询页当前页签。aiQuery 是 AI Query。lastRun 无单元格。',
           items,
-        })
+        }) }
       })
     },
   }))

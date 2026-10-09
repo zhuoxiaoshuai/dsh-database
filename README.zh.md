@@ -5,15 +5,25 @@
 ![全程由 AI 编写](https://img.shields.io/badge/全程由_AI_编写-555?style=flat-square)
 [![stars](https://img.shields.io/github/stars/zhuoxiaoshuai/dsh-database?style=flat-square)](https://github.com/zhuoxiaoshuai/dsh-database)
 
-这是 DeepSeek Harness 的插件，不是 `dsh web` 自带的功能。装进 web profile 并重启后，会话右侧会多一个「数据库」页签，用来连接 MySQL、Oracle、Redis 和 Kafka。卸掉插件，`dsh web` 还是原来的样子。
+在 DeepSeek Harness 会话右侧连接 MySQL、Oracle、Redis 和 Kafka，浏览对象、运行查询，并与 AI 共用查询编辑器。支持 SQL 网格维护与经验库，以及 Kafka 消息检索和 SIT 排障操作。
 
 这份仓库全程由 AI 编写。
+
+[English](README.md) · [安装](#安装) · [首次使用](#首次使用) · [权限](#ai-协作与权限) · [开发](#开发) · [文档](docs/README.md)
 
 ![工作台](docs/screenshots/workbench.png)
 
 截图里的库名、表名是测试数据。
 
-[English](README.md)
+## 功能概览
+
+| 数据源 | 常用功能 |
+| --- | --- |
+| MySQL／Oracle | 库／Schema、表、列和结构；多查询与对象页签、SQL 批量、执行计划、网格维护、SQL 经验分析 |
+| Redis | DB／Key 浏览、类型、TTL、值和单条命令台 |
+| Kafka | Topic／消费组、分区、水位与 Lag、消息预览、有界检索，以及 SIT 发布与修复 |
+
+四种数据源共享查询、AI Query、历史和经验入口，编辑器与结果保留各自的数据源语义。
 
 ## 安装
 
@@ -26,8 +36,9 @@ dsh plugin --profile web add https://github.com/zhuoxiaoshuai/dsh-database/relea
 如果已经克隆了仓库，也可以在本地打包：
 
 ```sh
+npm ci --legacy-peer-deps
 npm pack
-dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.15.tgz
+dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.18.tgz
 ```
 
 卸载：
@@ -46,17 +57,35 @@ dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/r
 
 插件是同一份，只是 profile 不同。`--profile web` 不会装进桌面应用。
 
-## 环境
+上述下载链接指向 `alpha.12.15` 发布包。本地源码当前为 `alpha.12.18`；包名以 `npm pack` 的输出为准，打包时会自动构建。发布包与本地源码的验收记录应分别核对。
 
-保存连接时要选 SIT、UAT 或 PVT。填 `dev` / `test` 会当成 SIT，`staging` 当成 UAT，`prod` 当成 PVT。其他写法一律按 UAT 处理。
+## 首次使用
 
-在 SIT 下，查询结果会原样发给模型。网格改数、DDL 和 `redis_execute` 都可以走，最终仍受库账号权限限制。
+1. 安装并重启对应 profile 后，打开会话右侧的「数据库」页签。
+2. 点击「我的连接」旁的 **＋**，选择数据源，填写地址、账号及目标库／Service Name／DB 或 Broker 列表，选择 SIT、UAT 或 PVT。
+3. 可先点击「测试连接」检查配置，再点击「连接」。测试成功本身不会把连接加入列表。
+4. SQL 选择目标库／Schema 后，在查询页执行 MySQL 的 `SELECT 1;` 或 Oracle 的 `SELECT 1 FROM DUAL;`；Redis 执行 `PING`；Kafka 执行 `TOPICS`。
+5. 需要 AI 协作时，打开 **AI Query**，在对话中说明连接、目标和任务，例如“查看当前 SQL，解释它的作用”。执行前核对当前目标与权限。
 
-在 UAT 和 PVT 下，模型不能写，网格也不能改。SQL 编辑器仍然会自动提交（`lane: manual`）。如果不能接受写入，请用只读账号。
+## AI 协作与权限
 
-密码只存在 Host 进程里。「记住密码」只有 Windows 能用（当前用户 DPAPI，密钥走 stdin），默认关闭。
+在 AI Query 中输入，或点击「接管」，会切换为用户控制；此时 AI 不能覆盖文本。编辑完成后点击「归还 AI」，让模型继续协作。普通查询页与 AI Query 是不同入口。
 
-细节见 [SECURITY.md](SECURITY.md)。
+| 操作 | SIT | UAT／PVT |
+| --- | --- | --- |
+| 人工普通 SQL／接管后的共编 SQL | 读取及 DML，按账号权限自动提交 | 读取及 DML，按账号权限自动提交 |
+| AI SQL | 读取及 DML | 只读 |
+| 网格改数／结构化 DDL | 人工预览与确认后执行 | 禁用 |
+| 人工 Redis 命令台 | 按 ACL 和命令校验执行 | 按 ACL 和命令校验执行 |
+| AI Redis | 结构化读取及 `redis_execute` | 结构化读取；禁用 `redis_execute` |
+| Kafka 读取 | 支持 | 支持 |
+| Kafka 写操作 | 人工确认或 AI 工具执行，仍受 Broker 权限限制 | 禁用 |
+
+**UAT／PVT 不会阻止人工 SQL 或人工 Redis 命令写入。** 需要禁止写入时，请使用只读数据库账号或 Redis ACL。SIT 的 AI SQL 查询结果按原值返回给模型；普通人工查询不会因此自动发送结果给模型。
+
+导入连接时，`dev`／`test` 归为 SIT，`staging` 归为 UAT，`prod` 归为 PVT，其他未知写法按 UAT 处理。密码默认只保留在 Host 内存；Windows 可选「记住密码」，使用当前用户 DPAPI 加密保存。详见 [SECURITY.md](SECURITY.md)。
+
+写操作中断或丢失回执时，结果可能标为「未知」：数据可能已经写入。先核对实际状态，再决定下一步；系统不会自动重放未知写入。重连会使旧请求与执行目标失效。
 
 ## MySQL
 
@@ -70,23 +99,23 @@ SELECT 9007199254740993 AS id;
 
 账号有权限时，目录里能看到字段、索引、约束和 `SHOW CREATE`。没有权限时会写出原因，而不是空白失败。
 
-查询的筛选、排序和分页在库端完成。默认返回 100 行，上限是 500 行或 1 MiB，超时 30 秒。取消查询不会断开这次登录。
+查询的筛选、排序和分页在库端完成。默认返回 100 行，上限是 500 行或 1 MiB。取消查询不会断开这次登录。
 
 网格改数走参数化语句：先预览，确认一次，并按主键核对原记录。发生冲突会回滚，草稿还留着。
 
 DDL 最多 20 步，审批有效期 5 分钟。破坏性操作要在窗口里填写表名。某一步失败就停，不会把整段 DDL 当成一次事务回滚。
 
-SIT 下，`database_execute_sql` 最多执行 8 条语句，每条最多 100 行，可以带 DML。第一条出错后，后面的不再跑。
+`database_execute_sql` 最多执行 8 条语句，每条最多 100 行；UAT／PVT 只读，SIT 可执行 DML。整批先做静态校验，再顺序执行，第一条出错后停止。已提交语句不会因后续失败自动回滚。
 
-BIGINT 在驱动里就会以字符串返回。BLOB 显示为 `[BLOB n bytes]`。
+BIGINT 在驱动里就会以字符串返回。二进制单元格显示可读 UTF-8 文本或十六进制字节（BIT 显示二进制位），二进制列在网格中保持只读。
 
 ## Oracle
 
 ![Oracle 目录](docs/screenshots/oracle-catalog.png)
 
-SQL 页面和 MySQL 相同。对象按 Schema 组织，大小写不敏感。如果存在与用户名同名的 Schema，默认进入那个 Schema。标识符用双引号；分页用 `OFFSET … ROWS FETCH FIRST … ROWS ONLY`；执行计划用 `EXPLAIN PLAN FOR`。q-quote 可以使用，`#` 注释不行。
+SQL 页面和 MySQL 相同。对象按 Schema 组织；未加双引号的 SQL 标识符按 Oracle 规则转为大写，加双引号时保留大小写。如果存在与用户名同名的 Schema，默认进入那个 Schema。标识符用双引号；分页用 `OFFSET … ROWS FETCH FIRST … ROWS ONLY`；执行计划用 `EXPLAIN PLAN FOR`。q-quote 可以使用，`#` 注释不行。
 
-驱动是 oracledb Thin，默认端口 1521，连接方式是 Service Name。NUMBER 和时间类型按 STRING 取出。视图和同义词只能看元数据。查询如果带 LOB 列会失败。
+驱动是 oracledb Thin，默认端口 1521，连接表单支持 Service Name 和 SID；SID 实连验收仍为 `NOT_RUN`。NUMBER 和时间类型按 STRING 取出。视图和同义词只能看元数据。查询如果带 LOB 列会失败。
 
 ## Redis
 
@@ -102,82 +131,119 @@ PING
 
 Key 浏览和命令台用的不是同一条连接。命令台执行一条 CLI 写法的命令后就会关闭。在命令台里执行 `SELECT` 或 `MULTI`，不会改左边的树。
 
-`redis_execute` 只在 SIT 可用。`DSH_REDIS_COMMAND_BLACKLIST` 默认是空的，实际限制仍看 Redis ACL。
+人工命令台在 SIT／UAT／PVT 均可执行命令；AI 的 `redis_execute` 仅在 SIT 可用，其他环境使用结构化读取工具。`DSH_REDIS_COMMAND_BLACKLIST` 默认是空的，实际限制仍看 Redis ACL。
 
 ## Kafka
 
 ![Kafka Topic](docs/screenshots/kafka-topic.png)
 
-Kafka 只提供只读能力：列出 Topic、查看分区、peek 一个分区。
+支持 Topic／消费组搜索与分页、分区和 Lag 查看、Topic 配置、按时间定位和有界消息检索。PEEK 使用临时消费组且不提交业务消费位点。
 
 ```text
+TOPICS SEARCH "orders"
+GROUP "billing" TOPIC "orders"
 PEEK "orders" PARTITION 0 FROM LATEST LIMIT 20
 ```
 
-把 `"orders"` 换成你实际有的 Topic 名。
+把示例中的 Topic 和消费组替换为实际名称。SIT 可发布单条／限量批量消息、重发完整消息、发布 compact 墓碑、创建 `dsh-test-` Topic，以及调整无运行成员消费组的位点；已有消息不能原地修改。
 
-认证支持：无认证、TLS+CA、PLAIN、SCRAM-SHA-256 / 512。PLAIN 和 SCRAM 可以不开 TLS；一旦开了 TLS，就会校验证书。不支持 Kerberos、OAuth 和客户端证书。不能发消息、建删 Topic、改配置，也不能挪消费位移。
+支持无认证、TLS＋CA、PLAIN、SCRAM-SHA-256／512；不支持 Kerberos、OAuth 或客户端证书。完整命令、字节与结果上限、确认及未知回执处理见 [Kafka 使用指南](docs/datasource/kafka.md)。
 
-Peek 使用临时消费组 `dsh-peek-{uuid}`，并且 `autoCommit: false`。这些组不会出现在 GROUPS 列表里。如果 stop 或 disconnect 超时，会丢掉当前 Worker 再开一个新的。
+## AI 工具
 
-## 工具
+`database_status` 不传 topic 时返回已登录连接，以及带 `connectionId`、`generation` 的下一步参数。传 topic 才加载某一节用法。缺连接或 generation 过期时，工具返回当前连接列表。该数据源只有一条已登录连接时，可以省略 `connectionId` 和 `generation`。
 
-只有给 `database_status` 传了 topic，才会加载工具说明。
+`kafka_scan` 与 `kafka_set_group_offsets` 的 `spec`、`kafka_produce` 的 `headers` 是对象，`kafka_produce_batch` 的 `messages` 是数组。`kafka_peek` 的 `from` 取 `BEGINNING`、`LATEST` 或 `OFFSET`。
+
+<details>
+<summary>展开工具参考</summary>
 
 | 工具 | 说明 |
 | --- | --- |
-| `database_status` | 当前已登录的 SQL / Redis 连接，以及 `generation` |
+| `database_status` | 已登录连接，以及可直接套用的下一步参数。传 topic 只返回那一节用法 |
 | `database_catalog` | `schemas` / `tables` / `table`。不要用 SQL 去查 `information_schema` |
-| `database_execute_sql` | `action=read` 读取当前 AI Query 文本；带上 `sql` 则执行（仅 SIT） |
+| `database_execute_sql` | `action=read` 读取当前 AI Query 文本；带上 `sql` 则执行；UAT／PVT 只读，SIT 可写 |
 | `database_templates` | 保存和搜索文本，不会执行 |
 | `database_read_collab` | 当前打开的查询页签 |
 | `database_import_connections` | 登记主机，不接收密码 |
 | `redis_status` `redis_keys` `redis_value` | SCAN、类型、TTL、值 |
 | `redis_execute` | 仅 SIT，一次一条命令 |
 | `kafka_status` `kafka_topics` `kafka_describe` | Topic、分区、水位 |
-| `kafka_peek` | peek 一个分区。如果你已经接管编辑器，会拒绝 |
+| `kafka_peek` | peek 一个分区。`from` 为 `BEGINNING`、`LATEST` 或 `OFFSET`。接管编辑器后会拒绝 |
+| `kafka_groups` `kafka_group` | 搜索／分页消费组，查看状态和成员 |
+| `kafka_group_topics` `kafka_group_topic` | 分页关联 Topic，查看提交位置和 Lag |
+| `kafka_topic_config` `kafka_time_offsets` `kafka_scan` | Topic 配置、按时间定位和有界跨分区检索。`kafka_scan` 的 `spec` 是对象 |
+| `kafka_produce` `kafka_produce_batch` `kafka_tombstone` | SIT 单条／批量发布及 compact 墓碑。`headers` 是对象，`messages` 是数组 |
+| `kafka_create_topic` `kafka_set_group_offsets` | SIT 创建测试 Topic、调整无运行成员消费组位点 |
 
-## 运行方式
+</details>
 
-页签挂在 DSH 右侧栏。驱动（`mysql2`、`oracledb`、`redis`、`kafkajs`）在 Host 进程里运行。浏览器请求 `/plugins/database/...`，需要带会话 cookie；没有 cookie 会返回 401。
+## 常见问题
 
-连接写在工作区文件里。编辑器按对话分开。重连会作废正在进行的请求。
-
-在 AI Query 里输入后，编辑器由你接管；交还之前，模型不能覆盖这份文本。
-
-写入超时会报「未知」：库里可能已经有这条数据了。peek 和查询的超时时间是 30 秒。
-
-## 出了问题
-
-| 现象 | 怎么办 |
+| 现象 | 处理方法 |
 | --- | --- |
-| `/plugins/database/connections` 冲突 | 旧版 remote-exec 还带着这套页面。现在的 `dsh-remote-exec` 可以一起装 |
-| 桌面版找不到 `dsh` 命令 | 从托盘打开 DSH 终端 |
-| 插件装了，界面里没有 | 重启对应 profile，刷新页面，不要手写重复的 patch 行 |
-| Oracle 查询碰到 LOB 列 | 不支持 |
-| 命令台里执行了 `SELECT`，左边的树没变 | 在树里选择 DB |
-| peek 会不会加入业务消费组 | 不会 |
+| 插件安装后没有页签 | 重启安装时选择的 profile，刷新页面；不要重复手写 `cordis.patch.yml` |
+| 桌面版找不到 `dsh` | 从托盘打开 DSH 终端 |
+| `/plugins/database/connections` 冲突 | 检查旧版 remote-exec 是否仍带数据库页面 |
+| AI 无法更新或执行当前内容 | 检查是否已接管，保存完成后归还 AI；重连后刷新连接状态 |
+| Oracle 查询包含 LOB | 选择普通字段；按需 LOB 查看尚未接入 |
+| Redis 命令台 `SELECT` 后左侧 DB 没变 | 在对象树里选择 DB；命令台每次使用独立连接 |
+| 写入显示「未知」 | 回读目标确认实际变化，避免直接重复提交 |
+| 查询超时 | SQL 驱动查询时限为 25 秒，Host 查询期限为 32 秒；维护与各数据源另有时限，见[超时配置](src/host/request-timeouts.mjs) |
 
 ## 开发
+
+需要 Node.js 24 或以上。在仓库目录安装依赖并检查：
 
 ```sh
 npm ci --legacy-peer-deps
 npm run check
-npm run test:mysql
-npm run test:oracle
-DSH_TEST_REDIS=1 npm run test:host
-DSH_TEST_DATABASES=1 npm run test:host
+npm run test:package-closure
 ```
 
-`npm run test:redis` 会启动 Docker 容器，跑完后删掉。OpenSSL 不在 PATH 时可设置 `DSH_OPENSSL`。如果要隔离宿主，设置 `DSH_DESKTOP_APP=... npm run test:host`。
+`check` 包含 Host／Client 类型检查、单元测试及构建；包闭包检查另行验证运行时文件。数据库实连与浏览器验收单独运行：
 
-问题请提到 [Issues](https://github.com/zhuoxiaoshuai/dsh-database/issues)。安全相关见 [SECURITY.md](SECURITY.md)。
+| 命令 | 前提与范围 |
+| --- | --- |
+| `npm run test:sql-workspace` | Microsoft Edge；MySQL／Oracle 客户端受控桥接验收 |
+| `npm run test:workspace-races` | Microsoft Edge；共编保存、控制与目标切换竞态 |
+| `npm run test:execution-boundary` | Microsoft Edge；执行边界与网格值语义的受控验收 |
+| `npm run test:mysql`／`test:oracle` | Docker Linux Engine；创建独占临时数据库并清理，不代表 Oracle 19c／SID 验收 |
+| `npm run test:redis` | Docker、OpenSSL；临时 Redis 普通与 TLS 验收，OpenSSL 可通过 `DSH_OPENSSL` 指定 |
+| `npm run test:kafka` | Docker、OpenSSL；隔离 Broker 验收 |
+| `npm run test:host` | Harness 安装目录（`DSH_DESKTOP_APP`）和 Chrome（可用 `DSH_TEST_BROWSER` 指定其他支持的浏览器）；在临时 profile 中安装并启动 Web 宿主 |
 
-## 测过的环境
+Windows PowerShell 的宿主验收示例：
 
-Harness `0.1.2-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.2`。
+```powershell
+$env:DSH_DESKTOP_APP = 'C:\path\to\DeepSeek Harness'
+npm run test:host
+# 按需启用实连检查；数据库测试需要 Docker
+$env:DSH_TEST_DATABASES = '1'
+$env:DSH_TEST_REDIS = '1'
+$env:DSH_TEST_KAFKA = '1'
+npm run test:host
+```
 
-驱动版本：mysql2 3.24.4、oracledb 7.0.1、redis 6.2.1、kafkajs 2.2.4。MySQL 8.4 和 8.0.32。Oracle Database Free 23（Thin）。Redis 8.10.2。
+POSIX Shell 使用 `DSH_DESKTOP_APP="/path/to/install" npm run test:host`。测试结果写入 `artifacts/`；受控桥接、隔离实连和安装宿主验收分别记录。`test:host` 不代表真实 Desktop 界面或模型调用已验收。
+
+## 兼容与验收记录
+
+当前依赖：mysql2 3.24.4、oracledb 7.0.1、redis 6.2.1、kafkajs 2.2.4。历史验证涉及 Harness `0.1.2-rc.1`、`0.1.7-rc.2`、`0.2.0-rc.2`，MySQL 8.4／8.0.32、Oracle Free 23／19c Service、Redis 8.10.2 及 Kafka 测试实例；这些记录不自动覆盖后续源码或所有认证组合。
+
+| 记录 | 验证范围与边界 |
+| --- | --- |
+| [执行边界修复（2026-10-05）](docs/plans/execution-boundary-implementation.md) | 记录类型检查、768 项单测、受控浏览器、构建与包闭包通过；最终四源实连重跑、Oracle 19c／SID、安装版 Desktop、真实模型为 `NOT_RUN` |
+| [Kafka 排障扩展（2026-10-04～05）](docs/plans/kafka-repair-implementation.md) | 记录受控回归与阶段隔离实连；最终代码实连重跑及安装／模型验收为 `NOT_RUN` |
+| [历史安装与数据源验收](docs/data-source-foundation-progress.md) | 查看当时安装版本、环境与覆盖范围 |
+
+以上是按日期保存的证据。本次 README 整理没有重跑数据库、Desktop 或模型验收；当前源码的验证状态须结合对应构建和实际报告确认。
+
+## 文档与反馈
+
+- [文档索引](docs/README.md)、[架构说明](docs/data-source-architecture.md)、[数据源接入指南](docs/data-source-onboarding.md)
+- [Kafka 使用指南](docs/datasource/kafka.md)、[实施记录索引](docs/plans/README.md)
+- [Issues](https://github.com/zhuoxiaoshuai/dsh-database/issues)、[安全说明](SECURITY.md)
 
 ## 许可证
 

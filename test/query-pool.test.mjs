@@ -109,6 +109,6 @@ test('executeSql reuses authorizeStatement result for write routing', async () =
 test('fatal session errors include protocol and identity failures', () => {
   assert.equal(isFatalSessionError(new Error('PROTOCOL_CONNECTION_LOST')), true)
   assert.equal(isFatalSessionError(new Error('数据库实例或账号身份发生变化，请重新连接。')), true)
-  assert.equal(isFatalSessionError(new Error('数据库拒绝查询：syntax'), { truncated: false }), false)
+  assert.equal(isFatalSessionError(new Error('syntax'), { truncated: false }), false)
   assert.equal(isFatalSessionError(new Error('ok'), { truncated: true }), true)
 })

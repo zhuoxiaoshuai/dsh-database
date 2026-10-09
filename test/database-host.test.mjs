@@ -111,6 +111,15 @@ test('AI import connections skips duplicates and does not accept passwords', asy
   assert.equal(snapshot.connections.length, 1)
   assert.equal(snapshot.connections[0].hasPassword, false)
   assert.equal(snapshot.connections[0].live, false)
+  const records = JSON.parse((await invoke(routes.get('/plugins/database/connections'), {
+    method: 'POST', body: { action: 'execution-list' },
+  })).body).items
+  assert.equal(records.length, 1)
+  assert.equal(records[0].executionId, imported.executionId)
+  assert.equal(records[0].type, 'tool')
+  assert.equal(records[0].historyVisible, false)
+  assert.equal(records[0].connectionId, undefined)
+  assert.equal(records[0].events.some(event => event.kind === 'dispatched'), false)
 })
 
 test('workbench action persists visibleSchemas across snapshot reload', async t => {
@@ -166,4 +175,19 @@ test('database registration failure is isolated and still disposable', async () 
     on() { return () => {} },
   }, workerUrl)
   await registration.dispose()
+  assert.equal(registration.available, false)
+  assert.match(registration.error, /webServer unavailable/)
+})
+
+test('storage snapshot and wait expose actual optional status; retry cannot accept executable payload', async t => {
+  const { routes } = fixture(t), route = routes.get('/plugins/database/connections')
+  const snapshot = JSON.parse((await invoke(route)).body)
+  assert.deepEqual(snapshot.storage.workspace, { degraded: false })
+  assert.equal(typeof snapshot.storage.executionHistory.degraded, 'boolean')
+  const rejected = await invoke(route, { method: 'POST', body: { action: 'execution-persistence-retry', records: [] } })
+  assert.equal(rejected.status, 400)
+  const retry = await invoke(route, { method: 'POST', body: { action: 'execution-persistence-retry' } })
+  assert.equal(retry.status, 200); assert.equal(JSON.parse(retry.body).saved, true)
+  const wait = await invoke(route, { method: 'POST', body: { action: 'execution-wait', revision: -1 } })
+  assert.equal(JSON.parse(wait.body).storage.executionHistory.degraded, false)
 })

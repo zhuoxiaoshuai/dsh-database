@@ -109,7 +109,7 @@ try {
     await page.getByText('模拟读取完成', { exact: true }).waitFor()
   }
   assert.deepEqual(errors, [])
-  const report = { status: 'PASS', fixture: 'test-only-source', registrationOnly: true, checks: ['authenticated HTTP', 'real ConnectionService and Worker', 'public standard mount', 'single record', 'AI document and takeover', 'knowledge persistence', '420/768/1200'], pageErrors: errors }
+  const report = { status: 'PASS', fixture: 'test-only-source', registrationOnly: true, checks: ['authenticated HTTP', 'invalid context rejected', 'real ConnectionService and Worker', 'public standard mount', 'single record', 'AI document and takeover/return', 'knowledge persistence without execution', 'knowledge trial with single record', '420/768/1200'], pageErrors: errors }
   await writeFile(join(run, 'report.json'), JSON.stringify(report, null, 2))
   console.log(JSON.stringify(report))
 } finally {

@@ -94,7 +94,7 @@ test('generation invalidation does not apply late results to a new generation', 
 
 test('store caps conversations and cancel before dispatch is cancelled', async t => {
   const { executions } = store(t)
-  for (let i = 0; i < 102; i++) executions.create({ conversationId: 'c1', operation: 'n' + i })
+  for (let i = 0; i < 102; i++) { const row = executions.create({ conversationId: 'c1', operation: 'n' + i }); executions.complete(row.executionId, 'succeeded') }
   assert.equal(executions.list('c1').length, 100)
   const record = executions.create({ conversationId: 'c1', operation: 'active' })
   executions.cancel('c1', record.executionId, false)
@@ -104,10 +104,10 @@ test('store caps conversations and cancel before dispatch is cancelled', async t
 test('store caps each conversation connection bucket independently', async t => {
   const { executions } = store(t)
   for (let i = 0; i < 102; i++) {
-    executions.create({ conversationId: 'c1', connectionId: 'db1', operation: 'db1-' + i })
+    const row = executions.create({ conversationId: 'c1', connectionId: 'db1', operation: 'db1-' + i }); executions.complete(row.executionId, 'succeeded')
   }
   for (let i = 0; i < 50; i++) {
-    executions.create({ conversationId: 'c1', connectionId: 'db2', operation: 'db2-' + i })
+    const row = executions.create({ conversationId: 'c1', connectionId: 'db2', operation: 'db2-' + i }); executions.complete(row.executionId, 'succeeded')
   }
   const listed = executions.list('c1')
   assert.equal(listed.filter(row => row.connectionId === 'db1').length, 100)

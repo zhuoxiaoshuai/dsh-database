@@ -17,8 +17,8 @@ export function createHostModuleRegistry(entries: readonly HostSourceModule[], e
       || !module.ai?.key || typeof module.ai?.register !== 'function'
       || typeof module.explorer?.list !== 'function' || typeof module.explorer?.read !== 'function'
       || typeof module.knowledge?.dispatch !== 'function'
-      || !module.execution || (module.execution.mode === 'standard-text' ? typeof module.execution.prepareText !== 'function' || typeof module.execution.normalizeContext !== 'function' || typeof module.execution.authorize !== 'function'
-        : module.execution.mode === 'legacy-adapter' ? !['mysql', 'oracle', 'redis'].includes(module.id) : true)) throw new Error(`Host 数据源模块不完整或重复：${String(module?.id)}`)
+      || module.execution?.mode !== 'standard-text' || typeof module.execution.prepareText !== 'function'
+      || typeof module.execution.normalizeContext !== 'function' || typeof module.execution.authorize !== 'function') throw new Error(`Host 数据源模块不完整或重复：${String(module?.id)}`)
     byId.set(module.id, module)
   }
   for (const id of ids) if (!byId.has(id)) throw new Error(`缺少 Host 数据源模块：${id}`)

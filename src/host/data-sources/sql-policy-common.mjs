@@ -2,10 +2,6 @@ export const systemSchemas = new Set(['mysql', 'information_schema', 'performanc
 export const WRITE_ONLY = '暂只开放查询与增删改（SELECT / INSERT / UPDATE / DELETE）；DDL 与工具语句未开放。'
 export const ONLY_SHOW = '只允许 SHOW INDEX、SHOW TABLE STATUS 等只读统计语句。'
 
-function strippedSql(sql) {
-  return sql.trim().replace(/;\s*$/, '')
-}
-
 function leadKind(sql) {
   let text = sql.trim()
   for (;;) {
@@ -13,13 +9,6 @@ function leadKind(sql) {
     if (next === text) return text
     text = next
   }
-}
-
-function statementKind(sql) {
-  const text = leadKind(sql)
-  if (/^(SELECT|WITH)\b/i.test(text)) return 'select'
-  if (/^(INSERT|REPLACE|UPDATE|DELETE)\b/i.test(text)) return 'write'
-  return null
 }
 
 export function splitStatements(sql) {
@@ -80,27 +69,6 @@ export function splitStatements(sql) {
 
 export function aliasesOf(value) {
   return Array.isArray(value) ? value : value ? [...value] : []
-}
-
-export function authorizeByLead(sql, schema) {
-  const kind = statementKind(sql)
-  const trimmed = strippedSql(sql)
-  if (kind === 'select') return { kind: 'select', tables: [], references: [], aliases: [], sql: trimmed }
-  if (kind === 'write') {
-    const match = trimmed.match(/^(?:INSERT\s+(?:IGNORE\s+)?(?:INTO\s+)?|REPLACE\s+(?:INTO\s+)?|UPDATE\s+|DELETE\s+FROM\s+)(?:((?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$#]+))\s*\.\s*)?((?:`[^`]+`|"[^"]+"|[A-Za-z0-9_$#]+))/i)
-    const ident = value => String(value || '').replaceAll('`', '').replaceAll('"', '')
-    const target = match ? { schema: ident(match[1]) || schema, name: ident(match[2]) } : undefined
-    if (target?.schema && systemSchemas.has(target.schema.toLowerCase())) throw new Error('不允许访问系统库对象。')
-    return {
-      kind: 'write',
-      tables: target?.name ? [target.name] : [],
-      targets: target?.name ? [target] : [],
-      references: [],
-      aliases: [],
-      sql: trimmed,
-    }
-  }
-  throw new Error(WRITE_ONLY)
 }
 
 export const recordTable = (set, ref) => {

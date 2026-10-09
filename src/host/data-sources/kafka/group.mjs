@@ -14,14 +14,6 @@ export function visibleGroupIds(ids) {
   return names
 }
 
-export function pageByCursor(items, cursor, size = 100) {
-  const start = cursor === undefined || cursor === '' || cursor === '0' ? 0 : Number(cursor)
-  if (!Number.isSafeInteger(start) || start < 0 || start > 1000000) throw new Error('页游标无效。')
-  const page = items.slice(start, start + size)
-  const next = start + page.length
-  return { page, truncated: next < items.length, ...(next < items.length ? { nextCursor: String(next) } : {}) }
-}
-
 /** Decimal text for offsets. Rejects values that cannot survive as int64. */
 export function decimalText(value) {
   if (typeof value === 'bigint') return value < 0n ? null : value.toString()

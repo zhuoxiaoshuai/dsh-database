@@ -10,11 +10,11 @@ test('host and typed shared entry points use one cell-value runtime', () => {
   assert.equal(isBinaryPlaceholder, isHostBinaryPlaceholder)
 })
 
-test('fetched values keep NULL, empty string and binary placeholders distinct', () => {
+test('fetched values preserve NULL, empty strings and readable bytes with legacy placeholder compatibility', () => {
   assert.equal(formatFetchedValue(null, 'mysql'), null)
   assert.equal(formatFetchedValue('', 'mysql'), '')
-  assert.equal(formatFetchedValue(Buffer.from('abcd'), 'mysql'), '[BLOB 4 bytes]')
-  assert.equal(formatFetchedValue(new Uint8Array(128), 'mysql'), '[BLOB 128 bytes]')
+  assert.equal(formatFetchedValue(Buffer.from('abcd'), 'mysql'), 'abcd')
+  assert.equal(formatFetchedValue(new Uint8Array(128), 'mysql'), '0x' + '00'.repeat(128))
   assert.equal(formatFetchedValue('plain', 'mysql'), 'plain')
   assert.equal(isBinaryPlaceholder('[BLOB 128 bytes]'), true)
   assert.equal(isBinaryPlaceholder(''), false)

@@ -4,6 +4,8 @@
 
 文档分为三类。
 
+使用插件先读[中文首页](../README.zh.md)或[English README](../README.md)。Kafka 的完整命令、认证、结果上限和写入约束见[中文使用指南](datasource/kafka.md)／[English guide](datasource/kafka.en.md)。
+
 ## 1. 长期稳定文档
 
 ### data-source-onboarding.md
@@ -85,3 +87,9 @@ docs/plans/
 如果真实代码与旧计划发生明显变化，应重新验证，而不是机械执行旧计划。
 
 长期边界优先参考 architecture 和 guidelines，具体施工参考当前 plan，最终事实以当前代码和实际验证结果为准。
+
+阶段验收按日期记录：[执行边界修复（2026-10-05）](plans/execution-boundary-implementation.md)、[Kafka 排障扩展（2026-10-04～05）](plans/kafka-repair-implementation.md)、[剩余闭环与适配层收敛（2026-10-03）](plans/remaining-closure-implementation.md)。各记录只证明当时的版本与覆盖范围；后续源码、安装环境和真实模型须核对对应报告。
+
+## 当前代码评审
+
+- [提交前代码评审与验证（2026-10-09）](code-review-2026-10-09.md)：本轮发现、修复、801 项测试及浏览器／打包验证边界。

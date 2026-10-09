@@ -73,3 +73,17 @@ test('listing a group does not read topic end offsets', async () => {
   assert.equal(detail.partitions[0].lag, null)
   assert.equal(detail.partitions[0].consumer, 'app')
 })
+
+test('group Lag distinguishes an ACL-only metric failure from a broken connection', async () => {
+  let failure = Object.assign(new Error('fixture failure'), { name: 'KafkaJSProtocolError', type: 'TOPIC_AUTHORIZATION_FAILED' })
+  const runtime = { admin: {
+    async describeGroups() { return { groups: [{ groupId: 'app', state: 'Empty', members: [] }] } },
+    async fetchOffsets() { return [{ topic: 'orders', partitions: [{ partition: 0, offset: '1' }] }] },
+    async fetchTopicOffsets() { throw failure },
+  } }
+  const partial = await describeKafkaGroupTopic(runtime, 'app', 'orders')
+  assert.equal(partial.partitions[0].end, null)
+  assert.ok(partial.warning)
+  failure = Object.assign(new Error('fixture failure'), { name: 'KafkaJSConnectionError' })
+  await assert.rejects(describeKafkaGroupTopic(runtime, 'app', 'orders'), error => error === failure)
+})

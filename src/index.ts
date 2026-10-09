@@ -9,6 +9,6 @@ export { registerDatabase, tryRegisterDatabase }
 export function apply(ctx: Context): void {
   const workerUrl = new URL('./connection-worker.mjs', import.meta.url)
   const registration = tryRegisterDatabase(ctx, workerUrl)
-  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/plugins/database/status', handler: (req, res) => statusRoute(ctx, req, res) }), 'database: status route')
+  ctx.effect(() => ctx.webServer.register({ kind: 'exact', path: '/plugins/database/status', handler: (req, res) => statusRoute(ctx, req, res, registration) }), 'database: status route')
   ctx.effect(() => () => { void registration.dispose() }, 'database: dispose')
 }

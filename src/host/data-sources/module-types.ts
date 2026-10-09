@@ -5,6 +5,8 @@ import type { KnowledgeProvider } from '../knowledge-provider.ts'
 import type { ConnectionService } from '../connection-service.ts'
 import type { ExecutionStore } from '../execution-store.ts'
 import type { RedactionRule } from '../ai-redaction.ts'
+import type { OperationLifecycle, OperationStatus } from '../operation-runtime.ts'
+import type { SqlTextEntryOptions, SqlPreparedState, SqlAuthorizedStatement } from './sql-execution.ts'
 
 export interface HostSourceModule {
   id: DataSourceId
@@ -22,13 +24,21 @@ export interface HostSourceModule {
     executions: ExecutionStore, validOwner: (id: string) => boolean, rules: RedactionRule[]): void }
   explorer: ExplorerProvider<DataSourceId>
   knowledge: KnowledgeProvider<DataSourceId>
-  execution: { mode: 'legacy-adapter'; normalizeContext?(raw: unknown, binding: Connection): Record<string, string> } | {
-    mode: 'standard-text'
-    normalizeContext(raw: unknown, binding: Connection): Record<string, string>
-    prepareText(text: unknown, context: Record<string, string>): PreparedTextOperation
-    authorize(prepared: PreparedTextOperation, actor: 'user' | 'ai', binding: Connection): void
-  }
+  execution: StandardTextExecution
 }
 
+export interface StandardTextExecution {
+  mode: 'standard-text'
+  normalizeContext(raw: unknown, binding: Connection): Record<string, string>
+  prepareText(text: unknown, context: Record<string, string>, options?: TextEntryOptions): PreparedTextOperation | Promise<PreparedTextOperation>
+  authorize(prepared: PreparedTextOperation, actor: 'user' | 'ai', binding: Connection, options?: TextEntryOptions): void | SqlAuthorizedStatement | Promise<void | SqlAuthorizedStatement>
+}
+
+/** These entry and lifecycle choices are Host-only, never request-body fields. */
+export type TextEntryOptions = SqlTextEntryOptions | { sourceKind: 'redis' | 'kafka' }
 export type PreparedTextOperation = { action: string; text: string; input: Record<string, unknown>; operation: string; title: string;
-  summarize(result: Record<string, unknown>): string; classifyResult?(result: Record<string, unknown>): 'succeeded' | 'failed' | 'cancelled' }
+  queue?: 'manual' | 'ai'; recordPolicy?: 'none' | 'owned' | 'external'
+  summarize(result: Record<string, unknown>): string; classifyResult?(result: Record<string, unknown>): OperationStatus
+  classifyInterruption?(error: unknown, lifecycle: OperationLifecycle): OperationStatus
+  completedResultIsDefinitive?: boolean
+  projectLiveResult?(result: Record<string, unknown>): Record<string, unknown> } & (SqlPreparedState | { sourceKind: 'redis' | 'kafka'; authorized?: never })

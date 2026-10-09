@@ -55,11 +55,13 @@ test('runSqlBatch commits each statement then stops, keeping earlier successes',
     signal: new AbortController().signal,
     execute: async sql => {
       calls.push(sql.trim())
-      if (sql.includes('UPDATE')) throw new Error('boom')
+      if (sql.includes('UPDATE')) throw Object.assign(new Error('boom'), { effect: 'none', steps: [
+        { index: 0, sql: 'SELECT 1', status: 'succeeded' }, { index: 1, sql: 'UPDATE t SET x = 1', status: 'failed', message: 'boom' }, { index: 2, sql: 'SELECT 2', status: 'not-run' },
+      ], batch: [{ columns: ['n'], rows: [['1']], truncated: false, elapsedMs: 4 }] })
       return { columns: ['n'], rows: [['1']], truncated: false, elapsedMs: 4, affectedRows: sql.includes('UPDATE') ? 1 : 0 }
     },
   })
-  assert.deepEqual(calls, ['SELECT 1', 'UPDATE t SET x = 1'])
+  assert.deepEqual(calls, ['SELECT 1;\nUPDATE t SET x = 1;\nSELECT 2'])
   assert.equal(result[0].status, 'ok')
   assert.equal(result[1].status, 'failed')
   assert.equal(result[2].status, 'skipped')
@@ -77,12 +79,14 @@ test('runSqlBatch abort after send is unknown; statements not yet sent stay canc
     signal: controller.signal,
     execute: async () => {
       controller.abort()
-      throw Object.assign(new Error('已取消'), { cancelled: true })
+      throw Object.assign(new Error('已取消'), { cancelled: true, effect: 'unknown', steps: [
+        { index: 0, sql: 'SELECT 1', status: 'unknown', message: '结果未知。' }, { index: 1, sql: 'SELECT 2', status: 'not-run' },
+      ] })
     },
   })
   assert.equal(result[0].status, 'unknown')
   assert.equal(result[0].error, '结果未知。')
-  assert.equal(result[1].status, 'cancelled')
+  assert.equal(result[1].status, 'skipped')
 })
 
 test('runSqlBatch keeps a query timeout as failure, not cancel', async () => {

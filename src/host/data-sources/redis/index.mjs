@@ -1,4 +1,5 @@
 import { createClient, createCluster, createSentinel, RESP_TYPES } from 'redis'
+import { nativeErrorText } from '../../connect-error.mjs'
 import { redisRuntime } from './runtime.mjs'
 
 const MAX_BYTES = 1024 * 1024
@@ -65,13 +66,28 @@ function commandCredentials(credentials, requested) {
   assertRedisTarget(database, credentials)
   return { ...credentials, database: String(database) }
 }
+function rememberServerError(client) {
+  let server
+  client.on('error', error => { if (!server) server = error })
+  return () => server
+}
+
+async function failConnect(client, error, serverError) {
+  await new Promise(resolve => setImmediate(resolve))
+  const server = serverError()
+  const serverText = nativeErrorText(server, '')
+  const failure = serverText && !/client is closed/i.test(serverText) ? server : error
+  try { client.destroy() } catch { /* already closed */ }
+  throw failure
+}
+
 async function open(input) {
   const mode = assertRedisTarget(input.database, input)
   if (mode === 'standalone') {
     const client = createClient(createOptions(input)).withTypeMapping(blobMapping)
-    client.on('error', () => {})
+    const serverError = rememberServerError(client)
     try { await client.connect(); return client }
-    catch (error) { client.destroy(); throw error }
+    catch (error) { await failConnect(client, error, serverError) }
   }
   const source = mode === 'cluster'
     ? createCluster({
@@ -94,12 +110,9 @@ async function open(input) {
       },
     })
     : adapt(source, args => source.sendCommand(undefined, args))
-  client.on('error', () => {})
+  const serverError = rememberServerError(source)
   try { await source.connect(); return client }
-  catch (error) {
-    try { source.destroy() } catch { /* already closed */ }
-    throw error
-  }
+  catch (error) { await failConnect(source, error, serverError) }
 }
 async function close(client) { try { await client?.destroy() } catch { /* already closed */ } }
 

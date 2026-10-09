@@ -19,6 +19,19 @@ export function createQueryPool(options = {}) {
   return createReadonlyQueryPool({ size: SESSION_QUOTA.query, ...options })
 }
 
+export function startIdleCatalogProbe(sessions, exclusive, busy, interval = 30_000) {
+  let probing = false, stopped = false
+  const timer = setInterval(() => {
+    if (stopped || probing || busy() || sessions.health !== 'ready') return
+    probing = true
+    void exclusive(async () => {
+      if (!stopped && !busy()) await sessions.probeCatalog()
+    }).catch(() => { if (!stopped) sessions.markDegraded() }).finally(() => { probing = false })
+  }, interval)
+  timer.unref()
+  return () => { stopped = true; clearInterval(timer) }
+}
+
 export function createSessionManager({
   dialect,
   recovery,
@@ -28,6 +41,8 @@ export function createSessionManager({
   cancel,
   probe,
   createQueryPool: createPool,
+  onHealth,
+  watchConnection,
 } = {}) {
   const source = getDataSource(dialect)
   const recoveryPolicy = recovery || source.recovery
@@ -35,6 +50,8 @@ export function createSessionManager({
   let catalog
   let catalogId = 0
   let health = 'connecting'
+  const setHealth = next => { if (health !== next) { health = next; onHealth?.(next) } }
+  let detachCatalog
   let closed = false
   let version = ''
   let database = ''
@@ -56,16 +73,24 @@ export function createSessionManager({
   async function destroyCatalog() {
     const conn = catalog
     catalog = undefined
+    detachCatalog?.(); detachCatalog = undefined
     await destroyOne(conn)
   }
 
   function adoptCatalog(conn, probed) {
     catalog = conn
+    detachCatalog = watchConnection?.(conn, () => {
+      if (catalog !== conn || closed) return
+      catalog = undefined
+      detachCatalog?.(); detachCatalog = undefined
+      setHealth('degraded')
+      void destroyOne(conn)
+    })
     catalogId += 1
     version = String(probed?.version || version || '').slice(0, 120)
     database = String(probed?.database || database || '').slice(0, 128)
     identity = probed?.identity
-    health = 'ready'
+    setHealth('ready')
     return catalog
   }
 
@@ -90,7 +115,7 @@ export function createSessionManager({
         version = String(probed?.version || version || '').slice(0, 120)
         database = String(probed?.database || database || '').slice(0, 128)
         identity = probed?.identity
-        health = 'ready'
+        setHealth('ready')
         return catalog
       } catch {
         await destroyCatalog()
@@ -99,7 +124,7 @@ export function createSessionManager({
     try {
       return await ensureCatalog()
     } catch (error) {
-      if (health !== 'offline') health = 'degraded'
+      if (health !== 'offline') setHealth('degraded')
       throw error
     }
   }
@@ -143,6 +168,9 @@ export function createSessionManager({
     async recoverCatalog() {
       return recoverCatalog()
     },
+    async probeCatalog() {
+      return this.withCatalog(conn => probe(conn), undefined, { retryFatal: false })
+    },
     async withCatalog(work, signal, { retryFatal = true } = {}) {
       assertOpen()
       if (signal?.aborted) throw cancelledError()
@@ -163,7 +191,7 @@ export function createSessionManager({
         if (!fatal(error)) throw error
         await destroyCatalog()
         if (!retryFatal) {
-          health = 'degraded'
+          setHealth('degraded')
           throw error
         }
         try {
@@ -176,7 +204,7 @@ export function createSessionManager({
           }
           if (fatal(retryError) || recoveryPolicy.discardOnTimeout(retryError)) {
             await destroyCatalog()
-            health = 'degraded'
+            setHealth('degraded')
           }
           throw retryError
         }
@@ -201,27 +229,27 @@ export function createSessionManager({
     },
     async reconnect() {
       assertOpen()
-      health = 'connecting'
+      setHealth('connecting')
       await destroyCatalog()
       if (queryPool) await queryPool.close()
       await this.releaseMaintenance(true)
       queryPool = typeof createPool === 'function' ? createPool() : undefined
       try {
         await ensureCatalog()
-        health = 'ready'
+        setHealth('ready')
         return { version, database, identity }
       } catch (error) {
-        health = 'offline'
+        setHealth('offline')
         throw error
       }
     },
     markDegraded() {
-      if (health !== 'offline') health = 'degraded'
+      if (health !== 'offline') setHealth('degraded')
       return health
     },
     async close() {
       closed = true
-      health = 'offline'
+      setHealth('offline')
       await destroyCatalog()
       if (queryPool) await queryPool.close()
       await this.releaseMaintenance(true)

@@ -5,6 +5,7 @@ export const EXECUTION_API_ACTIONS = [
   'execution-cancel',
   'execution-wait',
   'execution-latest',
+  'execution-persistence-retry',
   'shared-query-get',
   'shared-query-update',
   'shared-query-control',

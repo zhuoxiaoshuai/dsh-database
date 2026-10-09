@@ -1,6 +1,7 @@
 import React, { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { CellDetailViewer, type CellDetailViewerHandle } from './cell-detail-viewer.tsx'
+import { isBinaryCell } from '../shared/cell-value.ts'
 import { DataGrid, type CellPos, type DataGridHandle, type DataGridProps } from './data-grid.tsx'
 import { GridCopyShell } from './grid-copy/shell.tsx'
 import { GridSearchBar } from './grid-search/bar.tsx'
@@ -190,6 +191,7 @@ export const QueryResultGrid = forwardRef<DataGridHandle, QueryResultGridProps>(
       ref={detail}
       column={detailColumn}
       value={detailValue}
+      binary={isBinaryCell(grid.result, grid.result.columns.indexOf(detailColumn || ''), detailValue)}
       editable={detailEditable}
       onApply={onDetailApply}
       expanded={expanded}

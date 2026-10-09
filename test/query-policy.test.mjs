@@ -2,6 +2,15 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { authorizeStatement, authorizeSelect } from '../src/host/query-policy.mjs'
 
+for (const dialect of ['mysql', 'oracle']) test(dialect + ' rejects locking reads in nested query branches', async () => {
+  for (const sql of [
+    'SELECT * FROM (SELECT * FROM records FOR UPDATE) t',
+    'SELECT * FROM records WHERE id = (SELECT id FROM records WHERE id = 1 FOR UPDATE)',
+    'WITH locked AS (SELECT id FROM records FOR UPDATE) SELECT * FROM locked',
+    'SELECT * FROM records FOR UPDATE',
+  ]) await assert.rejects(authorizeStatement(dialect, sql, dialect === 'oracle' ? 'BUSINESS' : 'business'), /锁定|校验|语法/)
+})
+
 test('MySQL read policy accepts joins, CTEs, aggregate and window functions', async () => {
   for (const sql of ['SELECT id, amount FROM records WHERE id > 1 ORDER BY id LIMIT 100', 'WITH c AS (SELECT id FROM records) SELECT COUNT(id) FROM c', 'SELECT ROW_NUMBER() OVER (ORDER BY id), COALESCE(note, \'empty\') FROM records', 'SELECT id FROM records UNION SELECT id FROM records']) {
     const result = await authorizeStatement('mysql', sql, 'business'); assert.ok(result.tables.includes('records')); assert.equal(result.kind, 'select')
@@ -60,13 +69,12 @@ test('Oracle normal queries pass: package functions, cross-schema reads', async 
   }
 })
 
-test('parser diagnostics do not replace authoritative database syntax errors', async () => {
+test('incomplete parser validation fails closed before database dispatch', async () => {
   for (const [dialect, sql, schema] of [
     ['mysql', 'SELECT * FORM records', 'business'],
     ['oracle', 'SELECT * FORM RECORDS', 'BUSINESS'],
   ]) {
-    const result = await authorizeStatement(dialect, sql, schema)
-    assert.equal(result.kind, 'select')
+    await assert.rejects(authorizeStatement(dialect, sql, schema), /无法完整校验/)
   }
   assert.equal((await authorizeStatement('mysql', "SELECT 'a;b' FROM records", 'business')).kind, 'select')
 })
@@ -80,7 +88,7 @@ test('multiple statements are authorized in order and keep write confirmation', 
   assert.equal(mixed.kind, 'write')
   assert.ok(mixed.targets.some(target => target.name === 'records'))
   await assert.rejects(authorizeStatement('mysql', 'SELECT 1; DROP TABLE records', 'business'), /增删改|DDL/)
-  await assert.rejects(authorizeStatement('oracle', 'SELECT 1 FROM DUAL; CREATE TABLE T (ID NUMBER)', 'BUSINESS'), /增删改|DDL/)
+  await assert.rejects(authorizeStatement('oracle', 'SELECT 1 FROM DUAL; CREATE TABLE T (ID NUMBER)', 'BUSINESS'), /增删改|DDL|无法完整校验/)
 })
 
 test('Oracle write policy admits insert, update and delete, refuses dblink and ddl', async () => {
@@ -111,9 +119,11 @@ test('explain policy accepts EXPLAIN prefix for both dialects and returns explai
   assert.equal(mysqlJson.kind, 'explain')
   const oracle = await authorizeStatement('oracle', 'EXPLAIN PLAN FOR SELECT * FROM RECORDS', 'BUSINESS')
   assert.equal(oracle.kind, 'explain')
-  // EXPLAIN 后跟非 SELECT（如 UPDATE）不视为 explain，应回到原分类
-  const writeExplain = await authorizeStatement('mysql', 'EXPLAIN INSERT INTO records (id) VALUES (1)', 'business')
-  assert.equal(writeExplain.kind, 'write')
+  for (const dialect of ['mysql', 'oracle']) {
+    const prefix = dialect === 'oracle' ? 'EXPLAIN PLAN FOR ' : 'EXPLAIN '
+    for (const sql of ['INSERT INTO records (id) VALUES (1)', 'UPDATE records SET id = 2', 'DELETE FROM records'])
+      await assert.rejects(authorizeStatement(dialect, prefix + sql, 'business'), /EXPLAIN SELECT/)
+  }
 })
 
 test('show policy admits read-only SHOW statements about indexes and table stats', async () => {

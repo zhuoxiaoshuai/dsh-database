@@ -1,16 +1,17 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve, sep, basename } from 'node:path'
 
 const tag = `dsh-redis-${randomUUID()}`
 const root = mkdtempSync(join(tmpdir(), 'dsh-redis-tls-'))
 const containers = []
+writeFileSync(join(root, 'openssl.cnf'), '[req]\ndistinguished_name=dn\n[dn]\n')
 const report = { status: 'FAIL', runId: tag, plain: 'NOT_RUN', tls: 'NOT_RUN', image: 'redis:7.4-alpine', digest: '' }
 function run(file, args) {
-  const result = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, timeout: 120000, maxBuffer: 1048576 })
+  const result = spawnSync(file, args, { encoding: 'utf8', windowsHide: true, timeout: 120000, maxBuffer: 1048576, env: { ...process.env, OPENSSL_CONF: join(root, 'openssl.cnf') } })
   if (result.status !== 0) throw new Error(`${basename(file)} ${args[0]} failed: ${result.error?.message || result.stderr.slice(0, 500)}`)
   return result.stdout.trim()
 }
@@ -53,10 +54,11 @@ try {
   const tlsPort = await start('server')
   const mismatchPort = await start('mismatch')
   const child = spawnSync(process.execPath, ['--experimental-strip-types', 'scripts/redis-acceptance.mjs'], {
-    env: { ...process.env, DSH_REDIS_TEST_PORT: String(port), DSH_REDIS_TLS_TEST: '1', DSH_REDIS_TLS_PORT: String(tlsPort), DSH_REDIS_TLS_MISMATCH_PORT: String(mismatchPort), DSH_REDIS_CA_PATH: join(root, 'ca.crt'), DSH_REDIS_WRONG_CA_PATH: join(root, 'wrong.crt') }, stdio: 'inherit', windowsHide: true,
+    env: { ...process.env, DSH_REDIS_STAGE_REPORT: join(root, 'stages.json'), DSH_REDIS_TEST_PORT: String(port), DSH_REDIS_TLS_TEST: '1', DSH_REDIS_TLS_PORT: String(tlsPort), DSH_REDIS_TLS_MISMATCH_PORT: String(mismatchPort), DSH_REDIS_CA_PATH: join(root, 'ca.crt'), DSH_REDIS_WRONG_CA_PATH: join(root, 'wrong.crt') }, stdio: 'inherit', windowsHide: true,
   })
+  if (existsSync(join(root, 'stages.json'))) Object.assign(report, JSON.parse(readFileSync(join(root, 'stages.json'), 'utf8')))
   if (child.status !== 0) throw new Error(`Redis acceptance exited ${child.status}`)
-  report.plain = 'PASS'; report.tls = 'PASS'; report.status = 'PASS'
+  assert.equal(report.plain, 'PASS'); assert.equal(report.tls, 'PASS'); report.status = 'PASS'
 } catch (error) {
   report.error = error.message
   process.exitCode = 1

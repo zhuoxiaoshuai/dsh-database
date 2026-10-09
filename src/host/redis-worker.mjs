@@ -1,17 +1,13 @@
 import { parentPort } from 'node:worker_threads'
 import { getRedisDataSource } from './data-sources/redis-registry.mjs'
-import { safeConnectError, databaseErrorDetail } from './connect-error.mjs'
+import { nativeErrorText } from './connect-error.mjs'
 import { encodeReply } from './data-sources/redis/index.mjs'
 import { ErrorReply } from 'redis'
 
 parentPort.once('message', async ({ input, testOnly }) => {
   const started = Date.now()
   const credentials = { ...input }
-  const safeError = error => {
-    let message = databaseErrorDetail(error, { maxLength: 1000, normalizeWhitespace: false }) || 'Redis 请求失败。'
-    for (const secret of [credentials.password, credentials.caPem]) if (secret) message = message.replaceAll(secret, '[REDACTED]')
-    return message
-  }
+  const safeError = error => nativeErrorText(error, 'Redis 请求失败。')
   let client, health = 'offline'
   const inflight = new Map()
   try {
@@ -121,6 +117,6 @@ parentPort.once('message', async ({ input, testOnly }) => {
   } catch (error) {
     input.password = ''; input.caPem = ''
     await client?.destroy()
-    parentPort.postMessage({ ok: false, ready: false, error: safeConnectError(error) })
+    parentPort.postMessage({ ok: false, ready: false, error: nativeErrorText(error, '连接失败，请检查连接配置与账号权限。') })
   }
 })

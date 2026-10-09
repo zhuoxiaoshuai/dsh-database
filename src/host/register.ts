@@ -15,7 +15,7 @@ interface DatabaseHostContext {
   on: unknown
 }
 
-export interface DatabaseRegistration { dispose(): Promise<void> }
+export interface DatabaseRegistration { available: boolean; error?: string; storageDegraded(): boolean; dispose(): Promise<void> }
 
 /** 工作台 HTTP 用对话身份做布局分桶；认证已由 requestRejection 完成。Host sessions.get 只返回已挂活会话，侧栏冷会话也会带合法 conversationId。 */
 export function conversationOwnerId(id: string): boolean {
@@ -27,7 +27,7 @@ export function tryRegisterDatabase(rawContext: Context, workerUrl: URL): Databa
     return registerDatabase(rawContext, workerUrl)
   } catch (error) {
     console.warn('[database] 数据库模块未能启动。', error)
-    return { async dispose() {} }
+    return { available: false, error: error instanceof Error ? error.message : '注册失败', storageDegraded: () => false, async dispose() {} }
   }
 }
 
@@ -74,6 +74,8 @@ export function registerDatabase(rawContext: Context, workerUrl: URL, options?: 
     throw error
   }
   return {
+    available: true,
+    storageDegraded: () => executions.storageDegraded || service.storageDegraded,
     async dispose() {
       stopRemoved()
       await stopApi()

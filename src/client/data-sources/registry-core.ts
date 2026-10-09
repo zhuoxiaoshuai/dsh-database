@@ -10,8 +10,7 @@ export function createClientModuleRegistry(entries: readonly ClientSourceModule[
       || module.connection?.id !== module.id || !module.workspace
       || module.history?.id !== module.id || typeof module.history?.renderText !== 'function'
       || typeof module.history?.resultEnvelope !== 'function' || typeof module.history?.renderResult !== 'function'
-      || (module.workspace.mode === 'standard' ? typeof module.workspace.useBindings !== 'function'
-        : module.workspace.mode === 'legacy-sql' ? (!['mysql', 'oracle'].includes(module.id) || typeof module.workspace.render !== 'function') : true)) {
+      || module.workspace.mode !== 'standard' || typeof module.workspace.useBindings !== 'function') {
       throw new Error(`数据源客户端模块不完整或重复：${String(module?.id)}`)
     }
     byId.set(module.id, module)

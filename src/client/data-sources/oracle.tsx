@@ -1,7 +1,7 @@
 import React from 'react'
 import { oracleSource } from '../../shared/data-sources/oracle.ts'
 import { oracleConnectionForm } from '../workspace/connection/connection-form-oracle.tsx'
-import { ActiveConnectionPane } from '../active-connection-pane.tsx'
+import { useSqlWorkspaceBindings } from '../sql/workspace-bindings.tsx'
 import type { ClientSourceModule } from './types.ts'
 import { sqlHistory } from './sql-history.tsx'
 
@@ -11,5 +11,5 @@ const logo = { viewBox: '0 0 32 32', className: 'db-dialect-oracle', artwork: (
 
 export const oracleModule: ClientSourceModule = {
   id: 'oracle', descriptor: oracleSource, connection: oracleConnectionForm, history: sqlHistory('oracle'), logo,
-  workspace: { mode: 'legacy-sql', render: context => <ActiveConnectionPane {...context} /> },
+  workspace: { mode: 'standard', useBindings: useSqlWorkspaceBindings },
 }

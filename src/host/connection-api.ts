@@ -1,7 +1,8 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { ConnectionService } from './connection-service.ts'
 import type { ExecutionStore } from './execution-store.ts'
-import type { CatalogRequest, SharedQuery } from '../shared/workbench.ts'
+import type { CatalogRequest } from '../shared/workbench.ts'
+import { parseBrowserQueryInitiator } from './sql-browser-request.ts'
 import { httpStatusForConnectionError, inferConnectionErrorCode } from '../shared/connection-errors.ts'
 import { CONNECTION_API_ACTIONS, type ConnectionApiAction, type ServiceRequestAction } from '../shared/database-actions.ts'
 
@@ -21,9 +22,10 @@ async function withResponseAbort<T>(res: ServerResponse, work: (signal: AbortSig
 
 export async function connectionApi(service: ConnectionService, executions: ExecutionStore, owner: string, req: IncomingMessage, res: ServerResponse) {
   const send = (status: number, body: unknown) => { if (!res.destroyed) { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)) } }
+  const storage = () => ({ executionHistory: { degraded: executions.storageDegraded, retrying: executions.persistenceRetrying }, workspace: { degraded: service.storageDegraded } })
     if (req.method === 'GET') {
     try {
-      send(200, service.snapshot(owner))
+      send(200, { ...service.snapshot(owner), storage: storage() })
     } catch (error) {
       const message = error instanceof Error ? error.message : '当前对话已失效。'
       send(message.includes('已失效') ? 404 : 400, { error: message })
@@ -73,7 +75,12 @@ export async function connectionApi(service: ConnectionService, executions: Exec
       },
       'execution-wait': async input => {
         const revision = typeof input.revision === 'number' ? input.revision : 0
-        send(200, await withResponseAbort(res, signal => executions.wait(owner, revision, 10000, signal)))
+        send(200, { ...await withResponseAbort(res, signal => executions.wait(owner, revision, 10000, signal)), storage: storage() })
+      },
+      'execution-persistence-retry': async input => {
+        if (Object.keys(input).some(key => key !== 'action')) { unsupported(); return }
+        const outcome = await executions.retryPersistence()
+        send(outcome.saved ? 200 : 503, { ...outcome, storage: storage(), ...(outcome.saved ? {} : { error: '执行历史仍未可靠落盘，请检查存储后重试。' }) })
       },
       'execution-latest': async input => {
         const id = requireId(input)
@@ -118,47 +125,52 @@ export async function connectionApi(service: ConnectionService, executions: Exec
       'execution-document-update': async input => {
         const id = requireId(input)
         if (id === undefined) return
-        if (typeof input.text !== 'string') { unsupported(); return }
-        // HTTP edits are always human edits; AI publication calls the Host service directly.
-        send(200, { document: service.updateExecutionDocument(owner, id, input.text, 'user', typeof input.revision === 'number' ? input.revision : undefined, input.generation, input.context) })
+        const document = service.updateExecutionDocumentFromBrowser(owner, id, input)
+        send(200, { document, ...(input.source === 'format' ? { sharedQuery: service.getSharedQuery(owner, id) } : {}) })
       },
       'execution-document-context': async input => {
         const id = requireId(input)
         if (id === undefined) return
+        service.assertBrowserDocumentRequest(owner, id, input.generation, input.revision)
         const context = input.context ?? (typeof input.database === 'string' ? { database: input.database } : undefined)
         if (!context || typeof context !== 'object' || Array.isArray(context)) { unsupported(); return }
         send(200, { document: service.patchExecutionDocumentContext(owner, id, context as Record<string, unknown>, input.generation, typeof input.revision === 'number' ? input.revision : undefined) })
       },
       'execution-document-control': async input => {
         const id = requireId(input)
-        if (id !== undefined) send(200, { document: service.controlExecutionDocument(owner, id, input.controller === 'ai' ? 'ai' : 'user', typeof input.reason === 'string' ? input.reason : 'user-takeover', input.generation) })
+        if (id === undefined) return
+        service.assertBrowserDocumentRequest(owner, id, input.generation, input.revision)
+        send(200, { document: service.controlExecutionDocument(owner, id, input.controller === 'ai' ? 'ai' : 'user', typeof input.reason === 'string' ? input.reason : 'user-takeover', input.generation, input.revision as number) })
       },
       'execution-document-run': async input => {
         const id = requireId(input)
         if (id === undefined) return
         if (typeof input.revision !== 'number') { unsupported(); return }
-        send(200, await withResponseAbort(res, signal => service.runExecutionDocument(owner, id, input.generation, input.revision as number, signal)))
+        send(200, await withResponseAbort(res, signal => service.runExecutionDocument(owner, id, input.generation, input.revision as number, signal, typeof input.text === 'string' ? input.text : undefined)))
       },
       'shared-query-update': async input => {
         const id = requireId(input)
         if (id === undefined) return
-        const source = input.source === 'user' || input.source === 'system' || input.source === 'ai' || input.source === 'format' ? input.source : 'user'
-        send(200, { sharedQuery: service.updateSharedQuery(owner, id, (input.patch && typeof input.patch === 'object' ? input.patch : {}) as Partial<SharedQuery>, source, typeof input.revision === 'number' ? input.revision : undefined) })
+        send(200, { sharedQuery: service.updateSharedQueryFromBrowser(owner, id, input) })
       },
       'shared-query-control': async input => {
         const id = requireId(input)
-        if (id !== undefined) send(200, { sharedQuery: input.controller === 'ai' ? service.returnSharedQuery(owner, id) : service.takeSharedQuery(owner, id, typeof input.reason === 'string' ? input.reason : 'user-takeover') })
+        if (id === undefined) return
+        service.assertBrowserDocumentRequest(owner, id, input.generation, input.revision)
+        service.controlExecutionDocument(owner, id, input.controller === 'ai' ? 'ai' : 'user', typeof input.reason === 'string' ? input.reason : 'user-takeover', input.generation, input.revision as number)
+        send(200, { sharedQuery: service.getSharedQuery(owner, id) })
       },
       'shared-query-run': async input => {
         const id = requireId(input)
         if (id === undefined) return
+        service.assertBrowserDocumentRequest(owner, id, input.generation, input.revision)
         const request = {
           connectionId: id,
           generation: input.generation,
           schema: String(input.schema || ''),
           sql: String(input.sql || ''),
           revision: typeof input.revision === 'number' ? input.revision : undefined,
-          initiator: input.initiator === 'ai' ? 'ai' as const : 'user' as const,
+          initiator: parseBrowserQueryInitiator(input.initiator),
           purpose: input.purpose === 'verify' || input.purpose === 'result' ? input.purpose : undefined,
         }
         send(200, await withResponseAbort(res, signal => service.runSharedQuery(owner, request, signal)))
@@ -166,7 +178,8 @@ export async function connectionApi(service: ConnectionService, executions: Exec
       'shared-query-explain': async input => {
         const id = requireId(input)
         if (id === undefined) return
-        const explainInput = { schema: String(input.schema || ''), sql: String(input.sql || ''), initiator: 'user' as const }
+        if (typeof input.revision !== 'number') { send(400, { error: '缺少文档修订，请刷新。' }); return }
+        const explainInput = { schema: String(input.schema || ''), sql: String(input.sql || ''), revision: input.revision, initiator: 'user' as const }
         send(200, await withResponseAbort(res, signal => service.explainPlan(owner, id, input.generation, explainInput, signal)))
       },
       activate: async input => {
@@ -217,7 +230,15 @@ export async function connectionApi(service: ConnectionService, executions: Exec
     const code = error && typeof error === 'object' && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
       ? (error as { code: string }).code
       : inferConnectionErrorCode(message)
-    send(httpStatusForConnectionError(code), { error: message, ...(code ? { code } : {}) })
+    const outcome = error as { effect?: string; phase?: string; category?: string; databaseCode?: string; steps?: unknown; batch?: unknown; executionId?: string; executionStatus?: string;
+      kind?: 'query' | 'write' | 'explain'; identity?: unknown; connectionId?: string; generation?: string; schema?: string; context?: Record<string, string>; documentText?: string; executedSql?: string; queryRevision?: number; initiator?: 'user' | 'ai' }
+    send(httpStatusForConnectionError(code), { error: message, ...(code ? { code } : {}),
+      ...(outcome.effect ? { effect: outcome.effect } : {}), ...(outcome.phase ? { phase: outcome.phase } : {}),
+      ...(outcome.category ? { category: outcome.category } : {}), ...(outcome.databaseCode ? { databaseCode: outcome.databaseCode } : {}),
+      ...(outcome.executionId ? { executionId: outcome.executionId, status: outcome.executionStatus, connectionId: outcome.connectionId,
+        generation: outcome.generation, schema: outcome.schema, context: outcome.context, documentText: outcome.documentText,
+        executedSql: outcome.executedSql, queryRevision: outcome.queryRevision, initiator: outcome.initiator,
+        ...(outcome.identity ? { identity: outcome.identity } : {}), ...(outcome.kind ? { kind: outcome.kind } : {}) } : {}), ...(outcome.steps ? { steps: outcome.steps, batch: outcome.batch } : {}) })
   }
   finally { if (body?.input && typeof body.input === 'object') { (body.input as Record<string, unknown>).password = ''; (body.input as Record<string, unknown>).caPem = '' } }
 }

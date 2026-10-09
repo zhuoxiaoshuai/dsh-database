@@ -26,6 +26,16 @@ export class ConnectionRequestError extends Error {
   }
 }
 
+export type RequestPhase = 'before-fetch' | 'fetch' | 'response'
+
+/** HTTP dispatch is not evidence of database dispatch or rollback. */
+export function transportRequestError(message: string, connectionId: string | undefined, requestPhase: RequestPhase) {
+  return Object.assign(new ConnectionRequestError(message, requestPhase === 'before-fetch' ? CONNECTION_ERROR_CODES.cancelled : undefined, connectionId), {
+    requestPhase, trustedReceipt: false, effect: requestPhase === 'before-fetch' ? 'none' : 'unknown',
+    phase: requestPhase === 'before-fetch' ? 'check' : 'receipt',
+  })
+}
+
 export class ServiceError extends Error {
   readonly code: ConnectionErrorCode
   constructor(message: string, code: ConnectionErrorCode) {

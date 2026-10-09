@@ -1,163 +1,122 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Connection, SharedQuery, WorkspaceBridge } from '../shared/workbench.ts'
-import { applyExecutionResult, applyQueryChanged, displayFromLatest, displayMatchingEditor, hydrateSharedQuery, keepHydratedDisplay } from '../shared/query-sync.ts'
-import { inferExecutionType, type DisplayResult, type ExecutionRecord, type WorkbenchEvent } from '../shared/execution.ts'
+import type { Connection, WorkspaceBridge, WorkspaceStorageStatus } from '../shared/workbench.ts'
+import { sameDocumentResultTarget, documentResult, ownsDocumentResult, preferLiveGrid, sqlDisplay } from '../shared/query-sync.ts'
+import type { ExecutionDocument } from '../shared/execution-document.ts'
+import { inferExecutionType, type DocumentExecutionResult, type DisplayResult, type ExecutionRecord, type WorkbenchEvent } from '../shared/execution.ts'
 
-export function useExecutionItems(
-  bridge: WorkspaceBridge | undefined,
-  onPage?: (page: { items: ExecutionRecord[]; events?: WorkbenchEvent[]; gap?: boolean }) => void,
-  onError?: () => void,
-): { items: ExecutionRecord[]; error: string } {
+type ExecutionPage = { revision?: number; items: ExecutionRecord[]; events?: WorkbenchEvent[]; gap?: boolean; storage?: WorkspaceStorageStatus }
+type ExecutionListener = (page: ExecutionPage, error: string) => void
+const subscriptions = new WeakMap<WorkspaceBridge, { listeners: Set<ExecutionListener>; controller: AbortController; page: ExecutionPage }>()
+export function useExecutionItems(bridge: WorkspaceBridge | undefined, onPage?: (page: ExecutionPage) => void, onError?: () => void): { items: ExecutionRecord[]; error: string; storage?: WorkspaceStorageStatus } {
+  const [storage, setStorage] = useState<WorkspaceStorageStatus>()
   const [items, setItems] = useState<ExecutionRecord[]>([])
   const [error, setError] = useState('')
-  const onPageRef = useRef(onPage)
-  onPageRef.current = onPage
-  const onErrorRef = useRef(onError)
-  onErrorRef.current = onError
+  const callback = useRef({ onPage, onError })
+  callback.current = { onPage, onError }
   useEffect(() => {
     if (!bridge?.executions) return
-    let alive = true
-    let seen = 0
-    const controller = new AbortController()
-    const pull = async () => {
-      while (alive) {
-        try {
-          const page = await bridge.executions!('execution-wait', { revision: seen }, controller.signal) as { revision: number; items: ExecutionRecord[]; events?: WorkbenchEvent[]; gap?: boolean }
-          if (!alive) return
-          seen = page.revision || 0
-          setItems(page.items || [])
-          setError('')
-          onPageRef.current?.(page)
-        } catch (e) {
-          if (!alive || controller.signal.aborted) return
-          setError(e instanceof Error ? e.message : '无法读取 AI 执行记录。')
-          onErrorRef.current?.()
-          await new Promise(resolve => setTimeout(resolve, 1500))
+    let hub = subscriptions.get(bridge)
+    const listener: ExecutionListener = (page, failure) => {
+      setItems(page.items || []); setError(failure)
+      if (!failure) setStorage(page.storage)
+      if (failure) callback.current.onError?.()
+      else callback.current.onPage?.(page)
+    }
+    if (!hub) {
+      hub = { listeners: new Set(), controller: new AbortController(), page: { items: [] } }
+      subscriptions.set(bridge, hub)
+      const shared = hub
+      void (async () => {
+        let seen = 0
+        while (!shared.controller.signal.aborted) {
+          try {
+            const page = await bridge.executions!('execution-wait', { revision: seen }, shared.controller.signal) as ExecutionPage
+            if (shared.controller.signal.aborted) return
+            seen = page.revision || 0; shared.page = page
+            for (const receive of shared.listeners) receive(page, '')
+          } catch (caught) {
+            if (shared.controller.signal.aborted) return
+            for (const receive of shared.listeners) receive(shared.page, caught instanceof Error ? caught.message : '无法读取执行记录。')
+            await new Promise(resolve => setTimeout(resolve, 1500))
+          }
         }
-      }
+      })()
     }
-    void pull()
-    return () => { alive = false; controller.abort() }
+    hub.listeners.add(listener)
+    listener({ ...hub.page, events: [], gap: false }, '')
+    const shared = hub
+    return () => {
+      shared.listeners.delete(listener)
+      if (!shared.listeners.size) { shared.controller.abort(); subscriptions.delete(bridge) }
+    }
   }, [bridge])
-  return { items, error }
+  return { items, error, storage }
 }
-
-export function useAiQueryBus({
-  bridge, connection, query, onQuery,
-}: {
-  bridge: WorkspaceBridge
-  connection?: Connection
-  query: SharedQuery
-  onQuery(next: SharedQuery): void
-}): {
-  items: ExecutionRecord[]
-  display?: DisplayResult
-  setDisplay(next?: DisplayResult): void
-  peer?: { connectionId: string; name?: string; status: string; executionId?: string }
-  markEditing(value: boolean): void
-  hydrate(): Promise<void>
-  error: string
-  dismissPeer(): void
-} {
-  const [display, setDisplay] = useState<DisplayResult>()
+/** One owner for current coediting results across all sources. */
+export function useDocumentResultBus({ bridge, connection, document, unsaved = false, conversationId = bridge.conversationId }: {
+  bridge: WorkspaceBridge; connection?: Connection; document: ExecutionDocument; unsaved?: boolean; conversationId?: string
+}) {
+  const [current, setCurrent] = useState<DocumentExecutionResult>()
   const [peer, setPeer] = useState<{ connectionId: string; name?: string; status: string; executionId?: string }>()
-  const queryRef = useRef(query)
-  queryRef.current = query
-  const displayRef = useRef(display)
-  displayRef.current = display
-  const editing = useRef(false)
-  const connectionId = connection?.id
-  const generation = connection?.generation
-  const hydrateKey = `${connectionId || ''}\0${generation || ''}`
-  const currentHydrateKey = useRef(hydrateKey)
-  currentHydrateKey.current = hydrateKey
-  const hydrateRef = useRef<{ key: string; promise: Promise<void> }>()
-
-  const applyEvents = (events: WorkbenchEvent[], listed: ExecutionRecord[] = []) => {
-    if (!connectionId) return
-    let nextQuery = queryRef.current
-    let nextDisplay = displayRef.current
-    for (const event of events) {
-      const merged = applyQueryChanged(nextQuery, event, { connectionId, localEditing: editing.current })
-      if (merged) {
-        nextQuery = merged
-        nextDisplay = displayMatchingEditor(nextDisplay, nextQuery.sql)
-      }
-      nextDisplay = applyExecutionResult(nextDisplay, event, {
-        connectionId, controller: nextQuery.controller, sql: nextQuery.sql, queryRevision: nextQuery.revision,
-      })
-      if (event.connectionId && event.connectionId !== connectionId && (event.type === 'EXECUTION_STARTED' || event.type === 'EXECUTION_FINISHED' || event.type === 'EXECUTION_FAILED')) {
-        setPeer({
-          connectionId: event.connectionId,
-          name: listed.find(item => item.connectionId === event.connectionId)?.connectionName,
-          status: event.type === 'EXECUTION_STARTED' ? 'running' : 'done',
-          executionId: event.executionId,
-        })
-      }
-    }
-    if (nextQuery !== queryRef.current) onQuery(nextQuery)
-    if (nextDisplay !== displayRef.current) setDisplay(nextDisplay)
+  const owner = { connectionId: connection?.id || '', generation: connection?.generation, conversationId, document, unsaved }
+  const ownerRef = useRef(owner); ownerRef.current = owner
+  const currentRef = useRef(current)
+  const visible = current && sameDocumentResultTarget(current.identity, owner) ? current : undefined
+  const stale = !!visible && !ownsDocumentResult(visible.identity, owner)
+  currentRef.current = visible
+  const key = JSON.stringify([owner.connectionId, owner.generation, conversationId, document, unsaved])
+  const keyRef = useRef(key); keyRef.current = key
+  const recovering = useRef<{ key: string; promise: Promise<void> }>()
+  const accepted = useRef(0)
+  const accept = (value: unknown) => {
+    const incoming = documentResult(value)
+    if (!incoming || !ownsDocumentResult(incoming.identity, ownerRef.current)) return
+    const oldSql = sqlDisplay(currentRef.current), nextSql = sqlDisplay(incoming)
+    const next = oldSql && nextSql ? { ...incoming, result: preferLiveGrid(oldSql, nextSql).result } : incoming
+    ++accepted.current
+    currentRef.current = next; setCurrent(next)
   }
-
   const hydrate = (): Promise<void> => {
-    if (!bridge.executions || !connectionId || !connection?.live) return Promise.resolve()
-    if (hydrateRef.current?.key === hydrateKey) return hydrateRef.current.promise
-    const key = hydrateKey
+    if (!bridge.executions || !connection?.live || !connection.id || ownerRef.current.unsaved) return Promise.resolve()
+    const requestKey = keyRef.current
+    const acceptance = accepted.current
+    if (recovering.current?.key === requestKey) return recovering.current.promise
     const promise = (async () => {
       try {
-        const body = await bridge.executions!('shared-query-get', { id: connectionId }) as { sharedQuery?: SharedQuery }
-        if (currentHydrateKey.current !== key) return
-        const editorQuery = body.sharedQuery
-          ? hydrateSharedQuery(queryRef.current, body.sharedQuery, { connectionId, localEditing: editing.current })
-          : queryRef.current
-        if (editorQuery !== queryRef.current) onQuery(editorQuery)
-        const latest = await bridge.executions!('execution-latest', { id: connectionId }) as { execution?: ExecutionRecord & { result?: DisplayResult['result']; generation?: string; type?: string } }
-        if (currentHydrateKey.current !== key) return
-        const next = displayFromLatest(connectionId, editorQuery, latest.execution, generation)
-        if (!editing.current) {
-          const kept = keepHydratedDisplay(displayRef.current, next, editorQuery.sql)
-          if (kept !== displayRef.current) setDisplay(kept)
-        }
-      } catch { /* hydrate is best-effort */ }
-    })().finally(() => {
-      if (hydrateRef.current?.promise === promise) hydrateRef.current = undefined
-    })
-    hydrateRef.current = { key, promise }
-    return promise
+        const latest = await bridge.executions!('execution-latest', { id: connection.id }) as { execution?: ExecutionRecord & { result?: unknown } }
+        if (keyRef.current !== requestKey || accepted.current !== acceptance) return
+        const record = latest.execution
+        if (record) accept({ identity: record.identity, executionId: record.executionId, result: record.result, kind: record.type, message: record.message })
+      } catch { /* recovery remains best effort */ }
+    })().finally(() => { if (recovering.current?.promise === promise) recovering.current = undefined })
+    recovering.current = { key: requestKey, promise }; return promise
   }
-
   const { items, error } = useExecutionItems(bridge, page => {
-    if (page.events?.length) applyEvents(page.events, page.items || [])
+    for (const event of page.events || []) {
+      if (event.type === 'EXECUTION_FINISHED' || event.type === 'EXECUTION_FAILED') {
+        const failure = event.type === 'EXECUTION_FAILED'
+        const payload = event.sourceResult ?? event.result ?? (failure && event.identity
+          ? { columns: [], rows: [], elapsedMs: 0, truncated: false, message: event.message } : undefined)
+        accept({ identity: event.identity, executionId: event.executionId, result: payload, kind: event.kind, message: event.message })
+      }
+      if (event.connectionId && event.connectionId !== ownerRef.current.connectionId && ['EXECUTION_STARTED', 'EXECUTION_FINISHED', 'EXECUTION_FAILED'].includes(event.type)) {
+        setPeer({ connectionId: event.connectionId, name: page.items.find(item => item.connectionId === event.connectionId)?.connectionName,
+          executionId: event.executionId, status: event.type === 'EXECUTION_STARTED' ? 'running' : 'done' })
+      }
+    }
     if (page.gap) void hydrate()
   }, () => { void hydrate() })
-
   useEffect(() => {
-    setDisplay(undefined)
-    setPeer(undefined)
-    editing.current = false
-    void hydrate()
-  }, [bridge, connectionId, generation, connection?.live])
-
-  useEffect(() => {
-    if (peer && peer.connectionId === connectionId) setPeer(undefined)
-  }, [connectionId, peer])
-
+    if (current && !sameDocumentResultTarget(current.identity, ownerRef.current)) setCurrent(undefined)
+    if (!unsaved) void hydrate()
+  }, [key])
+  useEffect(() => { setPeer(undefined) }, [connection?.id, connection?.generation])
   useEffect(() => {
     if (!peer || peer.status !== 'done') return
     const timer = setTimeout(() => setPeer(undefined), 8000)
     return () => clearTimeout(timer)
   }, [peer?.connectionId, peer?.executionId, peer?.status])
-
-  return {
-    items,
-    display,
-    setDisplay,
-    peer,
-    dismissPeer: () => setPeer(undefined),
-    markEditing: value => { editing.current = value },
-    hydrate,
-    error,
-  }
+  return { items, current: visible, stale, display: sqlDisplay(visible), accept, hydrate, peer, error, dismissPeer: () => setPeer(undefined) }
 }
 
 export { historyItemsForConnection } from '../shared/execution.ts'

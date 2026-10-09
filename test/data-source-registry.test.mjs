@@ -70,7 +70,8 @@ test('connection runtime selection and credential rules belong to the registered
   }
   assert.deepEqual(mysql.actions, ['catalog', 'query', 'manual-query', 'browse', 'maintenance'])
   assert.deepEqual(redis.actions, ['redis-command', 'redis-scan', 'redis-key-suggest', 'redis-key'])
-  assert.deepEqual(kafka.actions, ['kafka-topics', 'kafka-describe', 'kafka-peek', 'kafka-groups', 'kafka-group'])
+  assert.deepEqual(kafka.actions, ['kafka-topics', 'kafka-describe', 'kafka-peek', 'kafka-groups', 'kafka-group', 'kafka-produce',
+    'kafka-topic-config', 'kafka-time-offsets', 'kafka-scan', 'kafka-produce-batch', 'kafka-tombstone', 'kafka-create-topic', 'kafka-set-group-offsets'])
   assert.throws(() => getSourceRuntime('unknown'), /不支持/)
   assert.throws(() => createRuntimeRegistry([mysql, mysql]), /重复/)
   assert.throws(() => createRuntimeRegistry([{ ...mysql, actions: ['query', 'query'] }]), /运行能力不完整/)

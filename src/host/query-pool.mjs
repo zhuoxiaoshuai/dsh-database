@@ -21,6 +21,7 @@ export function createReadonlyQueryPool({
   prepare,
   reset,
   destroy,
+  watchConnection,
   isFatal = (error, flags) => isFatalSessionError(error, flags),
 } = {}) {
   const idle = []
@@ -28,18 +29,27 @@ export function createReadonlyQueryPool({
   let live = 0
   let creating = 0
   let closed = false
+  const tracked = new Map()
 
   const failWaiters = error => {
     while (waiters.length) waiters.shift().reject(error)
   }
 
   async function retire(conn) {
+    const state = tracked.get(conn)
+    if (!state) return
+    tracked.delete(conn)
+    state.detach?.()
     live = Math.max(0, live - 1)
     try { await destroy(conn) } catch { /* ignore */ }
+    while (!closed && waiters.length && live + creating < size) {
+      const waiter = waiters.shift()
+      void take().then(waiter.resolve, waiter.reject)
+    }
   }
 
   function give(conn) {
-    if (closed) return void retire(conn)
+    if (closed || tracked.get(conn)?.lost) return void retire(conn)
     if (waiters.length) waiters.shift().resolve(conn)
     else idle.push(conn)
   }
@@ -57,6 +67,13 @@ export function createReadonlyQueryPool({
           throw closed ? new Error('连接池已关闭。') : cancelledError()
         }
         live += 1
+        const state = { lost: false, detach: undefined }
+        tracked.set(conn, state)
+        state.detach = watchConnection?.(conn, () => {
+          state.lost = true
+          const index = idle.indexOf(conn)
+          if (index >= 0) { idle.splice(index, 1); void retire(conn) }
+        })
         return conn
       } finally {
         creating -= 1
@@ -71,6 +88,7 @@ export function createReadonlyQueryPool({
       const waiter = {
         resolve: value => {
           signal?.removeEventListener('abort', onAbort)
+          if (signal?.aborted) { give(value); reject(cancelledError()); return }
           resolve(value)
         },
         reject: error => {
@@ -96,7 +114,9 @@ export function createReadonlyQueryPool({
         const conn = await take(signal)
         try {
           if (signal?.aborted) throw cancelledError()
+          if (tracked.get(conn)?.lost) throw new Error('Connection lost before query preparation')
           await prepare(conn, schema)
+          if (tracked.get(conn)?.lost) throw new Error('Connection lost during query preparation')
           let done = false
           const finish = async work => {
             if (done) return
@@ -131,8 +151,7 @@ export function createReadonlyQueryPool({
       closed = true
       failWaiters(new Error('连接池已关闭。'))
       const leftover = idle.splice(0)
-      await Promise.allSettled(leftover.map(conn => destroy(conn)))
-      live = Math.max(0, live - leftover.length)
+      await Promise.allSettled(leftover.map(conn => retire(conn)))
     },
   }
 }

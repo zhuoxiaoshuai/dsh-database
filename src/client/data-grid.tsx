@@ -1,11 +1,11 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import type { Result } from '../shared/workbench.ts'
-import { formatGridCell, formatPreview, isBinaryPlaceholder, isLongCell } from '../shared/cell-value.ts'
+import { formatGridCell, formatPreview, isBinaryCell, isBinaryPlaceholder, isLongCell } from '../shared/cell-value.ts'
+import { selectionContains, type CellPos, type GridSelection } from './grid-copy/selection.ts'
 
-export { formatPreview, isBinaryPlaceholder, isLongCell, formatGridCell }
+export { formatPreview, isBinaryCell, isBinaryPlaceholder, isLongCell, formatGridCell }
 
-export type CellPos = { row: number; col: number }
-export type CellRange = { r1: number; c1: number; r2: number; c2: number }
+export type { CellPos } from './grid-copy/selection.ts'
 
 export type DataGridHandle = {
   getScroll(): { top: number; left: number }
@@ -35,13 +35,15 @@ export type DataGridProps = {
   onSort?(column: string): void
   onDraftChange?(id: string, column: string, value: string | null): void
   onDetailEdit?(pos: CellPos): void
-  range?: CellRange
+  selection?: GridSelection
+  onColumnSelect?(event: React.MouseEvent, col: number): void
+  onColumnContext?(event: React.MouseEvent, col: number): void
   matches?: CellPos[]
   currentMatch?: CellPos
 }
 
 export const DataGrid = forwardRef<DataGridHandle, DataGridProps>(function DataGrid({
-  result, readOnly, allowInsert, primaryKeys, changed, draftRows, selected, editing, sortField, sortOrder, autoIncrement, editableColumns, insertableColumns, onSelect, onEditStart, onEditCommit, onEditCancel, onRowSelect, onContext = () => {}, onSort, onDraftChange, onDetailEdit, range, matches, currentMatch,
+  result, readOnly, allowInsert, primaryKeys, changed, draftRows, selected, editing, sortField, sortOrder, autoIncrement, editableColumns, insertableColumns, onSelect, onEditStart, onEditCommit, onEditCancel, onRowSelect, onContext = () => {}, onSort, onDraftChange, onDetailEdit, selection, onColumnSelect, onColumnContext, matches, currentMatch,
 }, ref) {
   const inputRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
@@ -73,10 +75,10 @@ export const DataGrid = forwardRef<DataGridHandle, DataGridProps>(function DataG
     if (key && changed[key] && Object.prototype.hasOwnProperty.call(changed[key], result.columns[col])) return changed[key][result.columns[col]]
     return value
   }
-  const lockedCell = (column: string, value: string | null, draft = false) => identity.has(column) || ((draft ? insertable : editable) ? !(draft ? insertable : editable)!.has(column) : false) || isBinaryPlaceholder(value)
+  const lockedCell = (column: string, value: string | null, draft = false) => identity.has(column) || ((draft ? insertable : editable) ? !(draft ? insertable : editable)!.has(column) : false) || isBinaryCell(result, result.columns.indexOf(column), value)
   const startEdit = (pos: CellPos, writable: boolean, value: string | null) => {
     if (!writable) return
-    if (lockedCell(result.columns[pos.col], value)) return
+    if (lockedCell(result.columns[pos.col], value, pos.row < 0)) return
     if (isLongCell(value)) { onSelect(pos); onDetailEdit?.(pos); return }
     onEditStart(pos)
   }
@@ -102,7 +104,17 @@ export const DataGrid = forwardRef<DataGridHandle, DataGridProps>(function DataG
   return <div className="db-grid-scroll" tabIndex={0} ref={rootRef}>
     <table className="db-grid db-data-grid"><thead><tr>
       <th className="db-row-number">#</th>
-      {result.columns.map(column => <th key={column}><button type="button" onClick={() => onSort?.(column)}>{column}{sortField === column ? (sortOrder === 'ASC' ? ' ↑' : sortOrder === 'DESC' ? ' ↓' : '') : ''}</button></th>)}
+      {result.columns.map((column, col) => {
+        const picked = selection?.kind === 'columns' && selection.columns.includes(col)
+        return <th key={column} data-col={col} className={picked ? 'is-column-selected' : ''}
+          aria-sort={sortField === column && sortOrder ? (sortOrder === 'ASC' ? 'ascending' : 'descending') : undefined}
+          onContextMenu={event => { event.preventDefault(); onColumnContext?.(event, col) }}>
+          <div className="db-grid-column-head">
+            <button type="button" className="db-grid-column-select" aria-label={`选中列 ${column}`} aria-pressed={picked} onClick={event => onColumnSelect?.(event, col)}>{column}</button>
+            {onSort && <button type="button" className="db-grid-column-sort" aria-label={`排序 ${column}`} title={`排序 ${column}`} onClick={event => { event.stopPropagation(); onSort(column) }}>{sortField === column && sortOrder ? (sortOrder === 'ASC' ? '↑' : '↓') : '↕'}</button>}
+          </div>
+        </th>
+      })}
     </tr></thead><tbody>
       {draftRows.map((row, i) => {
         const r = -(i + 1)
@@ -112,14 +124,14 @@ export const DataGrid = forwardRef<DataGridHandle, DataGridProps>(function DataG
             const cellValue = row.values[column] ?? null
             const isEdit = editing?.row === r && editing?.col === c
             const locked = lockedCell(column, cellValue, true)
-            return <td key={column} data-row={r} data-col={c} className={[cellClass(selected?.row === r && selected?.col === c, true, inRange(range, r, c, draftRows.length, result.rows.length)), matchClass(r, c)].filter(Boolean).join(' ')}
+            return <td key={column} data-row={r} data-col={c} className={[cellClass(selected?.row === r && selected?.col === c, true, selectionContains(selection, { row: r, col: c }, draftRows.length, result.rows.length)), matchClass(r, c)].filter(Boolean).join(' ')}
               onClick={() => onSelect({ row: r, col: c })}
               onDoubleClick={() => startEdit({ row: r, col: c }, canEditDraft && !locked, cellValue)}
               onContextMenu={event => { event.preventDefault(); onSelect({ row: r, col: c }); onContext(event, { row: r, col: c }) }}>
               {isEdit ? <input ref={inputRef} className="db-cell-editor" aria-label={`编辑 ${column}`} value={draft} onChange={e => { dirtyRef.current = true; setDraft(e.target.value) }}
                 onBlur={() => commitDraft(row.id, column)}
                 onKeyDown={e => { if (e.key === 'Enter') commitDraft(row.id, column); if (e.key === 'Escape') onEditCancel() }} />
-                : renderText(cellValue)}
+                : Object.hasOwn(row.values, column) ? renderText(cellValue) : <span className="db-muted">默认值</span>}
             </td>
           })}
         </tr>
@@ -132,7 +144,7 @@ export const DataGrid = forwardRef<DataGridHandle, DataGridProps>(function DataG
           const isEdit = editing?.row === r && editing?.col === c
           const isSel = selected?.row === r && selected?.col === c
           const locked = lockedCell(result.columns[c], shown)
-          return <td key={c} data-row={r} data-col={c} className={[cellClass(isSel, dirty, inRange(range, r, c, draftRows.length, result.rows.length)), matchClass(r, c)].filter(Boolean).join(' ')}
+          return <td key={c} data-row={r} data-col={c} className={[cellClass(isSel, dirty, selectionContains(selection, { row: r, col: c }, draftRows.length, result.rows.length)), matchClass(r, c)].filter(Boolean).join(' ')}
             onClick={() => onSelect({ row: r, col: c })}
             onDoubleClick={() => startEdit({ row: r, col: c }, canEditExisting && !locked, shown)}
             onContextMenu={event => { event.preventDefault(); onSelect({ row: r, col: c }); onContext(event, { row: r, col: c }) }}>
@@ -147,25 +159,6 @@ export const DataGrid = forwardRef<DataGridHandle, DataGridProps>(function DataG
     {!result.rows.length && !draftRows.length && <p className="db-info-note">没有返回行。</p>}
   </div>
 })
-
-function inRange(range: CellRange | undefined, row: number, col: number, draftCount: number, dataCount: number): boolean {
-  if (!range) return false
-  const start = visualRow(range.r1, draftCount, dataCount)
-  const end = visualRow(range.r2, draftCount, dataCount)
-  const here = visualRow(row, draftCount, dataCount)
-  if (start == null || end == null || here == null) return false
-  const c1 = Math.min(range.c1, range.c2)
-  const c2 = Math.max(range.c1, range.c2)
-  return here >= Math.min(start, end) && here <= Math.max(start, end) && col >= c1 && col <= c2
-}
-
-function visualRow(row: number, draftCount: number, dataCount: number): number | null {
-  if (row < 0) {
-    const index = -row - 1
-    return index < draftCount ? index : null
-  }
-  return row < dataCount ? draftCount + row : null
-}
 
 function cellClass(selected: boolean, dirty: boolean, ranged: boolean): string {
   return [selected ? 'is-cell-selected' : '', dirty ? 'is-cell-changed' : '', ranged ? 'is-cell-range' : ''].filter(Boolean).join(' ')

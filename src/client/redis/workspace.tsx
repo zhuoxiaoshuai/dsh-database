@@ -67,8 +67,8 @@ export function useRedisBindings(bridge: WorkspaceBridge, connection: Connection
     Editor: RedisQueryEditor, Result: RedisResultView, hint: text => hintFor(text, suggestion),
     queryFooter: setText => history.length > 0 ? <details className="db-redis-command-history"><summary>本页命令历史</summary>{history.map((item, index) => <button key={`${item}:${index}`} type="button" className="db-text-button" onClick={() => setText(item)}>{item.slice(0, 100)}</button>)}</details> : null,
     runText: async (text, signal) => {
-        if (!bridge.redis || !connection.live) throw new Error('请先连接 Redis。')
-        const result = await bridge.redis(connection, 'redis-command', { command: text, database: commandDatabase }, signal)
+        if (!bridge.executeText || !connection.live) throw new Error('请先连接 Redis。')
+        const result = await bridge.executeText(connection, text, { database: commandDatabase }, signal)
         if (identityRef.current === identity && !signal?.aborted) setHistory(previous => [text, ...previous.filter(item => item !== text)].slice(0, 30))
         return result
       } }

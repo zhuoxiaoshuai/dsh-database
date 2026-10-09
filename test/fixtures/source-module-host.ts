@@ -13,7 +13,8 @@ export const mockHostModule = {
     return {}
   }, prepareText(text) {
     mockPolicy.analyze(text)
-    return { action: 'mock-read', text, input: { text }, operation: 'mock_read', title: '读取模拟对象', summarize: () => '读取完成。' }
+    return { action: 'mock-read', text, input: { text }, operation: 'mock_read', title: '读取模拟对象',
+      queue: 'manual', recordPolicy: 'owned', summarize: () => '读取完成。' }
   }, authorize(prepared, actor, binding) {
     if (!['user', 'ai'].includes(actor) || !binding.generation || binding.dialect !== 'mock-source') throw new Error('模拟源授权失败。')
     mockPolicy.analyze(prepared.text)

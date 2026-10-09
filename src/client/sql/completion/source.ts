@@ -1,4 +1,5 @@
 import { completionStatus, currentCompletions, startCompletion, type CompletionContext } from '@codemirror/autocomplete'
+import { skipRegion } from '../../../shared/sql-lex.ts'
 import type { EditorView } from '@codemirror/view'
 import type { Connection, Dialect } from '../../../shared/workbench.ts'
 import type { SchemaCache } from '../../schema/schema-cache.ts'
@@ -6,7 +7,21 @@ import { analyzeContext, buildCompletion, isInsideCommentOrLiteral, locateStatem
 
 export { opensTableSlot } from './engine.ts'
 
-const IDENT_PREFIX = /[`"A-Za-z0-9_]*$/
+const IDENT_PREFIX = /[`"\p{L}\p{N}_$#]*$/u
+
+/** One range for filtering and replacing, including the part to the right of the caret. */
+export function completionIdentifierRange(text: string, pos: number, dialect: Dialect) {
+  for (let index = 0; index < text.length;) {
+    const region = skipRegion(text, index, dialect)
+    if (region.kind === 'quotedIdent' && pos > index && pos <= region.index) {
+      return { from: index, to: region.index, typed: text.slice(index + 1, region.closed && pos === region.index ? pos - 1 : pos).replaceAll(text[index] + text[index], text[index]), quote: text[index] }
+    }
+    index = region.kind ? Math.max(index + 1, region.index) : index + 1
+  }
+  const prefix = text.slice(0, pos).match(IDENT_PREFIX)?.[0] || ''
+  const suffix = text.slice(pos).match(/^[\p{L}\p{N}_$#]*/u)?.[0] || ''
+  return { from: pos - prefix.length, to: pos + suffix.length, typed: prefix, quote: '' }
+}
 
 export type CompletionLive = {
   dialect: Dialect
@@ -64,7 +79,7 @@ function computeFromScope(live: CompletionLive, statementSql: string, offset: nu
   const analyzed = analyzeContext(statementSql, offset, live.dialect)
   if (!shouldOfferCompletions(typed, explicit, analyzed)) return null
   const tables = live.connection && live.cache
-    ? (live.cache.tablesSnapshot(live.connection, live.schema) || []).map(item => ({ name: item.name, kind: item.kind }))
+    ? (live.cache.tablesSnapshot(live.connection, live.schema) || []).map(item => ({ name: item.name, kind: item.kind, comment: item.comment }))
     : []
   const { suggestions, pending } = buildCompletion({
     context: analyzed,
@@ -77,7 +92,7 @@ function computeFromScope(live: CompletionLive, statementSql: string, offset: nu
       const schemaName = database || live.schema
       if (!schemaName) return undefined
       const detail = live.cache.detailSnapshot(live.connection, schemaName, name)
-      return detail?.columns?.map(column => ({ name: String(column.name || ''), type: String(column.type || '') }))
+      return detail?.columns?.map(column => ({ name: String(column.name || ''), type: String(column.type || ''), comment: String(column.comment || '') }))
     },
   })
   return { options: rankSuggestions(typed, suggestions), pending }
@@ -94,19 +109,11 @@ export function completionOptionsFromCache(live: CompletionLive, sql: string, po
   return computed && computed.options.length ? computed.options : null
 }
 
-function withLoading(computed: { options: CompletionOption[]; pending: string[] }, typed: string): CompletionOption[] {
-  const options = computed.options.slice()
-  if (computed.pending.length && !options.some(item => item.type === 'property')) {
-    options.push({ label: '正在加载列…', apply: typed, boost: -99 })
-  }
-  return options
-}
-
 function listedOptions(live: CompletionLive, sql: string, pos: number): CompletionOption[] {
-  const typed = sql.slice(0, pos).match(IDENT_PREFIX)?.[0] || ''
+  const typed = completionIdentifierRange(sql, pos, live.dialect).typed
   const computed = computeCompletion(live, sql, pos, typed, false)
   if (!computed) return []
-  return withLoading(computed, typed)
+  return computed.options
 }
 
 function optionFingerprint(options: readonly { label: string; apply?: unknown; type?: string; detail?: string }[]): string {
@@ -117,7 +124,7 @@ export function completionOptionFingerprint(live: CompletionLive, sql: string, p
   return optionFingerprint(listedOptions(live, sql, pos))
 }
 
-export type CompletionRefreshSeen = { tables: number; intoColumns: string }
+export type CompletionRefreshSeen = { tables: number; intoColumns: string; fingerprint?: string }
 
 /** 列表已开时指纹不变不重启；未开时只在表清单 0→N 或 INSERT 列第一次就绪时打开。 */
 export function completionRefreshAction(input: {
@@ -156,15 +163,19 @@ export function completionRefreshAction(input: {
     next.intoColumns = ready
     return { action: !prev && ready ? 'start' : 'skip', seen: next }
   }
-  return { action: 'skip', seen }
+  const fingerprint = completionOptionFingerprint(live, sql, pos)
+  return { action: seen.fingerprint !== undefined && fingerprint && seen.fingerprint !== fingerprint ? 'start' : 'skip', seen: { ...seen, fingerprint } }
 }
 
 export function createEditorCompletionRefresh() {
   let seen: CompletionRefreshSeen = { tables: -1, intoColumns: '' }
-  let shown = ''
-  return (view: EditorView, live: CompletionLive) => {
+  let shown = '', dismissed = '', position = ''
+  const refresh = (view: EditorView, live: CompletionLive) => {
     const sql = view.state.doc.toString()
     const pos = view.state.selection.main.head
+    const at = `${sql}\0${pos}`
+    if (at !== position) { position = at; dismissed = ''; seen = { tables: -1, intoColumns: '', fingerprint: '' }; shown = '' }
+    if (dismissed === at || view.composing) return
     const listed = currentCompletions(view.state)
     const listedFingerprint = optionFingerprint(listed)
     // pending 时 open.disabled，currentCompletions 是空的，用上次指纹避免预热 emit 反复 startCompletion。
@@ -185,6 +196,13 @@ export function createEditorCompletionRefresh() {
       startCompletion(view)
     }
   }
+  refresh.observe = (view: EditorView, live: CompletionLive) => {
+    const sql = view.state.doc.toString(), pos = view.state.selection.main.head
+    position = `${sql}\0${pos}`; dismissed = ''; shown = ''
+    seen = { tables: live.connection && live.cache ? live.cache.tablesSnapshot(live.connection, live.schema)?.length || 0 : -1, intoColumns: '', fingerprint: completionOptionFingerprint(live, sql, pos) }
+  }
+  refresh.dismiss = (view: EditorView) => { dismissed = `${view.state.doc.toString()}\0${view.state.selection.main.head}` }
+  return refresh
 }
 
 async function waitForColumns(live: CompletionLive, tables: string[]): Promise<void> {
@@ -201,25 +219,24 @@ async function waitForColumns(live: CompletionLive, tables: string[]): Promise<v
 }
 
 export function createSqlCompletionSource(getLive: () => CompletionLive) {
-  return async (context: CompletionContext) => {
-    const live = getLive()
-    const text = context.state.doc.toString()
-    if (isInsideCommentOrLiteral(text, context.pos, live.dialect)) return null
+  return (context: CompletionContext) => {
+    const live = getLive(), text = context.state.doc.toString()
+    if (context.aborted || isInsideCommentOrLiteral(text, context.pos, live.dialect)) return null
     const { statement, offset } = statementAt(text, context.pos, live.dialect)
     ensureMetadata(live, resolveScope(statement.sql, live.dialect))
     const scope = resolveScope(statement.sql, live.dialect, offset)
-    const word = context.matchBefore(IDENT_PREFIX)
-    const typed = word?.text || ''
-    let computed = computeFromScope(live, statement.sql, offset, typed, context.explicit, scope)
-    if (context.explicit && computed?.pending.length) {
-      await waitForColumns(live, computed.pending)
+    const word = completionIdentifierRange(text, context.pos, live.dialect)
+    const compute = () => {
       if (context.aborted) return null
-      computed = computeFromScope(live, statement.sql, offset, typed, context.explicit, scope)
+      const computed = computeFromScope(live, statement.sql, offset, word.typed, context.explicit, scope)
+      if (!computed?.options.length) return null
+      const options = word.quote ? computed.options.map(item => ({ ...item, apply: item.type === 'keyword' ? item.apply : word.quote + item.apply.replaceAll(word.quote, word.quote + word.quote) + word.quote })) : computed.options
+      return { from: word.from, to: word.to, options, filter: false }
     }
-    if (!computed) return null
-    const options = withLoading(computed, typed)
-    if (!options.length) return null
-    return { from: word ? word.from : context.pos, options, filter: false }
+    const computed = computeFromScope(live, statement.sql, offset, word.typed, context.explicit, scope)
+    // Warm metadata is synchronous, so an available list does not become pending again.
+    if (context.explicit && computed?.pending.length) return waitForColumns(live, computed.pending).then(compute)
+    return compute()
   }
 }
 

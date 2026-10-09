@@ -1,5 +1,3 @@
-import { sanitizeDatabaseError } from './connect-error.mjs'
-
 export type RedactionAction = 'allow' | 'mask' | 'omit'
 export type RedactionRule = {
   connectionId?: string
@@ -34,6 +32,7 @@ export function redactQueryResult(input: {
   schema?: string
   connectionId?: string
   columns: string[]
+  binaryColumns?: number[]
   rows: (string | null)[][]
   truncated: boolean
   elapsedMs: number
@@ -63,14 +62,11 @@ export function redactQueryResult(input: {
     ok: true,
     executionId: input.executionId,
     columns: input.columns,
+    ...(input.binaryColumns ? { binaryColumns: input.binaryColumns } : {}),
     rowCount: input.rows.length,
     truncated: input.truncated,
     elapsedMs: input.elapsedMs,
     redaction: actions,
     ...(hasValues ? { rows: cells } : {}),
   }
-}
-
-export function sanitizeToolError(message: string): string {
-  return sanitizeDatabaseError(message, { maxLength: 400, truncateBeforeRedaction: false, normalizeWhitespace: false })
 }

@@ -1,51 +1,30 @@
 import { rowKey } from '../editable-grid-state.ts'
 import { quoteIdentifier, type Dialect, type Result } from '../../shared/workbench.ts'
+import { selectionColumns, selectionRows, type GridSelection } from './selection.ts'
 
 export type CopyShape = 'fields' | 'values' | 'both'
-export type CopyRange = { r1: number; c1: number; r2: number; c2: number }
 export type CopyGrid = { columns: string[]; rows: (string | null)[][]; types: string[] }
 
 const NUMERIC_TYPE = /^(?:tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|number|float|double|real|bit|bool|boolean)\b/i
 const BOOL_TYPE = /^(?:bool|boolean|bit)\b/i
 const PLAIN_NUMBER = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/
 
-export function cellsInRange(
+export function cellsInSelection(
   result: Pick<Result, 'columns' | 'rows'>,
   drafts: { values: Record<string, string | null> }[],
   changed: Record<string, Record<string, string | null>>,
   primaryKeys: string[],
-  range: CopyRange,
+  selection: GridSelection,
   columnTypes: string[] = [],
   mode: 'range' | 'rows' = 'range',
 ): CopyGrid {
   const columns = result.columns
-  const lowCol = mode === 'rows' ? 0 : Math.min(range.c1, range.c2)
-  const highCol = mode === 'rows' ? columns.length - 1 : Math.max(range.c1, range.c2)
-  const picked = columns.map((name, index) => ({ name, index, type: columnTypes[index] || '' })).filter(column => column.index >= lowCol && column.index <= highCol)
-  const rows = rowsBetween(range, drafts.length, result.rows.length)
+  const indices = mode === 'rows' ? columns.map((_, index) => index) : selectionColumns(selection, columns.length)
+  const picked = indices.map(index => ({ name: columns[index], index, type: columnTypes[index] || '' }))
+  const rows = selectionRows(selection, drafts.length, result.rows.length)
     .filter(row => row < 0 ? drafts[-row - 1] : result.rows[row])
     .map(row => picked.map(column => cellValue(result, drafts, changed, primaryKeys, row, column.index)))
   return { columns: picked.map(column => column.name), rows, types: picked.map(column => column.type) }
-}
-
-/** Draft rows use -1, -2, … and render above data rows, so numeric order is not screen order. */
-export function rowsBetween(range: CopyRange, draftCount: number, dataCount: number): number[] {
-  const start = visualRow(range.r1, draftCount, dataCount)
-  const end = visualRow(range.r2, draftCount, dataCount)
-  if (start == null || end == null) return []
-  const low = Math.min(start, end)
-  const high = Math.max(start, end)
-  const rows: number[] = []
-  for (let index = low; index <= high; index++) rows.push(index < draftCount ? -(index + 1) : index - draftCount)
-  return rows
-}
-
-function visualRow(row: number, draftCount: number, dataCount: number): number | null {
-  if (row < 0) {
-    const index = -row - 1
-    return index < draftCount ? index : null
-  }
-  return row < dataCount ? draftCount + row : null
 }
 
 export function formatTsv(columns: string[], rows: (string | null)[][], shape: CopyShape): string {
@@ -55,10 +34,10 @@ export function formatTsv(columns: string[], rows: (string | null)[][], shape: C
   return lines.join('\n')
 }
 
-export function formatCsv(columns: string[], rows: (string | null)[][], shape: CopyShape, types: string[] = []): string {
+export function formatCommaList(columns: string[], rows: (string | null)[][], shape: CopyShape, types: string[] = []): string {
   const lines: string[] = []
-  if (shape !== 'values') lines.push(columns.map(csvHeader).join(','))
-  if (shape !== 'fields') lines.push(...rows.map(row => row.map((value, index) => sqlLiteral(value, types[index])).join(',')))
+  if (shape !== 'values') lines.push(columns.join(','))
+  if (shape !== 'fields') lines.push(rows.flatMap(row => row.map((value, index) => sqlLiteral(value, types[index]))).join(','))
   return lines.join('\n')
 }
 
@@ -99,10 +78,6 @@ function tsvCell(value: string | null): string {
   if (value === null) return 'NULL'
   if (value === '') return '""'
   return value
-}
-
-function csvHeader(value: string): string {
-  return /[",\r\n]/.test(value) ? `"${value.replaceAll('"', '""')}"` : value
 }
 
 export function sqlLiteral(value: string | null, type = ''): string {

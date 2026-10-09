@@ -1,4 +1,5 @@
 export {
+  isBinaryCell,
   formatDetailValue,
   formatGridCell,
   formatPreview,

@@ -3,7 +3,8 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createKnowledgeRegistry, KnowledgeService } from '../src/host/knowledge-service.ts'
+import { createKnowledgeRegistry } from './helpers/source-registries.ts'
+import { KnowledgeService } from '../src/host/knowledge-service.ts'
 import { SqlTemplateStore } from '../src/host/sql-template-store.ts'
 
 test('a test-only knowledge source registers without changing common dispatch', () => {

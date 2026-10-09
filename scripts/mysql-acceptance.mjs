@@ -8,6 +8,7 @@ import mysql from 'mysql2/promise'
 import mysqlStream from 'mysql2'
 import assert from 'node:assert/strict'
 import { checkConnectionFlow } from './connection-flow.mjs'
+import { checkRootRepairSql } from './root-repair-sql-probe.mjs'
 const exec = promisify(execFile)
 const runId = randomUUID(), password = randomBytes(24).toString('hex'), readerPassword = randomBytes(24).toString('hex')
 const label = 'dsh.database.acceptance', database = 'dsh_acceptance'
@@ -84,6 +85,8 @@ try {
     assert.equal(remaining.length, 0)
     report.checks.push('Same-principal SELECT-only control connection cancels an owned query; server interruption and process state verified')
   } finally { cancellable.destroy(); control.destroy() }
+  report.checks.push(await checkRootRepairSql({ name: 'root repair', dialect: 'mysql', host: spec.host, port: spec.port, database, oracleMode: 'service', username: 'probe_writer', password: readerPassword }, database,
+    async (id = 1) => { const [[row]] = await admin.execute('SELECT value FROM row_limit WHERE id=?', [id]); return row.value }))
   report.checks.push(await checkConnectionFlow({ name: '', dialect: 'mysql', host: spec.host, port: spec.port, database: '', oracleMode: 'service', username: 'probe_reader', password: readerPassword, environment: 'dev' }))
   report.status = 'PASS'
 } catch (error) {

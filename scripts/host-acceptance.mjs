@@ -42,7 +42,7 @@ const packOutput = await command(process.execPath, [npmCli, 'pack', '--json', '-
 const jsonStart = Math.max(packOutput.lastIndexOf('\n['), packOutput.startsWith('[') ? 0 : -1)
 if (jsonStart < 0) throw new Error(`npm pack did not return JSON: ${packOutput.slice(-1000)}`)
 const [packed] = JSON.parse(packOutput.slice(jsonStart).trim())
-for (const file of packed.files) assert.ok(/^(package\.json|README\.md|cordis\.patch\.yml|lib\/(index\.js|client\.js|[a-z-]+\.mjs|dialects\/[a-z-]+\.mjs|shared\/[a-z-]+\.mjs|data-sources\/(?:[a-z-]+\/)*[a-z-]+\.mjs))$/.test(file.path), `Unexpected release file: ${file.path}`)
+for (const file of packed.files) assert.ok(/^(package\.json|README(?:\.zh)?\.md|LICENSE|cordis\.patch\.yml|lib\/(index\.js|client\.js|[a-z-]+\.mjs|dialects\/[a-z-]+\.mjs|shared\/[a-z-]+\.mjs|data-sources\/(?:[a-z-]+\/)*[a-z-]+\.mjs))$/.test(file.path), `Unexpected release file: ${file.path}`)
 const tarball = join(run, packed.filename)
 await mkdir(profile, { recursive: true })
 // Thin mode uses pure JS; explicitly decline the driver's optional native installation check.
@@ -145,8 +145,10 @@ try {
   }
   if (process.env.DSH_TEST_DATABASES === '1') {
     for (const dialect of ['mysql', 'oracle']) report.checks.push(await installedBusiness(page, sessionId, dialect, run))
-    report.realDatabase = 'MySQL 8.4.5 and Oracle Free 23 (19c NOT_RUN): installed plugin read and controlled DML/DDL acceptance'
-    report.databaseExecution = 'DISPOSABLE_FIXTURE_DML_DDL_VERIFIED'
+    report.realDatabase = process.env.DSH_TEST_EXISTING_ENV === '1'
+      ? 'Existing local MySQL and Oracle 19c test instances: installed plugin read and controlled DML/DDL in isolated run namespaces; SID NOT_RUN'
+      : 'MySQL 8.4.5 and Oracle Free 23 (19c NOT_RUN): installed plugin read and controlled DML/DDL acceptance'
+    report.databaseExecution = process.env.DSH_TEST_EXISTING_ENV === '1' ? 'EXISTING_TEST_NAMESPACE_DML_DDL_VERIFIED' : 'DISPOSABLE_FIXTURE_DML_DDL_VERIFIED'
   }
   if (process.env.DSH_TEST_REDIS === '1') report.checks.push(await installedRedis(page, sessionId))
   if (process.env.DSH_TEST_KAFKA === '1') report.checks.push(await installedKafka(page, sessionId))

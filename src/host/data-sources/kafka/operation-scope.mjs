@@ -21,3 +21,21 @@ export function createKafkaOperationScope(signal, deadlineMs) {
     dispose() { clearTimeout(timer); signal?.removeEventListener('abort', onAbort) },
   }
 }
+
+/** Admin calls cannot be interrupted in KafkaJS. Discard late replies and never start a following call. */
+export async function withKafkaReadScope(signal, work, deadlineMs = 30000) {
+  const scope = createKafkaOperationScope(signal, deadlineMs)
+  const check = () => {
+    if (!scope.reason) return
+    const error = new Error(scope.reason === 'cancelled' ? 'Kafka 读取已取消。' : 'Kafka 读取超过截止时间。')
+    error.name = scope.reason === 'cancelled' ? 'KafkaReadCancelled' : 'KafkaReadDeadline'
+    throw error
+  }
+  const read = async action => {
+    check()
+    const result = await scope.race(action())
+    check()
+    return result
+  }
+  try { check(); return await work(read) } finally { scope.dispose() }
+}

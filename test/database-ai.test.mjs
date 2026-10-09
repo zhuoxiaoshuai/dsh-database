@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { registerDatabase } from '../src/host/register.ts'
 import { connectionInput, temporaryDirectory } from './helpers.mjs'
+import { format } from 'sql-formatter'
 
 const workerUrl = pathToFileURL(join(process.cwd(), 'test/fixtures/database-worker.mjs'))
 const input = connectionInput({ password: 'super-secret' })
@@ -29,7 +30,15 @@ function fixture(t) {
   return { routes, tools }
 }
 
-function invoke(route, { method = 'GET', owner = 'conversation-a', body, signal } = {}) {
+async function invoke(route, { method = 'GET', owner = 'conversation-a', body, signal } = {}) {
+  if (body?.id && ['shared-query-update', 'shared-query-control', 'shared-query-run', 'execution-document-update', 'execution-document-control'].includes(body.action) && !Object.hasOwn(body, 'revision')) {
+    const fresh = JSON.parse((await invoke(route, { method: 'POST', owner, body: { action: 'execution-document-get', id: body.id } })).body).document
+    body = { ...body, revision: fresh?.revision }
+  }
+  if (body?.id && ['shared-query-update', 'shared-query-control', 'shared-query-run', 'execution-document-update', 'execution-document-control'].includes(body.action) && !Object.hasOwn(body, 'generation')) {
+    const snapshot = JSON.parse((await invoke(route, { owner })).body)
+    body = { ...body, generation: snapshot.connections.find(item => item.id === body.id)?.generation }
+  }
   const payload = body ? Buffer.from(JSON.stringify(body)) : undefined
   return new Promise((resolve, reject) => {
     if (signal?.aborted) reject(new Error('aborted'))
@@ -55,6 +64,60 @@ const exec = (tool, args, extra = {}) => tool.execute(args, {
   rootCallId: extra.rootCallId || 'root-1',
   agent: { session: { id: extra.owner || 'conversation-a' } },
   signal: extra.signal || new AbortController().signal,
+})
+
+test('registered local tool record is isolated by authenticated conversation and leaves ordinary queries unrecorded', async t => {
+  const { routes, tools } = fixture(t), route = routes.get('/plugins/database/connections')
+  const api = body => invoke(route, {method: 'POST', body})
+  const connection = JSON.parse((await api({action: 'connect', input})).body)
+  const before = JSON.parse((await api({action: 'shared-query-get', id: connection.id})).body)
+  const output = JSON.parse(await exec(tools.get('database_read_collab'), {}))
+  const detail = JSON.parse((await api({action: 'execution-get', executionId: output.executionId})).body)
+  assert.equal(detail.status, 'succeeded'); assert.equal(detail.callId, 'call-1'); assert.equal(detail.rootCallId, 'root-1')
+  assert.equal(detail.historyVisible, false); assert.equal(detail.type, 'tool')
+  assert.equal(detail.events.some(e => e.kind === 'dispatched'), false)
+  const other = await invoke(route, {method: 'POST', owner: 'conversation-b', body: {action: 'execution-get', executionId: output.executionId}})
+  assert.notEqual(other.status, 200)
+  await exec(tools.get('database_execute_sql'), {action: 'read', connectionId: connection.id})
+  for (const action of ['query', 'manual-query']) {
+    const response = await api({action, id: connection.id, generation: connection.generation, input: {sql: 'SELECT id FROM records', schema: 'app'}})
+    assert.equal(response.status, 200)
+  }
+  assert.equal(JSON.parse((await api({action: 'execution-list'})).body).items.length, 1)
+  assert.deepEqual(JSON.parse((await api({action: 'shared-query-get', id: connection.id})).body), before)
+})
+
+for (const dialect of ['mysql', 'oracle']) test(`${dialect} authenticated browser query boundary rejects spoofing without records or document writes`, async t => {
+  const { routes } = fixture(t)
+  const route = routes.get('/plugins/database/connections')
+  const api = body => invoke(route, { method: 'POST', body })
+  const connection = JSON.parse((await api({ action: 'connect', input: { ...input, dialect } })).body)
+  const sql = "select 'two  spaces' as value /* retained */ from records"
+  const saved = JSON.parse((await api({ action: 'shared-query-update', id: connection.id, patch: { sql, schema: 'app' } })).body).sharedQuery
+  const get = async () => JSON.parse((await api({ action: 'shared-query-get', id: connection.id })).body).sharedQuery
+  for (const source of ['ai', 'system', 'unknown']) assert.equal((await api({ action: 'shared-query-update', id: connection.id, source, patch: { sql: 'SELECT forged' } })).status, 400)
+  for (const key of ['controller', 'controllerReason', 'revision', 'lastExecutionId', 'lastRun', 'unknown']) {
+    assert.equal((await api({ action: 'shared-query-update', id: connection.id, patch: { sql: 'SELECT forged', [key]: 'injected' } })).status, 400)
+  }
+  for (const initiator of ['ai', 'system', null]) assert.equal((await api({ action: 'shared-query-run', id: connection.id, generation: connection.generation, sql, schema: 'app', initiator })).status, 400)
+  assert.deepEqual(await get(), saved)
+  assert.equal(JSON.parse((await api({ action: 'execution-list' })).body).items.length, 0)
+  await api({ action: 'workbench', id: connection.id, patch: { sharedQuery: { sql: 'SELECT forged', controller: 'ai', revision: 999 }, aiDocument: { text: 'forged' } } })
+  assert.deepEqual(await get(), saved)
+  const formatted = format(sql, { language: dialect === 'oracle' ? 'plsql' : 'mysql' })
+  for (const controller of ['user', 'ai']) {
+    await api({ action: 'shared-query-update', id: connection.id, patch: { sql } })
+    const control = JSON.parse((await api({ action: 'shared-query-control', id: connection.id, controller })).body).sharedQuery
+    const rejected = await api({ action: 'shared-query-update', id: connection.id, source: 'format', patch: { sql: formatted, schema: 'other' }, revision: control.revision })
+    assert.equal(rejected.status, 400)
+    assert.deepEqual(await get(), control)
+    const good = await api({ action: 'shared-query-update', id: connection.id, source: 'format', patch: { sql: formatted, schema: 'app' }, revision: control.revision })
+    assert.equal(good.status, 200)
+    assert.equal(JSON.parse(good.body).sharedQuery.controller, controller)
+    assert.equal((await api({ action: 'shared-query-update', id: connection.id, source: 'format', patch: { sql }, revision: control.revision })).status, 400)
+    assert.equal((await api({ action: 'shared-query-update', id: connection.id, source: 'format', patch: { sql: formatted } })).status, 200)
+  }
+  assert.equal(JSON.parse((await api({ action: 'execution-list' })).body).items.length, 0)
 })
 
 test('the shared execution-document endpoint runs SQL after human takeover', async t => {
@@ -175,9 +238,9 @@ test('AI metadata and readonly query share execution ids and return cell values'
   const args = { connectionId: connected.id, generation: connected.generation, schema: 'app' }
   const status = JSON.parse(await exec(tools.get('database_status'), {}))
   assert.equal(status.connections[0].connectionId, connected.id)
-  assert.ok(status.next.includes('database_catalog'))
-  assert.ok(status.next.includes('database_execute_sql'))
-  assert.equal(status.next.includes('database_search_tables'), false)
+  assert.ok(status.next.some(item => item.tool === 'database_catalog' && item.args.connectionId === connected.id && item.args.generation === connected.generation && item.args.kind === 'schemas'))
+  assert.ok(status.next.some(item => item.tool === 'database_execute_sql' && item.args.action === 'read' && item.args.connectionId === connected.id))
+  assert.equal(status.next.some(item => item.tool === 'database_search_tables'), false)
   assert.equal(JSON.stringify(status).includes('super-secret'), false)
   const schemas = JSON.parse(await exec(tools.get('database_catalog'), { ...args, kind: 'schemas' }))
   assert.ok(schemas.executionId)
@@ -204,6 +267,11 @@ test('AI metadata and readonly query share execution ids and return cell values'
   assert.ok(queried.rows.length <= 100)
   const detail = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'execution-get', executionId: queried.executionId } })).body)
   assert.equal(detail.callId, 'call-1')
+  assert.equal(detail.rootCallId, 'root-1')
+  assert.equal(detail.historyVisible, false)
+  assert.equal(detail.events.filter(event => event.kind === 'dispatched').length, 1)
+  const listed = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'execution-list' } })).body)
+  assert.equal(listed.items.filter(item => item.sql === 'SELECT id, note FROM records').length, 1)
   assert.deepEqual(detail.result.rows[0], ['1', 'secret-value'])
   const deleted = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'DELETE FROM records' }))
   assert.equal(deleted.status, 'succeeded')
@@ -296,14 +364,17 @@ test('shared AI query CAS, busy, controlLost, and isolated workbenches', async t
   assert.equal(collab.sharedQuery.controller, 'ai')
   const otherQuery = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-get', id: other.id } })).body)
   assert.equal(otherQuery.sharedQuery.sql || '', '')
-  const userRun = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-run', id: connected.id, generation: connected.generation, schema: 'app', sql: 'SELECT id FROM records', initiator: 'user' } })).body)
+  await invoke(route, { method: 'POST', body: { action: 'shared-query-control', id: connected.id, controller: 'user' } })
+  const userRun = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-run', id: connected.id, generation: connected.generation, schema: 'app', sql: collab.sharedQuery.sql, initiator: 'user' } })).body)
   assert.equal(userRun.status, 'succeeded')
   assert.ok(userRun.result.rows)
   assert.equal(userRun.result.trustedAuthorization, true)
   const listed = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'execution-list' } })).body)
   assert.ok(listed.items.some(item => item.initiator === 'user'))
-  const systemWrite = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-update', id: connected.id, source: 'system', patch: { sql: 'SELECT id FROM records' }, revision: collab.sharedQuery.revision } })).body)
-  assert.equal(systemWrite.sharedQuery.controller, 'ai')
+  await invoke(route, { method: 'POST', body: { action: 'shared-query-control', id: connected.id, controller: 'ai' } })
+  const systemWrite = await invoke(route, { method: 'POST', body: { action: 'shared-query-update', id: connected.id, source: 'system', patch: { sql: 'SELECT id FROM records' }, revision: collab.sharedQuery.revision } })
+  assert.equal(systemWrite.status, 400)
+  assert.equal(JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-get', id: connected.id } })).body).sharedQuery.controller, 'ai')
   await invoke(route, { method: 'POST', body: { action: 'shared-query-update', id: connected.id, source: 'user', patch: { sql: 'SELECT 1' } } })
   await assert.rejects(exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id FROM records' }), /接管/)
   await invoke(route, { method: 'POST', body: { action: 'shared-query-control', id: connected.id, controller: 'ai' } })
@@ -315,7 +386,7 @@ test('shared AI query CAS, busy, controlLost, and isolated workbenches', async t
   const during = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-get', id: connected.id } })).body)
   assert.equal(during.sharedQuery.sql.includes('SLEEP_TEST'), true)
   const waited = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'execution-wait', revision: 0 } })).body)
-  assert.ok((waited.events || []).some(event => event.type === 'QUERY_CHANGED' && String(event.sql || '').includes('SLEEP_TEST')))
+  assert.ok((waited.events || []).some(event => event.type === 'EXECUTION_DOCUMENT_CHANGED' && String(event.document?.text || '').includes('SLEEP_TEST')))
   await assert.rejects(exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id FROM records' }, { callId: 'busy-2' }), /已有查询/)
   await invoke(route, { method: 'POST', body: { action: 'shared-query-update', id: connected.id, source: 'user', patch: { sql: 'SELECT taken' } } })
   const lost = JSON.parse(await pending)
@@ -336,8 +407,7 @@ test('AI verify COUNT does not overwrite published result SQL or lastRun', async
   const counted = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT COUNT(*) FROM records' }))
   assert.equal(counted.rowCount, 1)
   const afterCount = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-get', id: connected.id } })).body)
-  assert.equal(afterCount.sharedQuery.sql.includes('SELECT COUNT(*) FROM records'), true)
-  assert.equal(afterCount.sharedQuery.lastExecutionId, publishedId)
+  assert.deepEqual(afterCount.sharedQuery, afterSelect.sharedQuery, 'verification preserves the published document and result projection')
   const publishedCount = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT COUNT(*) FROM records', purpose: 'result' }))
   assert.equal(publishedCount.rowCount, 1)
   const afterPublish = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-get', id: connected.id } })).body)
@@ -345,7 +415,7 @@ test('AI verify COUNT does not overwrite published result SQL or lastRun', async
   assert.notEqual(afterPublish.sharedQuery.lastExecutionId, publishedId)
   await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id, note FROM records', purpose: 'verify' })
   const afterHidden = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-get', id: connected.id } })).body)
-  assert.equal(afterHidden.sharedQuery.sql.includes('SELECT id, note FROM records'), true)
+  assert.deepEqual(afterHidden.sharedQuery, afterPublish.sharedQuery, 'explicit verification does not publish SQL')
   assert.equal(afterHidden.sharedQuery.lastExecutionId, afterPublish.sharedQuery.lastExecutionId)
 })
 
@@ -358,7 +428,7 @@ test('verify queries do not occupy the per-connection run lock', async t => {
   const pending = exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id FROM records WHERE note = \'SLEEP_TEST\'', purpose: 'verify' }, { signal: controller.signal, callId: 'verify-slow' })
   await new Promise(resolve => setTimeout(resolve, 40))
   const during = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'shared-query-get', id: connected.id } })).body)
-  assert.equal((during.sharedQuery.sql || '').includes('SLEEP_TEST'), true)
+  assert.equal((during.sharedQuery.sql || '').includes('SLEEP_TEST'), false, 'verification must not publish into the editor')
   const result = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id FROM records', purpose: 'result' }, { callId: 'result-during-verify' }))
   assert.equal(result.ok, true)
   controller.abort()
@@ -396,6 +466,30 @@ test('SIT query returns raw cell values without redaction', async t => {
   const queried = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id, note FROM records', limit: 10 }))
   assert.deepEqual(queried.rows[0], ['1', 'secret-value'])
   assert.ok(queried.rows.length <= 100)
+})
+
+test('SQL tools fill the only live connection and return connections when the handle cannot be used', async t => {
+  const { routes, tools } = fixture(t)
+  const route = routes.get('/plugins/database/connections')
+  const connected = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'connect', input } })).body)
+  const omitted = JSON.parse(await exec(tools.get('database_catalog'), { kind: 'schemas' }))
+  assert.ok(omitted.executionId)
+  assert.equal(omitted.ok, undefined)
+  const currentGeneration = JSON.parse(await exec(tools.get('database_catalog'), { connectionId: connected.id, kind: 'schemas' }))
+  assert.ok(currentGeneration.executionId)
+  const stale = JSON.parse(await exec(tools.get('database_catalog'), { connectionId: connected.id, generation: 'old-generation', kind: 'schemas' }))
+  assert.equal(stale.ok, false)
+  assert.match(stale.error, /generation/)
+  assert.equal(stale.connections[0].connectionId, connected.id)
+  assert.equal(stale.connections[0].generation, connected.generation)
+  assert.match(stale.help, /database_status/)
+  const second = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'connect', input: connectionInput({ name: 'other', database: 'other' }) } })).body)
+  assert.notEqual(second.id, connected.id)
+  const ambiguous = JSON.parse(await exec(tools.get('database_catalog'), { kind: 'schemas' }))
+  assert.equal(ambiguous.ok, false)
+  assert.equal(ambiguous.connections.length, 2)
+  const executed = JSON.parse(await exec(tools.get('database_execute_sql'), { connectionId: connected.id, schema: 'app', sql: 'SELECT 1' }))
+  assert.equal(executed.ok, true)
 })
 
 test('execution-latest hydrates the last displayable result for a connection', async t => {

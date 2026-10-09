@@ -246,20 +246,18 @@ test('user SQL is executed once and never auto-replayed', async t => {
   const second = await service.request('owner-a', connected.id, connected.generation, 'query', { schema: 'app', sql: 'SELECT 1' })
   assert.equal(first.rows[0][0], '1')
   assert.equal(second.rows[0][0], '2')
-  assert.equal(first.trustedAuthorization, false)
+  assert.equal(first.trustedAuthorization, true)
 })
 
-test('AI query lane keeps one slot for manual-query on the same connection', async t => {
+test('ordinary query and manual-query share the human quota regardless of action name', async t => {
   const { service } = setup(t)
   const connected = await service.open('owner-a', input, false)
   const hold = { schema: 'app', sql: "SELECT id FROM records WHERE note = 'SLEEP_TEST'" }
   const first = service.request('owner-a', connected.id, connected.generation, 'query', hold)
   const second = service.request('owner-a', connected.id, connected.generation, 'query', hold)
   await new Promise(resolve => setTimeout(resolve, 40))
-  await assert.rejects(
-    service.request('owner-a', connected.id, connected.generation, 'query', { schema: 'app', sql: 'SELECT 1' }),
-    /排队已满/,
-  )
+  const third = await service.request('owner-a', connected.id, connected.generation, 'query', { schema: 'app', sql: 'SELECT 1' })
+  assert.ok(third.rows)
   const manual = await service.request('owner-a', connected.id, connected.generation, 'manual-query', { schema: 'app', sql: 'SELECT 1' })
   assert.deepEqual(manual.rows, [['1', 'secret-value']])
   await Promise.all([first, second])

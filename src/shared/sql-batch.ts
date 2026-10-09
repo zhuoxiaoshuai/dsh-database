@@ -1,7 +1,7 @@
 import type { Dialect, Result } from './workbench.ts'
 import { enumerateStatements, locateStatement, type StatementRange } from './sql-lex.ts'
 import { stripLeadingComments } from './sql-text.ts'
-import { executionStop } from './execution.ts'
+import { sqlBatchReceiptSteps } from './sql-receipts.ts'
 
 export type SqlStatementKind = 'select' | 'insert' | 'update' | 'delete' | 'explain' | 'show' | 'other'
 export type SqlStepStatus = 'pending' | 'running' | 'ok' | 'failed' | 'skipped' | 'cancelled' | 'unknown'
@@ -13,6 +13,7 @@ export type SqlStep = {
   status: SqlStepStatus
   result?: Result
   error?: string
+  writeReceipt?: 'succeeded' | 'unknown'
 }
 
 const UNSUPPORTED = 'SQL 页支持查询与增删改（SELECT / INSERT / UPDATE / DELETE）。DDL 暂未开放。'
@@ -44,12 +45,14 @@ export function expandExecutedResult(step: SqlStep, result: Result): SqlStep[] {
   const items = Array.isArray(result.batch) && result.batch.length > 1 ? result.batch : [result]
   return items.map((item, offset) => {
     const sql = typeof item.sql === 'string' && item.sql.trim() ? item.sql : step.sql
+    const kind = classifyManualSql(sql)
     const { batch: _ignored, ...set } = item
     return {
       index: step.index + offset,
       sql,
-      kind: classifyManualSql(sql),
+      kind,
       status: 'ok' as const,
+      ...(['insert', 'update', 'delete'].includes(kind) ? { writeReceipt: 'succeeded' as const } : {}),
       result: set,
     }
   })
@@ -110,52 +113,31 @@ export async function runSqlBatch(input: {
   onChange?(steps: SqlStep[]): void
 }): Promise<SqlStep[]> {
   const steps = input.steps.map(step => ({ ...step }))
-  const start = input.only ?? input.from ?? 0
-  let last = input.only ?? steps.length - 1
+  const start = input.only ?? input.from ?? 0, last = input.only ?? steps.length - 1
+  const selected = steps.slice(start, last + 1)
   const emit = () => input.onChange?.(steps.map(step => ({ ...step })))
-  const stopRest = (from: number, status: 'skipped' | 'cancelled') => {
-    for (let i = from; i < steps.length; i++) {
-      if (input.only != null && i !== input.only) continue
-      if (steps[i].status === 'pending' || steps[i].status === 'running') steps[i] = { ...steps[i], status }
-    }
+  if (!selected.length) return steps
+  if (selected.some(step => (step.writeReceipt || ['unknown', 'ok'].includes(step.status)) && ['insert', 'update', 'delete'].includes(step.kind))) throw new Error('不能重复提交已成功或结果未知的写入；请核验后重新编辑。')
+  const unsupported = selected.findIndex(step => step.kind === 'other')
+  if (unsupported >= 0) {
+    for (let offset = 0; offset < selected.length; offset++) steps[start + offset] = { ...selected[offset], status: offset === unsupported ? 'failed' : 'skipped', error: offset === unsupported ? UNSUPPORTED : undefined }
+    emit(); return steps
   }
-  for (let i = start; i <= last; i++) {
-    const step = steps[i]
-    if (!step) break
-    if (step.kind === 'other') {
-      steps[i] = { ...step, status: 'failed', error: UNSUPPORTED }
-      if (input.only == null) stopRest(i + 1, 'skipped')
-      emit()
-      break
-    }
-    if (input.signal.aborted) {
-      steps[i] = { ...step, status: 'cancelled', error: '已取消' }
-      if (input.only == null) stopRest(i + 1, 'cancelled')
-      emit()
-      break
-    }
-    steps[i] = { ...step, status: 'running', error: undefined }
-    emit()
-    try {
-      const result = await input.execute(step.sql, input.signal)
-      const expanded = expandExecutedResult({ ...steps[i], sql: step.sql }, result)
-      if (expanded.length === 1) {
-        steps[i] = { ...expanded[0], index: i }
-      } else {
-        steps.splice(i, 1, ...expanded.map((item, offset) => ({ ...item, index: i + offset })))
-        for (let j = i + expanded.length; j < steps.length; j++) steps[j] = { ...steps[j], index: j }
-        last += expanded.length - 1
-        i += expanded.length - 1
-      }
-      emit()
-    } catch (error) {
-      const message = error instanceof Error ? error.message : '执行失败'
-      const stop = executionStop({ aborted: input.signal.aborted, dispatched: true, message })
-      steps[i] = { ...steps[i], status: stop.status, error: stop.message }
-      if (input.only == null) stopRest(i + 1, stop.status === 'failed' ? 'skipped' : 'cancelled')
-      emit()
-      break
-    }
+  if (input.signal.aborted) {
+    for (let i = start; i <= last; i++) steps[i] = { ...steps[i], status: 'cancelled', error: '未派发，已取消。' }
+    emit(); return steps
   }
-  return steps
+  steps[start] = { ...steps[start], status: 'running', error: undefined }; emit()
+  try {
+    const result = await input.execute(selected.map(step => step.sql).join(';\n'), input.signal)
+    const batch = result.batch || [result]
+    if (!result.steps?.length && selected.length === 1 && batch.length > 1) {
+      steps.splice(start, 1, ...expandExecutedResult(selected[0], result))
+    } else {
+      steps.splice(start, selected.length, ...sqlBatchReceiptSteps(selected, result))
+    }
+  } catch (caught) {
+    steps.splice(start, selected.length, ...sqlBatchReceiptSteps(selected, caught as Parameters<typeof sqlBatchReceiptSteps>[1], true))
+  }
+  emit(); return steps
 }

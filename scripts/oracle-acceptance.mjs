@@ -7,6 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import oracle from 'oracledb'
 import assert from 'node:assert/strict'
 import { checkConnectionFlow } from './connection-flow.mjs'
+import { checkRootRepairSql } from './root-repair-sql-probe.mjs'
 const exec = promisify(execFile)
 const runId = randomUUID(), password = 'Q' + randomBytes(20).toString('hex'), appPassword = 'A' + randomBytes(20).toString('hex')
 const label = 'dsh.database.acceptance'
@@ -80,6 +81,8 @@ try {
   assert.equal((await writer.execute('SELECT 1 FROM DUAL')).rows[0][0], 1)
   report.unsupportedPlsqlSleep = 'Prior probe returned NJS-123 but exceeded 3000ms; PL/SQL execution is excluded, callTimeout is not a whole-request deadline'
   report.checks.push('Ordinary SELECT callTimeout produces NJS-123 promptly; same connection can execute subsequent query')
+  report.checks.push(await checkRootRepairSql({ name: 'root repair', dialect: 'oracle', host: '127.0.0.1', port, database: 'FREEPDB1', oracleMode: 'service', username: 'PROBE_WRITER', password: appPassword }, 'PROBE_APP',
+    async (id = 1) => (await admin.execute('SELECT value FROM PROBE_APP.row_limit WHERE id=:id', { id })).rows[0][0]))
   report.checks.push(await checkConnectionFlow({ name: '', dialect: 'oracle', host: '127.0.0.1', port, database: 'FREEPDB1', oracleMode: 'service', username: 'PROBE_READER', password: appPassword, environment: 'test' }))
   report.status = 'PASS'
 } catch (error) {

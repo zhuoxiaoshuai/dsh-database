@@ -51,8 +51,10 @@ test('load hits the in-memory cache and skips disk rereads', t => {
   mkdirSync(join(root, 'conversation-workbenches'), { recursive: true })
   writeFileSync(path, JSON.stringify({ version: 1, openIds: ['other'], workbenches: {} }))
   const second = store.load('session-c')
-  assert.equal(second, first)
-  assert.deepEqual(second.workbenches, {})
+  assert.deepEqual(second, first)
+  second.workbenches.injected = {}
+  assert.deepEqual(store.load('session-c').workbenches, {})
+  assert.deepEqual(first.workbenches, {})
 })
 
 test('Redis AI document keeps ordinary text but never writes known credentials', t => {
@@ -63,7 +65,7 @@ test('Redis AI document keeps ordinary text but never writes known credentials',
   const path = join(root, 'conversation-workbenches', `${hashConversationId('session-d')}.json`)
   const disk = JSON.parse(readFileSync(path, 'utf8'))
   assert.equal(disk.workbenches['conn-1'].aiDocument.text, '')
-  assert.equal(disk.workbenches['conn-1'].aiDocument.controller, 'ai')
+  assert.equal(disk.workbenches['conn-1'].aiDocument.controller, 'user')
   assert.equal(store.load('session-d').workbenches['conn-1'].aiDocument.text, 'AUTH user secret')
   layout.workbenches['conn-1'].aiDocument.text = 'GET customer:1'
   store.save('session-d', layout, new Set(['conn-1']))

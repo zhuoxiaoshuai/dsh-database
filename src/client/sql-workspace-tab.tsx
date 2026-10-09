@@ -1,8 +1,10 @@
 import React, { useEffect, useRef, useState } from 'react'
+import { UnknownGridNotice } from './sql/unknown-grid-notice.tsx'
+import { SqlReceipts } from './sql/sql-receipts.tsx'
 import { SqlRunWorkspace } from './sql-run-workspace.tsx'
 import { SaveExperienceDialog } from './save-experience-dialog.tsx'
 import { publishExperienceFromSql } from '../shared/publish-experience.ts'
-import { isBinaryPlaceholder } from './data-grid.tsx'
+import { isBinaryCell } from './data-grid.tsx'
 import { QueryResultFrame } from './workspace/source/query-result-frame.tsx'
 import { QueryResultGrid } from './query-result-grid.tsx'
 import { TableStructurePane } from './table-structure-pane.tsx'
@@ -10,6 +12,8 @@ import { SqlToolbarSchemaTable } from './sql-toolbar-schema-table.tsx'
 import { SqlToolbarTemplatePicker } from './sql-toolbar-template-picker.tsx'
 import { ConfirmWriteDialog } from './confirm-write-dialog.tsx'
 import { executeDmlOp, type DmlOp } from './execute-dml.ts'
+import { useGridSave } from './sql/use-grid-save.ts'
+import { ownsSqlRun, canReplaySqlRun, type SqlRunSnapshot } from './sql/run-snapshot.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { createSqlBatch, formatSqlBatchStatus, resultTabLabel, runSqlBatch, statementKindLabel, stepStatusLabel, resolveRunStatements, type SqlStep } from '../shared/sql-batch.ts'
 import { isWritableEnvironment, type Connection, type Result, type WorkspaceBridge } from '../shared/workbench.ts'
@@ -69,12 +73,29 @@ export function SqlWorkspaceTab({
   const [changed, setChanged] = useState<Record<string, Record<string, string | null>>>({})
   const [draftRows, setDraftRows] = useState<{ id: string; values: Record<string, string | null> }[]>([])
   const [editing, setEditing] = useState<{ row: number; col: number }>()
-  const [saving, setSaving] = useState(false)
-  const [confirmWrite, setConfirmWrite] = useState(false)
   const [gridHint, setGridHint] = useState('')
-  const saveOps = useRef<DmlOp[]>([])
+  const gridSave = useGridSave()
+  const { saving, confirmWrite, setConfirmWrite, saveOps, uncertainSave, unknownWrite } = gridSave
   const lastRun = useRef('')
+  const verificationRead = useRef<{ sql: string; schema: string }>()
   const runSeq = useRef(0)
+  const viewIdentity = JSON.stringify([connection.id, connection.generation, schema, tabId, active])
+  const viewRef = useRef(viewIdentity)
+  const capabilitySeq = useRef(0)
+  const [resultSnapshot, setResultSnapshot] = useState<SqlRunSnapshot>()
+  const snapshotRef = useRef<SqlRunSnapshot>()
+  if (viewRef.current !== viewIdentity) {
+    viewRef.current = viewIdentity; runSeq.current += 1; capabilitySeq.current += 1
+    running.current?.abort()
+  }
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; runSeq.current += 1 } }, [])
+  const ownsSnapshot = (snapshot?: SqlRunSnapshot): boolean => ownsSqlRun(snapshot, viewRef.current, runSeq.current, mounted.current)
+  const staleResult = !!resultSnapshot && !ownsSnapshot(resultSnapshot)
+  useEffect(() => {
+    setMaintenance(false); setCapability(undefined); setCapabilityBusy(false); setBusy(false)
+    setEditing(undefined); setConfirmWrite(false)
+  }, [viewIdentity])
   const result = steps[activeStep]?.result
   const singleSelect = steps.length === 1 && steps[0]?.status === 'ok' && steps[0]?.kind === 'select'
   useEffect(() => { onSqlRef.current(sql); setDirty(true) }, [sql])
@@ -104,19 +125,23 @@ export function SqlWorkspaceTab({
     if (!chunk) return
     setSql(prev => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n${chunk}` : chunk))
   }
-  const detectEditable = async (runText: string, next: Result) => {
+  const detectEditable = async (runText: string, next: Result, target = schema, snapshot = snapshotRef.current) => {
+    if (!ownsSnapshot(snapshot)) return
+    const check = ++capabilitySeq.current
     setCapabilityBusy(true)
     try {
-      const value = await bridge.maintenance!(connection, { kind: 'capability', source: 'query', schema, sql: runText, resultColumns: next.columns })
+      const value = await bridge.maintenance!(connection, { kind: 'capability', source: 'query', schema: target, sql: runText, resultColumns: next.columns })
+      if (!ownsSnapshot(snapshot) || check !== capabilitySeq.current) return
       setCapability(value as MaintenanceCapability)
     } catch (error) {
+      if (!ownsSnapshot(snapshot) || check !== capabilitySeq.current) return
       setCapability(unavailableMaintenanceCapability('query', error instanceof Error ? error.message : '无法检查维护能力。'))
     } finally {
-      setCapabilityBusy(false)
+      if (ownsSnapshot(snapshot) && check === capabilitySeq.current) setCapabilityBusy(false)
     }
   }
-  const runSql = async (text: string, signal: AbortSignal) => {
-    return (bridge.executeManual || bridge.execute)({ ...connection, database: schema }, text, signal)
+  const runSql = async (text: string, signal: AbortSignal, target = schema) => {
+    return (bridge.executeManual || bridge.execute)({ ...connection, database: target }, text, signal)
   }
   const applyBatch = (next: SqlStep[], seq: number, current = 0) => {
     if (seq !== runSeq.current) return
@@ -132,17 +157,24 @@ export function SqlWorkspaceTab({
       message: summary,
     })
   }
-  const runBatch = async (nextSteps: SqlStep[], opts?: { from?: number; only?: number; explain?: boolean }) => {
+  const runBatch = async (nextSteps: SqlStep[], opts?: { from?: number; only?: number; explain?: boolean; target?: string; verifyUnknown?: boolean }) => {
     if (!nextSteps.length) return
+    if (staleResult && !opts?.verifyUnknown && (Object.keys(changed).length || draftRows.length)) { setGridHint('原目标的网格草稿已冻结，请先撤销修改，再在当前目标重新查询。'); return }
+    const target = opts?.target ?? schema
+    if (target !== schema) { setGridHint('请先选择原执行目标，再刷新核验。'); return }
+    if (uncertainSave.current && !opts?.verifyUnknown) { setGridHint('请先通过未知写入核验入口丢弃旧草稿并刷新。'); return }
     running.current?.abort()
     const controller = new AbortController(); running.current = controller
     const seq = ++runSeq.current
+    const snapshot = { identity: viewRef.current, schema: target, seq, connectionId: connection.id, generation: connection.generation, statements: nextSteps.map(step => step.sql) }
+    snapshotRef.current = snapshot; setResultSnapshot(snapshot); capabilitySeq.current += 1
     setBusy(true)
     setSteps(nextSteps)
     setActiveStep(opts?.only ?? opts?.from ?? 0)
     setPane('result')
     setResultOpen(true)
     if (maintenance) await bridge.maintenance!(connection, { kind: 'enable', enabled: false }).catch(() => {})
+    if (!ownsSnapshot(snapshot)) return
     setMaintenance(false)
     setGridHint(''); setChanged({}); setDraftRows([]); setEditing(undefined); setCell(undefined)
     setCapability(undefined)
@@ -153,20 +185,22 @@ export function SqlWorkspaceTab({
         from: opts?.from,
         only: opts?.only,
         signal: controller.signal,
-        execute: runSql,
+        execute: (text, signal) => runSql(text, signal, target),
         onChange: live => {
           const current = live.findIndex(step => step.status === 'running')
           const fallback = [...live].findLastIndex(step => step.status === 'ok' || step.status === 'failed' || step.status === 'cancelled' || step.status === 'unknown')
           applyBatch(live, seq, current >= 0 ? current : fallback)
         },
       })
+      if (!ownsSnapshot(snapshot)) return
       const failedIndex = finished.findIndex(step => step.status === 'failed' || step.status === 'cancelled' || step.status === 'unknown')
       const firstGrid = finished.findIndex(step => step.status === 'ok' && (step.result?.columns.length || 0) > 0)
       applyBatch(finished, seq, opts?.only ?? (failedIndex >= 0 ? failedIndex : firstGrid >= 0 ? firstGrid : finished.length - 1))
       const focused = finished[opts?.only ?? 0]
       lastRun.current = focused?.sql || nextSteps[0]?.sql || ''
       if (!opts?.explain && finished.length === 1 && finished[0]?.status === 'ok' && finished[0].kind === 'select' && finished[0].result) {
-        void detectEditable(stripLeadingComments(finished[0].sql), finished[0].result)
+        gridSave.verifiedRead()
+        void detectEditable(stripLeadingComments(finished[0].sql), finished[0].result, target, snapshot)
       }
       setPane(finished.some(step => step.status === 'failed' || step.status === 'unknown') ? 'message' : 'result')
       setMessage(finished.map((step, index) => {
@@ -192,12 +226,18 @@ export function SqlWorkspaceTab({
     await runBatch(createSqlBatch(ranges.map(item => item.sql)))
   }
   const retryOne = (index: number) => {
+    const original = snapshotRef.current
+    if (!canReplaySqlRun(original, viewRef.current, runSeq.current, mounted.current, steps.map(step => step.sql))) { setMessage('原运行目标或连接已变化，请主动发起新的执行。'); setPane('message'); return }
+    if (steps[index]?.status === 'unknown' || (steps[index]?.status === 'ok' && ['insert', 'update', 'delete'].includes(steps[index]?.kind))) { setMessage('不能重复提交成功或未知的写入，请核验后重新编辑。'); return }
     const next = steps.map((step, i) => i === index ? { ...step, status: 'pending' as const, error: undefined, result: undefined } : step)
-    void runBatch(next, { only: index })
+    void runBatch(next, { only: index, target: original!.schema })
   }
   const continueFrom = (index: number) => {
+    const original = snapshotRef.current
+    if (!canReplaySqlRun(original, viewRef.current, runSeq.current, mounted.current, steps.map(step => step.sql))) { setMessage('原运行目标或连接已变化，请主动发起新的执行。'); setPane('message'); return }
+    if (steps.slice(index).some(step => step.status === 'unknown' || (step.status === 'ok' && ['insert', 'update', 'delete'].includes(step.kind)))) { setMessage('后续包含成功或未知的写入，请核验后重新编辑。'); return }
     const next = steps.map((step, i) => i < index ? step : { ...step, status: 'pending' as const, error: undefined, result: i === index ? undefined : step.result })
-    void runBatch(next, { from: index })
+    void runBatch(next, { from: index, target: original!.schema })
   }
   const explain = async (runSelection?: string) => {
     const ranges = resolveRunStatements({
@@ -221,16 +261,22 @@ export function SqlWorkspaceTab({
   }
   const [cell, setCell] = useState<{ row: number; col: number }>()
   const discardEdits = () => {
+    const uncertain = gridSave.discard()
     setChanged({})
     setDraftRows([])
     setEditing(undefined)
     setGridHint('已撤销本页未保存修改。')
+    if (uncertain && verificationRead.current) { setMaintenance(false); void runBatch(createSqlBatch([verificationRead.current.sql]), { target: verificationRead.current.schema, verifyUnknown: true }) }
   }
   const enableMaintenance = async () => {
+    if (!ownsSnapshot(snapshotRef.current)) { setGridHint('这是原目标的只读结果，请在当前目标重新查询。'); return }
+    const snapshot = snapshotRef.current
+    if (uncertainSave.current) { setGridHint('结果未知，先丢弃旧草稿并成功刷新。'); return }
     setBusy(true)
     try {
       const next = !maintenance
       const value = await bridge.maintenance!(connection, { kind: 'enable', enabled: next, capabilityId: next ? capability?.id : undefined })
+      if (!ownsSnapshot(snapshot)) return
       setMaintenance(!!value.enabled)
       if (!value.enabled) {
         setChanged({}); setDraftRows([]); setEditing(undefined); setCell(undefined)
@@ -239,8 +285,8 @@ export function SqlWorkspaceTab({
         if (result && lastRun.current) void detectEditable(lastRun.current, result)
       }
     }
-    catch (e) { setGridHint(e instanceof Error ? e.message : '无法切换维护') }
-    finally { setBusy(false) }
+    catch (e) { if (ownsSnapshot(snapshot)) setGridHint(e instanceof Error ? e.message : '无法切换维护') }
+    finally { if (ownsSnapshot(snapshot)) setBusy(false) }
   }
   const keyColumns = capability?.resultPrimaryKeys || []
   const editableResultColumns = capability?.columns.filter(column => column.editable).map(column => column.resultColumn) || []
@@ -260,6 +306,7 @@ export function SqlWorkspaceTab({
     return gridRowKey(result, keyColumns, row, index)
   }
   const commitCell = (pos: { row: number; col: number }, value: string | null) => {
+    if (!ownsSnapshot(snapshotRef.current)) return
     if (!result) return
     setEditing(undefined)
     setChanged(old => commitCellChange(result, keyColumns, old, pos, value))
@@ -270,49 +317,64 @@ export function SqlWorkspaceTab({
     return gridSelectedCellValue(result, keyColumns, changed, cell, false)
   }
   const addRow = () => {
+    if (!ownsSnapshot(snapshotRef.current)) return
+    if (uncertainSave.current) return
     if (!result || !capability?.canInsert) return
-    const insertableColumns = new Set(insertableResultColumns)
-    setDraftRows(old => [...old, { id: crypto.randomUUID(), values: Object.fromEntries(result.columns.map(column => [column, insertableColumns.has(column) ? '' : null])) }])
+    setDraftRows(old => [...old, { id: crypto.randomUUID(), values: {} }])
   }
   const deleteSelected = () => {
+    if (!ownsSnapshot(snapshotRef.current)) return
+    if (uncertainSave.current) return
     if (!result || !capability?.canDelete || cell == null || cell.row < 0) return
-    saveOps.current = [{ kind: 'delete', values: {}, original: sourceObject(result.rows[cell.row]) }]
-    setConfirmWrite(true)
+    const snapshot = snapshotRef.current
+    gridSave.prepare([{ kind: 'delete', values: {}, original: sourceObject(result.rows[cell.row]) }], () => ownsSnapshot(snapshot))
   }
   const save = () => {
+    if (!ownsSnapshot(snapshotRef.current)) { setGridHint('原结果与草稿已冻结，请撤销修改并重新查询。'); return }
+    if (uncertainSave.current) { setGridHint('上次写入结果未知，请核验并撤销旧草稿、刷新结果后重新编辑。'); return }
     if (!result || !maintenance) { setGridHint('请先开启维护模式。'); return }
     if (!capability?.canEnable || !capability.table) { setGridHint(capability?.reason || '当前结果不能保存。'); return }
     const ops: DmlOp[] = []
-    for (const draft of draftRows) ops.push({ kind: 'insert', values: sourceValues(Object.fromEntries(Object.entries(draft.values).filter(([, value]) => value !== ''))) })
+    for (const draft of draftRows) ops.push({ kind: 'insert', draftId: draft.id, values: sourceValues(draft.values) })
     for (const [key, values] of Object.entries(changed)) {
       const index = result.rows.findIndex((item, i) => rowKey(item, i) === key)
-      if (index >= 0) ops.push({ kind: 'update', values: sourceValues(values), original: sourceObject(result.rows[index]) })
+      if (index >= 0) ops.push({ kind: 'update', rowKey: key, values: sourceValues(values), original: sourceObject(result.rows[index]) })
     }
+    if (ops.some(op => op.kind === 'insert' && !Object.keys(op.values).length)) { setGridHint('新增行没有可提交字段，请填写字段或删除该草稿。'); return }
     if (!ops.length) { setGridHint('没有待保存的修改。'); return }
-    saveOps.current = ops
-    setConfirmWrite(true)
+    const snapshot = snapshotRef.current
+    gridSave.prepare(ops, () => ownsSnapshot(snapshot))
   }
   const confirmSave = async () => {
+    const snapshot = snapshotRef.current
+    if (!ownsSnapshot(snapshot)) { setConfirmWrite(false); setGridHint('执行目标已变化，旧草稿不能提交。'); return }
+    if (uncertainSave.current) { setGridHint('上次写入结果未知，不能再次提交旧草稿。'); setConfirmWrite(false); return }
     if (!capability?.table) return
-    setSaving(true)
     setGridHint('')
-    try {
-      for (const op of saveOps.current) await executeDmlOp(bridge, connection, capability.schema || schema, capability.table, op)
-      setConfirmWrite(false)
-      setSaving(false)
-      setChanged({})
-      setDraftRows([])
-      setEditing(undefined)
-      if (lastRun.current) void runBatch(createSqlBatch([lastRun.current]))
-    } catch (e) {
-      setSaving(false)
-      setGridHint(e instanceof Error ? e.message : '保存失败')
-    }
+    await gridSave.submit({
+      current: () => ownsSnapshot(snapshot),
+      execute: op => executeDmlOp(bridge, connection, snapshot!.schema, capability.table!, op, () => ownsSnapshot(snapshot)),
+      committed: op => {
+        if (op.draftId) setDraftRows(rows => rows.filter(row => row.id !== op.draftId))
+        if (op.rowKey) setChanged(rows => { const next = { ...rows }; delete next[op.rowKey!]; return next })
+      },
+      success: () => {
+        setChanged({}); setDraftRows([]); setEditing(undefined)
+        if (ownsSnapshot(snapshot) && lastRun.current) void runBatch(createSqlBatch([lastRun.current]))
+      },
+      failure: error => {
+        if ((error as { effect?: string })?.effect === 'unknown') verificationRead.current = { sql: lastRun.current, schema: snapshot!.schema }
+        setGridHint(error instanceof Error ? error.message : '保存失败')
+      },
+    })
   }
+
   useEffect(() => {
     if (active && connection.live && schema) cache.prewarmSchema(connection, schema)
   }, [active, cache, connection, schema])
   return <div className="db-sql-tab" ref={tabRef}>
+    {staleResult && <p role="status" className="db-muted">原目标 {resultSnapshot?.schema} 的结果仅供查看；网格草稿已冻结，请撤销修改并在当前目标重新查询。</p>}
+    {unknownWrite && <UnknownGridNotice snapshot={unknownWrite} connection={connection} onOpenTarget={() => onSchemaChange(unknownWrite.schema)} onRefresh={discardEdits} />}
     <SqlRunWorkspace
       className="db-sql-run-workspace"
       connection={connection}
@@ -354,7 +416,7 @@ export function SqlWorkspaceTab({
           onInsert={insertTemplateSql}
         /> : null}
       </>}
-      editorExtra={showStructure && picked ? <TableStructurePane cache={cache} connection={connection} schema={schema} table={picked} /> : undefined}
+      editorExtra={showStructure && picked ? <TableStructurePane onClose={() => setShowStructure(false)} cache={cache} connection={connection} schema={schema} table={picked} /> : undefined}
       resultFrame={<QueryResultFrame
         pane={pane}
         onPaneChange={setPane}
@@ -374,21 +436,14 @@ export function SqlWorkspaceTab({
           {singleSelect && <button type="button" className="db-maintenance-small" title={capability?.insertReason} disabled={saving || !maintenance || !capability?.canInsert} onClick={addRow}>新增</button>}
           {singleSelect && <button type="button" className="db-maintenance-small" title={capability?.deleteReason} disabled={saving || !maintenance || !capability?.canDelete || cell == null || cell.row < 0} onClick={deleteSelected}>删除</button>}
           {singleSelect && <button type="button" className="db-maintenance-small" disabled={saving || !maintenance || (!Object.keys(changed).length && !draftRows.length)} onClick={save}>保存修改</button>}
-          {singleSelect && <button type="button" className="db-maintenance-small" disabled={saving || (!Object.keys(changed).length && !draftRows.length)} onClick={discardEdits}>撤销修改</button>}
+          {singleSelect && !unknownWrite && <button type="button" className="db-maintenance-small" disabled={saving || (!Object.keys(changed).length && !draftRows.length)} onClick={discardEdits}>{uncertainSave.current ? '丢弃旧草稿并刷新' : '撤销修改'}</button>}
           {result?.columns.length ? <ResultExportButtons result={result} /> : null}
           {gridHint && <span className="db-muted db-query-result-hint" role="status" title={gridHint}>{gridHint}</span>}
         </>}
-        message={<div className="db-sql-step-log">
-          {steps.length ? steps.map((step, index) => <article key={index} className={`db-sql-step-item is-${step.status}`}>
-            <header><strong>{index + 1} · {statementKindLabel(step.kind)} · {stepStatusLabel(step.status)}</strong></header>
-            <pre>{step.sql.trim()}</pre>
-            {(step.error || step.result?.message) && <p>{step.error || step.result?.message}</p>}
-            {(step.status === 'failed' || step.status === 'unknown') && !busy && <div className="db-sql-step-actions">
-              <button type="button" onClick={() => retryOne(index)}>仅重试此条</button>
-              {index < steps.length - 1 && <button type="button" onClick={() => continueFrom(index)}>从此条继续</button>}
-            </div>}
-          </article>) : <pre className="db-cell-detail">{message}</pre>}
-        </div>}
+        message={steps.length ? <SqlReceipts localSteps={steps} actions={(step, index) => step.status === 'failed' && !busy ? <div className="db-sql-step-actions">
+          <button type="button" onClick={() => retryOne(index)}>仅重试此条</button>
+          {index < steps.length - 1 && <button type="button" onClick={() => continueFrom(index)}>从此条继续</button>}
+        </div> : undefined} /> : <pre className="db-cell-detail">{message}</pre>}
       >
         {(() => {
           const step = steps[activeStep]
@@ -400,7 +455,7 @@ export function SqlWorkspaceTab({
               return String((detail?.columns || []).find(column => String(column.name) === source)?.type || '')
             })
             return <QueryResultGrid
-              result={result} readOnly={!singleSelect || !writable || !maintenance || !capability?.canUpdate} allowInsert={!!singleSelect && writable && maintenance && !!capability?.canInsert} primaryKeys={keyColumns} changed={changed} draftRows={draftRows} selected={cell} editing={editing} autoIncrement={identityResultColumns} editableColumns={editableResultColumns} insertableColumns={insertableResultColumns}
+              result={result} readOnly={staleResult || uncertainSave.current || !singleSelect || !writable || !maintenance || !capability?.canUpdate} allowInsert={!staleResult && !uncertainSave.current && !!singleSelect && writable && maintenance && !!capability?.canInsert} primaryKeys={keyColumns} changed={changed} draftRows={draftRows} selected={cell} editing={editing} autoIncrement={identityResultColumns} editableColumns={editableResultColumns} insertableColumns={insertableResultColumns}
               onSelect={setCell} onEditStart={pos => {
                 if (!singleSelect) { setGridHint('批量结果仅支持查看，请单独运行该查询后再维护。'); return }
                 if (pos.row >= 0 && !capability?.canUpdate) { setGridHint(capability?.updateReason || capability?.reason || '当前结果仅支持查看。'); return }
@@ -421,16 +476,17 @@ export function SqlWorkspaceTab({
               extraMenu={pos => {
                 const column = result.columns[pos.col]
                 const cellValue = pos.row < 0 ? draftRows[-pos.row - 1]?.values[column] ?? null : result.rows[pos.row]?.[pos.col] ?? null
-                const allowed = writable && maintenance && (pos.row < 0 ? insertableResultColumns : editableResultColumns).includes(column) && (pos.row < 0 ? capability?.canInsert : capability?.canUpdate) && !isBinaryPlaceholder(cellValue)
+                const allowed = ownsSnapshot(snapshotRef.current) && !uncertainSave.current && writable && maintenance && (pos.row < 0 ? insertableResultColumns : editableResultColumns).includes(column) && (pos.row < 0 ? capability?.canInsert : capability?.canUpdate) && !isBinaryCell(result, pos.col, cellValue)
                 if (!allowed) return null
                 return <>
+                  {pos.row < 0 && <button type="button" onClick={() => setDraftRows(old => old.map((row, index) => { if (-(index + 1) !== pos.row) return row; const values = { ...row.values }; delete values[column]; return { ...row, values } }))}>使用默认值</button>}
                   <button type="button" onClick={() => pos.row < 0 ? setDraftRows(old => old.map((row, index) => -(index + 1) === pos.row ? { ...row, values: { ...row.values, [column]: null } } : row)) : commitCell(pos, null)}>设置为 NULL</button>
                   <button type="button" onClick={() => pos.row < 0 ? setDraftRows(old => old.map((row, index) => -(index + 1) === pos.row ? { ...row, values: { ...row.values, [column]: '' } } : row)) : commitCell(pos, '')}>设置为空字符串</button>
                 </>
               }}
               detailColumn={cell != null ? result.columns[cell.col] : undefined}
               detailValue={cell != null ? selectedCellValue() : undefined}
-              detailEditable={!!singleSelect && writable && maintenance && cell != null && (cell.row < 0 ? !!capability?.canInsert && insertableResultColumns.includes(result.columns[cell.col] || '') : !!capability?.canUpdate && editableResultColumns.includes(result.columns[cell.col] || ''))}
+              detailEditable={ownsSnapshot(snapshotRef.current) && !uncertainSave.current && !!singleSelect && writable && maintenance && cell != null && (cell.row < 0 ? !!capability?.canInsert && insertableResultColumns.includes(result.columns[cell.col] || '') : !!capability?.canUpdate && editableResultColumns.includes(result.columns[cell.col] || ''))}
               onDetailApply={text => {
                 if (!cell) return
                 if (cell.row < 0) {

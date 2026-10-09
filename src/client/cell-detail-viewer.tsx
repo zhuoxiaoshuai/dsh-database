@@ -1,6 +1,6 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
-import { formatDetailValue, formatPreview, isBinaryPlaceholder } from '../shared/cell-value.ts'
+import { formatPreview, isBinaryPlaceholder } from '../shared/cell-value.ts'
 import { useDragResize } from './workspace/parts/use-drag-resize.ts'
 import { formatValue } from './workspace/parts/formatted-cell-value.ts'
 
@@ -10,6 +10,7 @@ export const CellDetailViewer = forwardRef<CellDetailViewerHandle, {
   column?: string
   value: string | null | undefined
   editable?: boolean
+  binary?: boolean
   onApply?(value: string | null): void
   expanded: boolean
   height: number
@@ -18,7 +19,7 @@ export const CellDetailViewer = forwardRef<CellDetailViewerHandle, {
   onHeightChange(height: number): void
   onResizeStart?(): void
 }>(function CellDetailViewer({
-  column, value, editable, onApply, expanded, height, maxHeight, onExpandedChange, onHeightChange, onResizeStart,
+  column, value, editable, binary: binaryFlag, onApply, expanded, height, maxHeight, onExpandedChange, onHeightChange, onResizeStart,
 }, ref) {
   const editorRef = useRef<HTMLTextAreaElement>(null)
   const [draft, setDraft] = useState('')
@@ -26,12 +27,12 @@ export const CellDetailViewer = forwardRef<CellDetailViewerHandle, {
   const [search, setSearch] = useState('')
   const [wrap, setWrap] = useState(true)
   const empty = value === undefined
-  const binary = isBinaryPlaceholder(value ?? null)
+  const binary = binaryFlag ?? isBinaryPlaceholder(value ?? null)
   const isNull = value === null
   const canEdit = !!editable && !empty && !binary && !isNull
   useEffect(() => {
     if (value === undefined || value === null || value === '') { setDraft(''); return }
-    setDraft(formatDetailValue(value))
+    setDraft(formatValue(value, 'json'))
   }, [value, column])
   useEffect(() => { setSearch('') }, [value, column])
   useImperativeHandle(ref, () => ({

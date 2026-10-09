@@ -8,7 +8,8 @@ import { AiStepChain } from './ai-step-chain.tsx'
 import { useDragResize } from './workspace/parts/use-drag-resize.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { EXECUTION_STATUS_LABELS, executionChain, executionOutcomeSummary, executionReason, executionTitle, groupExecutionsByLocalDay, historyItemsForConnection, isDisplayHistoryExecution, isTerminalStatus, type DisplayResult, type ExecutionRecord } from '../shared/execution.ts'
-import { emptySharedQuery, type Connection, type SharedQuery, type WorkspaceBridge } from '../shared/workbench.ts'
+import { type Connection, type WorkspaceBridge } from '../shared/workbench.ts'
+import type { ExecutionDocumentController } from './workspace/source/use-execution-document.ts'
 import { activeExecution, useExecutionItems } from './ai-query-bus.ts'
 import { executionDetailSource } from './workspace/source/execution-details.tsx'
 import { previewJson } from './workspace/parts/preview-json.tsx'
@@ -32,16 +33,20 @@ function clockLabel(iso: string): string {
 }
 
 function ExecutionRecordDrawer({
-  record, connection, bridge, onOpenDraft, onWriteSql, onClose, actionsEnabled,
+  record, connection, bridge, onOpenDraft, onWriteSql, onVerifyOriginal, onClose, actionsEnabled,
 }: {
   record: ExecutionRecord & { result?: unknown; resultMissing?: boolean }
   connection?: Connection
   bridge: WorkspaceBridge
   onOpenDraft?(draft: Draft, executionId: string): void
   onWriteSql?(sql: string, schema?: string): void
+  onVerifyOriginal?(record: ExecutionRecord): void
   onClose(): void
   actionsEnabled: boolean
 }) {
+  const [useCurrent, setUseCurrent] = useState(false)
+  useEffect(() => setUseCurrent(false), [connection?.id, connection?.generation, record.executionId])
+  const sameGeneration = record.connectionId === connection?.id && record.generation === connection?.generation
   return <aside className="db-ai-drawer" aria-label="执行详情">
     <header className="db-ai-drawer-head">
       <strong>执行详情</strong>
@@ -57,6 +62,13 @@ function ExecutionRecordDrawer({
         <div className="db-ai-record-actions">
           {!isTerminalStatus(record.status) && <button type="button" className="db-stop" onClick={() => void bridge.executions!('execution-cancel', { executionId: record.executionId })}>取消</button>}
         </div>
+        {record.status === 'unknown' && <section className="db-ai-record-section" aria-label="未知结果核验">
+          <strong>原执行身份</strong><p>{record.connectionName || record.connectionId} · {record.schema || '未记录目标'} · {record.generation || '未记录代次'} · {record.createdAt}</p>
+          <p>数据库效果未知，原始状态保持不变。请查看下方原操作，在原目标读取核验。</p>
+          {!sameGeneration && <label><input type="checkbox" checked={useCurrent} onChange={event => setUseCurrent(event.target.checked)} />原代次已失效；我已明确选择当前连接进行核验</label>}
+          <button type="button" disabled={!onVerifyOriginal || record.connectionId !== connection?.id || (!sameGeneration && !useCurrent)} onClick={() => onVerifyOriginal?.(record)}>打开原目标核验</button>
+          <button type="button" onClick={event => event.currentTarget.closest('aside')?.querySelector('.db-ai-record-sql')?.scrollIntoView({ block: 'nearest' })}>查看原操作</button>
+        </section>}
         {executionReason(record) && <section className="db-ai-record-section"><strong>原因</strong><p>{executionReason(record)}</p></section>}
         {executionDetailSource(record.dialect)?.renderText(record, onWriteSql) || <section className="db-ai-record-section"><strong>操作</strong><p>{record.operation}</p></section>}
         {record.result != null && <section className="db-ai-record-section"><strong>结果预览</strong>{(() => {
@@ -72,7 +84,7 @@ function ExecutionRecordDrawer({
 }
 
 function AiExecutionChrome({
-  label, hidden, items, error, emptyNote, connection, bridge, children, flushDetail, onOpenDraft, onWriteSql, focusId, onFocus, extra,
+  label, hidden, items, error, emptyNote, connection, bridge, children, flushDetail, onOpenDraft, onWriteSql, onVerifyOriginal, focusId, onFocus, extra,
 }: {
   label: string
   hidden?: boolean
@@ -85,6 +97,7 @@ function AiExecutionChrome({
   flushDetail?: boolean
   onOpenDraft?(draft: Draft, executionId: string): void
   onWriteSql?(sql: string, schema?: string): void
+  onVerifyOriginal?(record: ExecutionRecord): void
   focusId?: string
   onFocus?(id?: string): void
   extra?: React.ReactNode
@@ -203,6 +216,7 @@ function AiExecutionChrome({
         bridge={bridge}
         onOpenDraft={onOpenDraft}
         onWriteSql={onWriteSql}
+        onVerifyOriginal={onVerifyOriginal}
         onClose={() => setDrawerOpen(false)}
         actionsEnabled={!!connection?.live}
       /> : <aside className="db-ai-drawer"><p className="db-info-note">选择一条记录后查看详情。</p></aside>}
@@ -212,13 +226,18 @@ function AiExecutionChrome({
 }
 
 /** History belongs to AI Query. Workspaces pass only the AI editor, not the rest of the page. */
-export function AiQueryFrame({ bridge, connection, children }: {
+export function AiQueryFrame(props: React.ComponentProps<typeof AiExecutionChrome> | {
   bridge: WorkspaceBridge
   connection: Connection
   children: React.ReactNode
 }): React.ReactElement {
+  if ('items' in props) return <AiExecutionChrome {...props} />
+  return <SubscribedAiQueryFrame {...props} />
+}
+
+function SubscribedAiQueryFrame({ bridge, connection, children }: { bridge: WorkspaceBridge; connection: Connection; children: React.ReactNode }): React.ReactElement {
   const { items, error } = useExecutionItems(bridge)
-  return <AiExecutionChrome
+  return <AiQueryFrame
     label="AI Query"
     items={items}
     error={error}
@@ -226,27 +245,27 @@ export function AiQueryFrame({ bridge, connection, children }: {
     connection={connection}
     bridge={bridge}
     flushDetail
-  >{children}</AiExecutionChrome>
+  >{children}</AiQueryFrame>
 }
 
 export function AiExecutions({
-  bridge, connection, schema, schemas, cache, query, onQuery, focusId, onFocus, onOpenDraft, onWriteSql, items, display, onDisplay, markEditing, hidden, onRestoreSchema, onOpenTemplates, templateReloadKey, error,
+  bridge, connection, schema, schemas, cache, documentController, stale, focusId, onFocus, onOpenDraft, onWriteSql, onVerifyOriginal, items, display, onRun, hidden, onRestoreSchema, onOpenTemplates, templateReloadKey, error,
 }: {
   bridge: WorkspaceBridge
   connection?: Connection
   schema?: string
   schemas?: string[]
   cache?: SchemaCache
-  query?: SharedQuery
-  onQuery?(next: SharedQuery): void
+  documentController?: ExecutionDocumentController
   focusId?: string
   onFocus?(id?: string): void
   onOpenDraft?(draft: Draft, executionId: string): void
   onWriteSql?(sql: string, schema?: string): void
+  onVerifyOriginal?(record: ExecutionRecord): void
   items?: ExecutionRecord[]
+  stale?: boolean
   display?: DisplayResult
-  onDisplay?(next?: DisplayResult): void
-  markEditing?(value: boolean): void
+  onRun(text: string): Promise<unknown>
   hidden?: boolean
   onRestoreSchema?(schemaName: string): void
   onOpenTemplates?(templateId?: string): void
@@ -264,9 +283,9 @@ export function AiExecutions({
   const chain = executionChain(listed, current)
   const stepChain = <AiStepChain chain={chain} selectedId={focus} onPick={id => { setFocus(id); onFocus?.(id) }} />
   const active = activeExecution(items || [], connection?.id)
-  const canRunCollab = connection?.live && cache && onQuery
+  const canRunCollab = connection?.live && cache && documentController
   const center = canRunCollab ? (
-    <AiCollabRoot key={`${connection.id}:${connection.generation || ''}`} bridge={bridge} connection={connection} schema={schema || ''} cache={cache} query={query || emptySharedQuery()} onQuery={onQuery} schemas={schemas} onSchemaChange={onRestoreSchema} templateReloadKey={templateReloadKey} display={display} onDisplay={onDisplay} markEditing={markEditing} activeExecutionId={active?.executionId} active={!hidden}>
+    <AiCollabRoot key={`${connection.id}:${connection.generation || ''}`} bridge={bridge} connection={connection} schema={schema || ''} cache={cache} documentController={documentController} schemas={schemas} onSchemaChange={onRestoreSchema} templateReloadKey={templateReloadKey} stale={stale} display={display} onRun={onRun} activeExecutionId={active?.executionId} active={!hidden}>
       <div className="db-ai-split">
         {stepChain}
         <div className="db-ai-editor-pane"><AiCollabEditorPane onSave={() => setSaveOpen(true)} /></div>
@@ -280,7 +299,7 @@ export function AiExecutions({
     </div>
   )
 
-  return <AiExecutionChrome
+  return <AiQueryFrame
       label="AI Query"
       hidden={hidden}
       items={items || []}
@@ -290,6 +309,7 @@ export function AiExecutions({
       bridge={bridge}
       onOpenDraft={onOpenDraft}
       onWriteSql={onWriteSql}
+      onVerifyOriginal={onVerifyOriginal}
       focusId={focusId || focus}
       onFocus={id => { setFocus(id); onFocus?.(id) }}
       extra={connection && <SaveExperienceDialog
@@ -302,7 +322,7 @@ export function AiExecutions({
         setSaveBusy(true)
         setSaveError('')
         setSaveSuccess('')
-        void publishExperienceFromSql(bridge, { sql: query?.sql || '', dialect: connection.dialect, connectionId: connection.id, title: name }).then(outcome => {
+        void publishExperienceFromSql(bridge, { sql: documentController?.text || '', dialect: connection.dialect, connectionId: connection.id, title: name }).then(outcome => {
           setSaveSuccess(outcome.merged ? '已合并到已有经验。' : '已创建新经验。')
           try { onOpenTemplates?.(outcome.id) } catch { /* 跳转失败不影响已保存 */ }
         }).catch(e => setSaveError(e instanceof Error ? e.message : '保存失败')).finally(() => setSaveBusy(false))
@@ -310,7 +330,7 @@ export function AiExecutions({
     />}
     >
       {center}
-    </AiExecutionChrome>
+    </AiQueryFrame>
 }
 
 export function AiActivityBanner({ items, onOpen, peer, onViewPeer, onDismissPeer }: {

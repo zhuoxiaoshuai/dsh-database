@@ -48,9 +48,10 @@ export const kafkaExplorer: ExplorerProvider<'kafka'> = {
     const target = decodeRef(input.parent)
     if (target.kind === 'topic' || target.kind === 'partition') throw new Error('Topic 没有子节点。')
     if (target.kind !== 'group' || !target.groupId) throw new Error('Kafka 对象引用无效。')
-    const page = await transport.source('kafka-group', { groupId: target.groupId, topics: true }, signal)
+    const page = await transport.source('kafka-group', { groupId: target.groupId, topics: true, cursor: input.cursor || '0' }, signal)
     const topics = Array.isArray(page.topics) ? page.topics.filter((item): item is string => typeof item === 'string') : []
-    return { sourceId: 'kafka', nodes: topics.map(topic => ({ ref: groupTopicRef(target.groupId!, topic), title: topic, kind: 'group-topic', hasChildren: false, metadata: { groupId: target.groupId, topic } })), complete: true }
+    return { sourceId: 'kafka', nodes: topics.map(topic => ({ ref: groupTopicRef(target.groupId!, topic), title: topic, kind: 'group-topic', hasChildren: false, metadata: { groupId: target.groupId, topic } })),
+      ...(typeof page.nextCursor === 'string' ? { nextCursor: page.nextCursor } : {}), complete: page.truncated !== true }
   },
   async read(transport, input, signal) {
     if (!transport.source) throw new Error('Kafka 对象读取通道不可用。')

@@ -49,14 +49,13 @@ export async function authorizeStatement(dialect, sql, schema) {
   }
   const tables = new Set(), ctes = new Set(), references = [], aliases = new Set()
   const leading = sql.trim().replace(/^--[\s\S]*?\n/, '').trim()
-  // EXPLAIN 分类：仅 EXPLAIN SELECT 视为只读 explain；EXPLAIN INSERT/UPDATE 走原分类（sql 剥前缀）
+  // EXPLAIN preserves its intent; only a fully authorized SELECT may run.
   if (/^EXPLAIN\s/i.test(leading)) {
     const innerSql = policy.extractExplainSql(sql)
     if (innerSql) {
       const inner = await authorizeStatement(dialect, innerSql, schema)
       if (inner.kind === 'select') return { kind: 'explain', tables: inner.tables, references, aliases, sql: sql.trim().replace(/;\s*$/, ''), targetSql: innerSql }
-      // EXPLAIN 包装的非 SELECT：把 sql 字段替换为剥前缀的内层 sql，原 EXPLAIN 前缀不进解析器
-      return { ...inner, sql: innerSql.trim().replace(/;\s*$/, '') }
+      throw new Error('暂只支持 EXPLAIN SELECT；未执行任何修改。')
     }
   }
   return policy.authorize(sql, schema)

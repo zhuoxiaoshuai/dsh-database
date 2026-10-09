@@ -4,7 +4,7 @@ import type { DataSourceId } from '../../shared/data-sources/types.ts'
 import type { KafkaClientDescriptor, RedisClientDescriptor, SqlClientDescriptor } from '../../shared/data-sources/types.ts'
 import type { ConnectionFormSource } from '../workspace/connection/connection-form-types.ts'
 import type { WorkspaceSourceContext } from '../workspace-sources.tsx'
-import type { SourceWorkspace } from '../workspace/source/source-workspace.tsx'
+import type { SourceWorkspaceProps } from '../workspace/source/source-workspace.tsx'
 import type { ExecutionRecord } from '../../shared/execution.ts'
 import type { ExecutionResultEnvelope } from '../../shared/execution-result.ts'
 
@@ -25,7 +25,8 @@ type ClientSourceBase = {
   history: HistoryDetailSource
 }
 
-export type StandardSourceBindings = Omit<React.ComponentProps<typeof SourceWorkspace>, 'bridge' | 'connection'>
+type SourceBindings<T> = T extends unknown ? Omit<T, 'bridge' | 'connection' | 'navigation'> : never
+export type StandardSourceBindings = SourceBindings<SourceWorkspaceProps>
 export type HistoryDetailSource = {
   id: DataSourceId
   legacyHistoryVisible?(record: ExecutionRecord): boolean
@@ -33,7 +34,6 @@ export type HistoryDetailSource = {
   resultEnvelope(record: ExecutionRecord, value: unknown): ExecutionResultEnvelope
   renderResult(envelope: ExecutionResultEnvelope): React.ReactNode
 }
-export type ClientSourceModule = ClientSourceBase & (
-  { workspace: { mode: 'standard'; useBindings(context: WorkspaceSourceContext): StandardSourceBindings } }
-  | { workspace: { mode: 'legacy-sql'; render(context: WorkspaceSourceContext): React.ReactElement } }
-)
+export type ClientSourceModule = ClientSourceBase & {
+  workspace: { mode: 'standard'; useBindings(context: WorkspaceSourceContext): StandardSourceBindings }
+}

@@ -164,7 +164,12 @@ export interface KafkaConnectionInput {
 }
 export type SourceConnectionInput = ConnectionInput | KafkaConnectionInput
 export type SourceConnectionSettings = Omit<ConnectionInput, 'password' | 'rememberPassword' | 'useSavedPassword'> | Omit<KafkaConnectionInput, 'password' | 'rememberPassword' | 'useSavedPassword'>
+export type WorkspaceStorageStatus = {
+  executionHistory?: { degraded: boolean; retrying: boolean }
+  workspace?: { degraded: boolean }
+}
 export interface DatabaseWorkspaceSnapshot {
+  storage?: WorkspaceStorageStatus
   connections: Connection[]
   lastActiveId?: string
   passwordStorage: boolean
@@ -176,6 +181,7 @@ export interface Table { name: string; comment: string; columns: Column[] }
 export type Cell = string | null
 export interface Result {
   columns: string[]
+  binaryColumns?: number[]
   rows: Cell[][]
   truncated: boolean
   elapsedMs: number
@@ -183,10 +189,13 @@ export interface Result {
   affectedRows?: number
   timings?: Record<string, number>
   sql?: string
-  batch?: Result[]
+    stepIndex?: number
+    batch?: Result[]
+  steps?: { index: number; sql: string; status: 'succeeded' | 'failed' | 'unknown' | 'not-run'; affectedRows?: number; message?: string }[]
 }
 export interface QueryTab { id: string; name: string; connectionId: string; sql: string; result?: Result; error?: string }
 export interface WorkspaceBridge {
+  conversationId?: string
   mode: 'preview' | 'host'
   connections: Connection[]
   tables(connection: Connection): Table[]
@@ -414,52 +423,6 @@ function migrateSharedQuery(input: ConnectionWorkbench): SharedQuery | undefined
   return sanitizeSharedQuery({ sql, controller: 'ai', revision: 1, lastRun })
 }
 
-export function applySharedQueryPatch(
-  previous: SharedQuery,
-  patch: Partial<SharedQuery>,
-  source: QueryEditSource,
-  expectedRevision?: number,
-): SharedQuery {
-  if (source === 'ai') {
-    if (previous.controller !== 'ai') throw new Error('用户已接管 AI Query，无法覆盖 SQL。')
-    if (expectedRevision !== undefined && expectedRevision !== previous.revision) throw new Error('AI Query 已变化，请重新读取后再试。')
-  }
-  const sql = patch.sql !== undefined ? String(patch.sql).slice(0, SQL_FIELD_MAX_LENGTH) : previous.sql
-  const schema = patch.schema !== undefined ? (typeof patch.schema === 'string' ? patch.schema.slice(0, 128) : undefined) : previous.schema
-  const lastExecutionId = patch.lastExecutionId !== undefined ? patch.lastExecutionId : previous.lastExecutionId
-  const lastRun = patch.lastRun !== undefined ? patch.lastRun : previous.lastRun
-  let controller: QueryController = previous.controller
-  let controllerReason = previous.controllerReason
-  let revision = previous.revision
-  const sqlChanged = sql !== previous.sql
-  const schemaChanged = schema !== previous.schema
-  if (source === 'user') {
-    if (sqlChanged || schemaChanged) {
-      controller = 'user'
-      controllerReason = schemaChanged && !sqlChanged ? 'user-schema' : 'user-edit'
-    }
-    if (controller !== previous.controller || sqlChanged || schemaChanged) revision += 1
-  } else if (source === 'ai') {
-    controller = 'ai'
-    controllerReason = 'ai-publish'
-    if (sqlChanged || schemaChanged) revision += 1
-  } else if (source === 'format') {
-    if (sqlChanged) revision += 1
-  } else if (sqlChanged || schemaChanged) {
-    revision += 1
-  }
-  return sanitizeSharedQuery({ sql, schema, controller, controllerReason, revision, lastExecutionId, lastRun })
-}
-
-export function takeSharedQueryControl(previous: SharedQuery, reason = 'user-takeover'): SharedQuery {
-  if (previous.controller === 'user' && previous.controllerReason === reason) return previous
-  return sanitizeSharedQuery({ ...previous, controller: 'user', controllerReason: reason, revision: previous.revision + 1 })
-}
-
-export function returnSharedQueryControl(previous: SharedQuery): SharedQuery {
-  return sanitizeSharedQuery({ ...previous, controller: 'ai', controllerReason: 'return-ai', revision: previous.revision + 1 })
-}
-
 export function sanitizeConnectionWorkbench(value: unknown): ConnectionWorkbench {
   const input = value && typeof value === 'object' ? value as ConnectionWorkbench : {}
   const queryTabs = Array.isArray(input.queryTabs) ? input.queryTabs.slice(0, 8).flatMap(tab => {
@@ -472,7 +435,10 @@ export function sanitizeConnectionWorkbench(value: unknown): ConnectionWorkbench
   const schema = typeof input.schema === 'string' ? input.schema.slice(0, 128) : undefined
   const activeTabId = typeof input.activeTabId === 'string' && queryTabs.some(tab => tab.id === input.activeTabId) ? input.activeTabId : queryTabs[0]?.id
   const sharedQuery = migrateSharedQuery(input)
-  const aiDocument = input.aiDocument && isDataSourceId(input.aiDocument.sourceId)
+  const aiDocument = input.aiDocument && isDataSourceId(input.aiDocument.sourceId) && typeof input.aiDocument.text === 'string'
+    && Number.isInteger(input.aiDocument.revision) && input.aiDocument.revision > 0
+    && input.aiDocument.context && typeof input.aiDocument.context === 'object' && !Array.isArray(input.aiDocument.context)
+    && Object.values(input.aiDocument.context).every(value => typeof value === 'string')
     ? sanitizeExecutionDocument(input.aiDocument, input.aiDocument.sourceId) : undefined
   return {
     ...(schema ? { schema } : {}),

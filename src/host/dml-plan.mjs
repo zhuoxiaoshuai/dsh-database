@@ -1,6 +1,7 @@
 import { resolvePrimaryKeys } from './primary-keys.mjs'
 import { quoteIdentifier } from './query-policy.mjs'
 import { getSqlDialect } from './dialects/registry.mjs'
+import { isBinaryColumnType } from './cell-value.mjs'
 const generated = extra => /generated|virtual/i.test(extra || '')
 const typeOf = column => String(column.type || '')
 const comparable = column => !generated(column.extra) && /^(?:tinyint|smallint|mediumint|int|integer|bigint|decimal|numeric|number|float|double|real|bit|bool|boolean|year|time|char|varchar|varchar2|nchar|nvarchar2|date|datetime|timestamp|enum|set)(?:\b|\()/i.test(typeOf(column))
@@ -34,6 +35,7 @@ export function createDmlPlan(dialect, schema, table, operation, metadata) {
   if (!['insert', 'update', 'delete'].includes(operation?.kind)) throw new Error('记录操作无效。')
   if (operation.kind !== 'insert' && !primary.length) throw new Error('缺少可靠主键，暂不支持受控记录维护。')
   const values = operation.values || {}
+  if (Object.keys(values).some(name => isBinaryColumnType(byName.get(name)?.type))) throw new Error('二进制字段只支持查看，不支持文本写回。')
   if (!values || typeof values !== 'object' || Array.isArray(values) || Object.keys(values).some(k => !names.has(k))) throw new Error('写入字段不存在。')
   let sql
   if (operation.kind === 'insert') {

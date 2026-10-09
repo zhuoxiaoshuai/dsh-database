@@ -72,7 +72,7 @@ test('Kafka catalog roots sit on the connection tree, not in the overview switch
 
 test('catalog child visibility is a connection menu, not a SQL-only dialog', () => {
   const redis = readFileSync(new URL('../src/client/data-sources/redis.tsx', import.meta.url), 'utf8')
-  const pane = readFileSync(new URL('../src/client/active-connection-pane.tsx', import.meta.url), 'utf8')
+  const pane = readFileSync(new URL('../src/client/sql/workspace-bindings.tsx', import.meta.url), 'utf8')
   const actions = readFileSync(new URL('../src/client/tree-pane-actions.ts', import.meta.url), 'utf8')
   assert.match(redis, /filterNoun: '数据库'/)
   assert.doesNotMatch(pane, /VisibleSchemaDialog|VisibleCatalogDialog|filterRequest|openFilter/)

@@ -53,7 +53,6 @@ export function WorkbenchShell({
   const [sourceRefresh, setSourceRefresh] = useState<Record<string, number>>({})
   const [connectionMenu, setConnectionMenu] = useState<{ id: string; x: number; y: number }>()
   const pendingRef = useRef<PendingSchemaPick | undefined>()
-  const sqlCacheRef = useRef(new Map<string, { id: string; name: string; sql: string }[]>())
   const actionsRef = useRef<TreePaneActions | undefined>()
   const liveSeen = useRef(new Set(connections.filter(item => item.live).map(item => item.id)))
   const onUnavailableRef = useRef(onUnavailable)
@@ -214,7 +213,7 @@ export function WorkbenchShell({
       <div className="db-shell-pane">
         <React.Fragment key={`${conversationId}:${connection.id}`}>
         {workspaceSources.get(connection.dialect).render({
-          conversationId, host, connection, connections, cache, pendingRef, sqlCacheRef, actionsRef, refreshToken: sourceRefresh[connection.id] || 0, catalogRoot, onPick, onWorkbench, onSchema, onTreeBusy, onTreeFocus,
+          conversationId, host, connection, connections, cache, pendingRef, actionsRef, refreshToken: sourceRefresh[connection.id] || 0, catalogRoot, onPick, onWorkbench, onSchema, onTreeBusy, onTreeFocus,
         })}
         </React.Fragment>
       </div>

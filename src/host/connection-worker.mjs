@@ -4,8 +4,8 @@ import { catalog } from './catalog.mjs'
 import { executeSql, executeSelect, createDatabaseQueryPool } from './query.mjs'
 import { buildBrowse } from './browse.mjs'
 import { Maintenance, MaintenanceError } from './maintenance.mjs'
-import { databaseErrorDetail, safeConnectError, sanitizeDatabaseError } from './connect-error.mjs'
-import { cancelledError, createSessionManager } from './session-manager.mjs'
+import { nativeErrorText } from './connect-error.mjs'
+import { cancelledError, createSessionManager, startIdleCatalogProbe } from './session-manager.mjs'
 import { getSqlDataSource } from './data-sources/sql-registry.mjs'
 
 const FALLBACK_REQUEST_ERROR = '操作未完成：对象不可访问、请求超限或数据库版本不支持。请刷新后重试。'
@@ -15,12 +15,12 @@ const PUBLIC_ERROR_CODES = new Set([
 ])
 const publicRequestError = error => {
   const message = error instanceof MaintenanceError
-    ? sanitizeDatabaseError(error.message, { normalizeWhitespace: false })
-    : databaseErrorDetail(error, { maxLength: 1000, normalizeWhitespace: false })
+    ? nativeErrorText(error.message) || FALLBACK_REQUEST_ERROR
+    : nativeErrorText(error, FALLBACK_REQUEST_ERROR)
   const code = PUBLIC_ERROR_CODES.has(error?.code)
     ? error.code
     : error?.cancelled ? 'request_cancelled' : undefined
-  return { message: message || FALLBACK_REQUEST_ERROR, code }
+  return { message, code }
 }
 
 function trustedAuthorization(value, sql) {
@@ -75,6 +75,8 @@ parentPort.once('message', async ({ input, testOnly }) => {
         return probed
       },
       createQueryPool: () => createDatabaseQueryPool(credentials),
+      onHealth: health => { if (ready) parentPort.postMessage({ health }) },
+      watchConnection: dialect.watchConnection,
     })
 
     const inflight = new Map()
@@ -90,8 +92,10 @@ parentPort.once('message', async ({ input, testOnly }) => {
       () => sessions.acquireMaintenance(),
       () => sessions.releaseMaintenance(true),
     )
+    const stopProbe = credentials.dialect === 'mysql'
+      ? startIdleCatalogProbe(sessions, exclusive, () => !ready || inflight.size > 0) : () => {}
 
-    parentPort.on('close', () => { void sessions.close() })
+    parentPort.on('close', () => { ready = false; stopProbe(); void sessions.close() })
     parentPort.on('message', async message => {
       if (message.cancel && message.requestId) {
         inflight.get(message.requestId)?.abort()
@@ -126,8 +130,8 @@ parentPort.once('message', async ({ input, testOnly }) => {
           result = await exclusive(() => sessions.withCatalog(conn => catalog(conn, input.dialect, message.input, controller.signal), controller.signal))
         } else if (message.action === 'query' || message.action === 'manual-query') {
           const { lane: _ignored, ...rest } = message.input || {}
-          const authorized = message.action === 'query' ? trustedAuthorization(message.authorized, rest.sql) : undefined
-          result = await executeSql({ ...rest, lane: message.action === 'manual-query' ? 'manual' : 'query' }, credentials, controller.signal, sessions.queryPool(), authorized)
+          const authorized = trustedAuthorization(message.authorized, rest.sql)
+          result = await executeSql({ ...rest, lane: message.lane === 'manual' || message.action === 'manual-query' ? 'manual' : 'query' }, credentials, controller.signal, sessions.queryPool(), authorized, sqlProgress => parentPort.postMessage({ requestId: message.requestId, sqlProgress }))
         } else {
           const metadata = await exclusive(() => sessions.withCatalog(conn => catalog(conn, input.dialect, { kind: 'table', schema: message.input.schema, table: message.input.table }, controller.signal), controller.signal))
           const plan = buildBrowse(input.dialect, message.input, metadata)
@@ -142,7 +146,7 @@ parentPort.once('message', async ({ input, testOnly }) => {
       }
       try {
         const result = await run()
-        if (controller.signal.aborted) parentPort.postMessage({ requestId: message.requestId, cancelled: true, error: '读取已取消。', stage: message.action, retryable: false })
+        if (controller.signal.aborted && result?.affectedRows === undefined && !result?.steps?.some(step => step.status === 'succeeded')) parentPort.postMessage({ requestId: message.requestId, cancelled: true, error: '读取已取消。', stage: message.action, retryable: false })
         else parentPort.postMessage({ requestId: message.requestId, result, health: sessions.health })
       } catch (error) {
         const published = publicRequestError(error)
@@ -150,6 +154,12 @@ parentPort.once('message', async ({ input, testOnly }) => {
           requestId: message.requestId,
           cancelled: !!error?.cancelled || controller.signal.aborted,
           error: published.message,
+          effect: error?.effect,
+          phase: error?.phase,
+          category: error?.category,
+          databaseCode: error?.databaseCode,
+          steps: error?.steps,
+          batch: error?.batch,
           ...(published.code ? { code: published.code } : {}),
           stage: message.action,
           retryable: false,
@@ -178,6 +188,6 @@ parentPort.once('message', async ({ input, testOnly }) => {
     })()
   } catch (error) {
     input.password = ''
-    parentPort.postMessage({ ok: false, ready: false, error: safeConnectError(error) })
+    parentPort.postMessage({ ok: false, ready: false, error: nativeErrorText(error, '连接失败，请检查连接配置与账号权限。') })
   }
 })

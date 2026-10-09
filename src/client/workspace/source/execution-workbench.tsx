@@ -6,13 +6,14 @@ import { clampSplitRatio, ratioAfterDrag, splitGridRows, stealEditorPixels, SQL_
 
 /** The editor and result renderer belong to the source; split, resize and collapse belong here. */
 export function ExecutionWorkbench({ className = '', toolbar, editor, result, rail, resultOpen: controlledResultOpen,
-  onResultOpenChange, editorOpen: controlledEditorOpen, onEditorOpenChange, editorRatio: controlledRatio, onRatioChange,
+  onResultOpenChange, resultKey, editorOpen: controlledEditorOpen, onEditorOpenChange, editorRatio: controlledRatio, onRatioChange,
 }: {
   className?: string
   toolbar?: React.ReactNode
   editor: React.ReactNode | ((visible: boolean) => React.ReactNode)
   result: React.ReactNode
   rail?: React.ReactNode
+  resultKey?: string
   resultOpen?: boolean
   onResultOpenChange?(open: boolean): void
   editorOpen?: boolean
@@ -29,6 +30,12 @@ export function ExecutionWorkbench({ className = '', toolbar, editor, result, ra
   const editorOpen = controlledEditorOpen ?? localEditorOpen
   const ratio = controlledRatio ?? localRatio
   const setResultOpen = (next: boolean) => { onResultOpenChange?.(next); if (controlledResultOpen === undefined) setLocalResultOpen(next) }
+  const seenResult = useRef<string>()
+  useEffect(() => {
+    if (!resultKey || resultKey === seenResult.current) return
+    seenResult.current = resultKey
+    setResultOpen(true)
+  }, [resultKey])
   const setEditorOpen = (next: boolean) => { onEditorOpenChange?.(next); if (controlledEditorOpen === undefined) setLocalEditorOpen(next) }
   const setRatio = (next: number) => {
     const available = Math.max(0, (splitRef.current?.clientHeight || splitHeight) - SQL_PANE_GUTTER)

@@ -1,6 +1,7 @@
+import { emptyExecutionDocument, updateExecutionDocument, controlExecutionDocument } from '../src/shared/execution-document.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applySharedQueryPatch, catalogSchemaName, coerceVisibleSchemas, composeTableSelect, dedupeSqlTemplates, emptySharedQuery, isAbortError, keepResultOnFailure, preferredCatalogRoot, queryTabNeedsCloseConfirm, returnSharedQueryControl, sanitizeConnectionWorkbench, schemaCatalogChildren, schemaNameListed, sharedQuerySurface, shouldMarkConnectionOffline, visibleCatalogChildren } from '../src/shared/workbench.ts'
+import { catalogSchemaName, coerceVisibleSchemas, composeTableSelect, dedupeSqlTemplates, emptySharedQuery, isAbortError, keepResultOnFailure, preferredCatalogRoot, queryTabNeedsCloseConfirm, sanitizeConnectionWorkbench, schemaCatalogChildren, schemaNameListed, sharedQuerySurface, shouldMarkConnectionOffline, visibleCatalogChildren } from '../src/shared/workbench.ts'
 import { catalogFilterCopy, sqlCatalogFilterCopy } from '../src/client/workspace/shell/catalog-filter-copy.ts'
 import { catalogStatement } from '../src/host/catalog.mjs'
 
@@ -61,21 +62,15 @@ test('workbench snapshots drop result grids and cap sql drafts', () => {
   assert.equal(Object.hasOwn(collab, 'aiCollab'), false)
 })
 
-test('shared query patch takes user control and rejects stale AI writes', () => {
-  const start = emptySharedQuery()
-  const user = applySharedQueryPatch(start, { sql: 'SELECT 1' }, 'user')
-  assert.equal(user.controller, 'user')
-  assert.equal(user.revision, 2)
-  assert.throws(() => applySharedQueryPatch(user, { sql: 'SELECT 2' }, 'ai', user.revision), /用户已接管/)
-  const returned = returnSharedQueryControl(user)
-  assert.equal(returned.controller, 'ai')
-  assert.equal(returned.revision, user.revision + 1)
-  const written = applySharedQueryPatch(returned, { sql: 'SELECT 3' }, 'ai', returned.revision)
-  assert.equal(written.sql, 'SELECT 3')
-  assert.throws(() => applySharedQueryPatch(written, { sql: 'SELECT 4' }, 'ai', returned.revision), /已变化/)
-  const system = applySharedQueryPatch(written, { lastRun: { columns: ['id'], rowCount: 1, truncated: false, elapsedMs: 2, at: 't' } }, 'system')
-  assert.equal(system.revision, written.revision)
-  assert.equal(system.controller, 'ai')
+test('document edits take control and reject stale AI writes', () => {
+  const start = emptyExecutionDocument('mysql')
+  const user = updateExecutionDocument(start, 'SELECT 1', 'user', start.revision)
+  assert.equal(user.controller, 'user'); assert.equal(user.revision, 2)
+  assert.throws(() => updateExecutionDocument(user, 'SELECT 2', 'ai', user.revision), /用户已接管/)
+  const returned = controlExecutionDocument(user, 'ai')
+  const written = updateExecutionDocument(returned, 'SELECT 3', 'ai', returned.revision)
+  assert.equal(written.text, 'SELECT 3')
+  assert.throws(() => updateExecutionDocument(written, 'SELECT 4', 'ai', returned.revision), /已变化/)
 })
 
 test('sharedQuerySurface treats count/exists probes as verify unless purpose=result', () => {

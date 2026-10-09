@@ -33,6 +33,7 @@ const defaultActions: SqlQueryActions = {
 
 export type SqlRunWorkspaceAiProps = {
   controller: 'ai' | 'user'
+  pending?: 'ai' | 'user'
   connectionName: string
   target: string
   onTakeover(): void
@@ -70,7 +71,7 @@ export function SqlRunWorkspace({
   ai,
   editorExtra,
   resultFrame,
-  resultOpen: controlledOpen,
+  resultOpen: controlledOpen, resultKey,
   onResultOpenChange,
   editorOpen: controlledEditorOpen,
   onEditorOpenChange,
@@ -106,6 +107,7 @@ export function SqlRunWorkspace({
   ai?: SqlRunWorkspaceAiProps
   editorExtra?: React.ReactNode
   resultFrame: React.ReactElement
+  resultKey?: string
   resultOpen?: boolean
   onResultOpenChange?(open: boolean): void
   editorOpen?: boolean
@@ -146,11 +148,12 @@ export function SqlRunWorkspace({
     {actions.clear && <button type="button" className="db-sql-toolbar-btn" disabled={busy || !sql} onClick={handleClear}>清空</button>}
     {actions.applyToQuery && onApply && <button type="button" className="db-sql-toolbar-btn" onClick={onApply}>复制到当前查询</button>}
     {toolbarExtra}
-    {actions.ai && ai && <AiControlBar controller={ai.controller} connectionName={ai.connectionName} target={ai.target} onTakeover={ai.onTakeover} onReturnAi={ai.onReturnAi} />}
+    {actions.ai && ai && <AiControlBar pending={ai.pending} controller={ai.controller} connectionName={ai.connectionName} target={ai.target} onTakeover={ai.onTakeover} onReturnAi={ai.onReturnAi} />}
     {toolbarEnd}
   </div>
   return <ExecutionWorkbench
     className={className}
+    resultKey={resultKey}
     toolbar={toolbar}
     editor={visible => <><div className="db-sql-editor"><SqlEditor value={sql} dialect={connection.dialect} schema={schema} connection={connection} cache={cache} visible={visible} onChange={onChange} onSelectionChange={onSelectionChange} onCursorChange={onCursorChange} onRun={(text, mode) => onRun?.(text, mode ?? (text?.trim() ? 'current' : 'all'))} onSave={onSave} /></div>{editorExtra}</>}
     result={resultFrame}

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createExplorerRegistry, ExplorerService } from '../src/host/explorer-service.ts'
+import { createExplorerRegistry } from './helpers/source-registries.ts'
+import { ExplorerService } from '../src/host/explorer-service.ts'
 
 test('a test-only object provider can register without changing the common explorer', () => {
   const mock = { id: 'mock-source', list: async () => ({ sourceId: 'mock-source', nodes: [], complete: true }), read: async () => ({ title: 'item' }) }

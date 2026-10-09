@@ -7,27 +7,50 @@ import mysql from 'mysql2/promise'
 import oracle from 'oracledb'
 import { installedDdl } from './installed-ddl.mjs'
 import { installedAi } from './installed-ai.mjs'
+import { installedSqlText } from './installed-sql-text.mjs'
 import { dismissHarnessOnboarding } from './harness-onboarding.mjs'
+import { existingTestContainer, requiredTestSecret, reuseTestEnvironment } from './existing-test-environment.mjs'
 const exec = promisify(execFile)
 const docker = async (args, env) => (await exec('docker', args, { env: env || process.env, windowsHide: true, timeout: 30000, maxBuffer: 1048576 })).stdout.trim()
 
 /** Runs only against a new owned container. Credentials travel through memory into the real host API. */
 export async function installedBusiness(page, sessionId, dialect, run) {
-  const token = randomUUID(), password = 'A' + randomBytes(20).toString('hex'), label = 'dsh.database.acceptance'
-  let id, db, stage = 'start disposable fixture'
+  const token = randomUUID(), label = 'dsh.database.acceptance', reuse = reuseTestEnvironment()
+  // Oracle 19c accepts this unquoted test password within its 30-character identifier limit.
+  let password = 'A' + randomBytes(12).toString('hex')
+  let id, db, fixtureAdmin, removePluginConnection, createdNamespace = false, stage = reuse ? 'reuse existing test instance' : 'start disposable fixture'
+  let port, service = 'FREEPDB1'
+  const schema = reuse ? `DSH_WEB_${token.replaceAll('-', '').slice(0, 12).toUpperCase()}` : dialect === 'mysql' ? 'business' : 'BUSINESS'
   try {
     const image = dialect === 'mysql' ? 'mysql:8.4.5' : 'gvenzl/oracle-free:23.26.2-slim', internal = dialect === 'mysql' ? 3306 : 1521
     const args = ['run', '--detach', '--label', `${label}=${token}`, '--publish', `127.0.0.1::${internal}`, '--memory', dialect === 'mysql' ? '768m' : '3g']
     if (dialect === 'mysql') args.push('--tmpfs', '/var/lib/mysql:rw,size=512m', '--env', 'MYSQL_ROOT_PASSWORD', '--env', 'MYSQL_DATABASE=business', image, '--innodb-buffer-pool-size=64M')
     else args.push('--shm-size', '1g', '--env', 'ORACLE_PASSWORD', '--env', 'APP_USER=BUSINESS', '--env', 'APP_USER_PASSWORD', image)
-    id = await docker(args, { ...process.env, MYSQL_ROOT_PASSWORD: password, ORACLE_PASSWORD: password, APP_USER_PASSWORD: password }); assert.match(id, /^[a-f0-9]{64}$/)
-    const port = Number((await docker(['port', id, `${internal}/tcp`])).match(/127\.0\.0\.1:(\d+)/)?.[1]); assert.ok(port)
+    if (reuse) {
+      const existing = await existingTestContainer(dialect === 'mysql' ? 'mysql8' : 'oracle19', internal)
+      port = existing.port
+      if (dialect === 'mysql') {
+        password = requiredTestSecret('DSH_TEST_MYSQL_PASSWORD')
+        fixtureAdmin = await mysql.createConnection({ host: '127.0.0.1', port, user: 'root', password })
+        await fixtureAdmin.query(`CREATE DATABASE \`${schema}\``)
+      } else {
+        service = process.env.DSH_TEST_ORACLE_SERVICE || 'orclpdb1'
+        fixtureAdmin = await oracle.getConnection({ user: 'SYS', password: requiredTestSecret('DSH_TEST_ORACLE_PASSWORD'),
+          connectString: `127.0.0.1:${port}/${service}`, privilege: oracle.SYSDBA })
+        await fixtureAdmin.execute(`CREATE USER ${schema} IDENTIFIED BY ${password} DEFAULT TABLESPACE USERS QUOTA UNLIMITED ON USERS`)
+      }
+      createdNamespace = true
+      if (dialect === 'oracle') await fixtureAdmin.execute(`GRANT CREATE SESSION, CREATE TABLE, CREATE VIEW, CREATE SEQUENCE, CREATE PROCEDURE, CREATE TRIGGER TO ${schema}`)
+    } else {
+      id = await docker(args, { ...process.env, MYSQL_ROOT_PASSWORD: password, ORACLE_PASSWORD: password, APP_USER_PASSWORD: password }); assert.match(id, /^[a-f0-9]{64}$/)
+      port = Number((await docker(['port', id, `${internal}/tcp`])).match(/127\.0\.0\.1:(\d+)/)?.[1]); assert.ok(port)
+    }
     const deadline = Date.now() + 180000
     while (Date.now() < deadline) {
-      try { db = dialect === 'mysql' ? await mysql.createConnection({ host: '127.0.0.1', port, user: 'root', password, database: 'business', connectTimeout: 1000 }) : await oracle.getConnection({ user: 'BUSINESS', password, connectString: `127.0.0.1:${port}/FREEPDB1`, transportConnectTimeout: 1 }); break } catch { await delay(1000) }
+      try { db = dialect === 'mysql' ? await mysql.createConnection({ host: '127.0.0.1', port, user: 'root', password, database: schema, connectTimeout: 1000 }) : await oracle.getConnection({ user: schema, password, connectString: `127.0.0.1:${port}/${service}`, transportConnectTimeout: 1 }); break } catch { await delay(1000) }
     }
     assert.ok(db, `${dialect} disposable fixture did not start`)
-    const schema = dialect === 'mysql' ? 'business' : 'BUSINESS', table = dialect === 'mysql' ? 'records' : 'RECORDS'
+    const table = dialect === 'mysql' ? 'records' : 'RECORDS'
     if (dialect === 'mysql') {
       await db.query('CREATE TABLE records(id BIGINT PRIMARY KEY,amount DECIMAL(20,4),note VARCHAR(500),CONSTRAINT positive_amount CHECK(amount>0)) ENGINE=InnoDB COMMENT=\'fixture table\'')
       await db.execute('INSERT INTO records VALUES(?,?,?)', ['9007199254740993', '9007199254740993.1234', '{"id":9007199254740993,"note":"<script>no execution</script>"}'])
@@ -36,10 +59,21 @@ export async function installedBusiness(page, sessionId, dialect, run) {
       await db.execute('INSERT INTO records VALUES(TO_NUMBER(:1),TO_NUMBER(:2),:3)', ['9007199254740993', '9007199254740993.1234', '{"id":9007199254740993,"note":"<script>no execution</script>"}'], { autoCommit: true })
     }
     stage = 'installed connection and API'
-    const input = { name: `${dialect} installed acceptance`, dialect, host: '127.0.0.1', port, database: dialect === 'mysql' ? schema : 'FREEPDB1', username: dialect === 'mysql' ? 'root' : 'BUSINESS', password, oracleMode: 'service', environment: 'test' }
+    const input = { name: `${dialect} installed acceptance`, dialect, host: '127.0.0.1', port, database: dialect === 'mysql' ? schema : service, username: dialect === 'mysql' ? 'root' : schema, password, oracleMode: 'service', environment: 'test' }
     const api = body => page.evaluate(async ({ sessionId, body }) => { const response = await fetch('/plugins/database/connections?conversationId=' + encodeURIComponent(sessionId), { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); return { status: response.status, body: await response.json() } }, { sessionId, body })
     const connected = await api({ action: 'connect', input }); assert.equal(connected.status, 200); const connection = connected.body
-    assert.ok(connection.generation); assert.equal(JSON.stringify(connection).includes(password), false)
+    removePluginConnection = () => api({ action: 'remove', id: connection.id })
+    assert.ok(connection.generation)
+    const assertSafeSnapshot = value => {
+      if (!value || typeof value !== 'object') return
+      for (const [key, child] of Object.entries(value)) {
+        assert.ok(!['password', 'caPem', 'protectedPassword', 'protectedCa'].includes(key), 'Snapshot must omit credential fields')
+        assertSafeSnapshot(child)
+      }
+    }
+    assertSafeSnapshot(connection)
+    // Existing test accounts may intentionally use the same username and password.
+    if (password !== input.username) assert.equal(JSON.stringify(connection).includes(password), false)
     const call = (action, input, generation = connection.generation) => api({ action, id: connection.id, generation, input })
     const schemas = await call('catalog', { kind: 'schemas' }); assert.equal(schemas.status, 200); assert.ok(schemas.body.items.some(s => s.name === schema))
     const list = await call('catalog', { kind: 'tables', schema, search: table }); assert.equal(list.status, 200); assert.ok(list.body.items.some(t => t.name === table))
@@ -60,6 +94,28 @@ export async function installedBusiness(page, sessionId, dialect, run) {
     const queried = await call('query', { schema, sql: 'SELECT id,amount,note FROM records' }); assert.equal(queried.status, 200, queried.body.error); assert.deepEqual(queried.body.rows[0].slice(0, 2), ['9007199254740993', '9007199254740993.1234'])
     assert.equal((await call('query', { schema, sql: 'DROP TABLE records' })).status, 400, 'DDL must remain behind maintenance approval')
     assert.equal((await call('catalog', { kind: 'tables', schema }, 'stale-generation')).status, 400)
+    stage = 'installed SQL standard text matrix'
+    if (dialect === 'mysql') {
+      await db.query('CREATE TABLE text_flow(id INT PRIMARY KEY,note VARCHAR(64)) ENGINE=InnoDB')
+      await db.query("INSERT INTO text_flow VALUES(1,'initial')")
+    } else {
+      await db.execute('CREATE TABLE text_flow(id NUMBER PRIMARY KEY,note VARCHAR2(64))')
+      await db.execute("INSERT INTO text_flow VALUES(1,'initial')", [], { autoCommit: true })
+      // Oracle 19c can reject a read-only snapshot immediately after fixture DDL (ORA-01466).
+      // Establish fixture readiness with the raw driver; never retry a product request.
+      const fixtureReadyDeadline = Date.now() + 5000
+      for (;;) {
+        try {
+          await db.execute('SET TRANSACTION READ ONLY')
+          await db.execute('SELECT id FROM text_flow WHERE id=1')
+          break
+        } catch (error) {
+          if (error.errorNum !== 1466 || Date.now() >= fixtureReadyDeadline) throw error
+          await delay(200)
+        } finally { await db.rollback() }
+      }
+    }
+    const textCheck = await installedSqlText({ api, input, originalConnection: connection, schema })
     // Remount the actual plugin after a page reload, then use the object list and SQL tab.
     stage = 'installed workbench UI'
     await page.reload()
@@ -84,15 +140,15 @@ export async function installedBusiness(page, sessionId, dialect, run) {
     assert.ok((await page.locator('.db-cell-detail').innerText()).includes('9007199254740993'))
     assert.equal(await page.locator('.db-cell-detail script').count(), 0)
     stage = 'installed AI execution UI'
-    const aiCheck = await installedAi(page, sessionId, connection)
+    const aiCheck = await installedAi(page, sessionId, connection, schema)
     await page.getByRole('button', { name: 'AI Query', exact: true }).click()
     for (const width of [420, 768, 1200]) { await page.setViewportSize({ width, height: 980 }); await page.screenshot({ path: `${run}/${dialect}-${width}.png` }) }
     await page.setViewportSize({ width: 1440, height: 980 })
     // Complete metadata privileges are required for trigger/cascade qualification.
     // Grant them only to this disposable fixture account after verifying the unavailable-state UI.
     if (dialect === 'oracle') {
-      const admin = await oracle.getConnection({ user: 'SYSTEM', password, connectString: `127.0.0.1:${port}/FREEPDB1` })
-      try { await admin.execute('GRANT SELECT ANY DICTIONARY TO BUSINESS') } finally { await admin.close() }
+      const admin = fixtureAdmin || await oracle.getConnection({ user: 'SYSTEM', password, connectString: `127.0.0.1:${port}/${service}` })
+      try { await admin.execute(`GRANT SELECT ANY DICTIONARY TO ${schema}`) } finally { if (!fixtureAdmin) await admin.close() }
     }
     stage = 'installed maintenance API and UI'
     const maintenance = data => call('maintenance', data)
@@ -122,7 +178,7 @@ export async function installedBusiness(page, sessionId, dialect, run) {
     const replacement = await api({ action: 'update', id: connection.id, input }); assert.equal(replacement.status, 200); assert.notEqual(replacement.body.generation, connection.generation)
     assert.equal((await call('query', { schema, sql: 'SELECT id FROM records' })).status, 400)
     assert.equal((await api({ action: 'remove', id: connection.id })).status, 200)
-    return `${dialect}: installed tgz host API and UI verified catalog, object home open table, columns pane, SQL tab execute, exact numbers, JSON cell preview, AI execution tab, stale generation, connection edit/delete, DML insert/update/delete/conflict rollback/single-use approval, DDL create/add/index/comment/partial failure/truncate/drop${dialect === 'mysql' ? '/lock wait' : ''}, 420/768/1200 screenshots; disposable fixture only; ${aiCheck}`
+    return `${dialect}: installed tgz host API and UI verified catalog, object home open table, columns pane, SQL tab execute, exact numbers, JSON cell preview, AI execution tab, stale generation, connection edit/delete, DML insert/update/delete/conflict rollback/single-use approval, DDL create/add/index/comment/partial failure/truncate/drop${dialect === 'mysql' ? '/lock wait' : ''}, 420/768/1200 screenshots; ${reuse ? 'existing test instance, isolated run namespace' : 'disposable fixture only'}; ${aiCheck}; ${textCheck}`
   } catch (error) {
     error.acceptanceStage = `${dialect}: ${stage}`
     if (stage === 'installed maintenance API and UI') error.acceptanceDebug = await page.evaluate(() => {
@@ -134,7 +190,17 @@ export async function installedBusiness(page, sessionId, dialect, run) {
     }).catch(() => null)
     throw error
   } finally {
+    await removePluginConnection?.().catch(() => {})
     if (dialect === 'mysql') await db?.end().catch(() => {}); else await db?.close().catch(() => {})
+    if (fixtureAdmin) {
+      try {
+        assert.equal(schema, `DSH_WEB_${token.replaceAll('-', '').slice(0, 12).toUpperCase()}`)
+        if (createdNamespace) {
+          if (dialect === 'mysql') await fixtureAdmin.query(`DROP DATABASE \`${schema}\``)
+          else await fixtureAdmin.execute(`DROP USER ${schema} CASCADE`)
+        }
+      } finally { if (dialect === 'mysql') await fixtureAdmin.end(); else await fixtureAdmin.close() }
+    }
     if (id) { const info = JSON.parse(await docker(['inspect', id]))[0]; assert.equal(info.Id, id); assert.equal(info.Config.Labels[label], token); await docker(['rm', '--force', '--volumes', id]) }
   }
 }

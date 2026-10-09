@@ -9,6 +9,7 @@ export function RedisValueView({ data }: { data: RedisValue | undefined }): Reac
   if (data.type === 'string') return <span>{String(data.value)}</span>
   if (data.type === 'truncated') return <span>… 已截断</span>
   if (data.type === 'error') return <span className="db-redis-error">{String(data.value)}</span>
-  if ('value' in data && Array.isArray(data.value)) return <ol className="db-redis-values">{data.value.map((item, index) => <li key={index}>{Array.isArray(item) ? <><RedisValueView data={item[0]} /> → <RedisValueView data={item[1]} /></> : <RedisValueView data={item} />}</li>)}</ol>
-  return <span>{'value' in data ? String(data.value ?? '') : ''}</span>
+  if (data.type === 'array' || data.type === 'set' || data.type === 'map') return <ol className="db-redis-values">{data.value.map((item, index) => <li key={index}>{Array.isArray(item) ? <><RedisValueView data={item[0]} /> → <RedisValueView data={item[1]} /></> : <RedisValueView data={item} />}</li>)}</ol>
+  const unsupported: never = data.type
+  throw new Error(`无法显示 Redis 结果：${unsupported}`)
 }

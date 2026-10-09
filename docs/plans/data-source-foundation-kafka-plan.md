@@ -610,7 +610,7 @@ S0 开始时新增 `docs/data-source-foundation-progress.md`，逐阶段记录�
 | `knowledge-service.test.mjs`、`knowledge-store.test.mjs`、`sql-templates.test.mjs` | 统一调用、旧模板、历史绑定和版本 |
 | 新增 `kafka-command.test.mjs` | 三类命令、引号、参数重复、offset 精度、拒绝未知操作 |
 | 新增 `kafka-result.test.mjs` | null／空／二进制、Headers、总字节上限、历史不含正文 |
-| 新增 `kafka-worker.test.mjs` | 取消、超时、无提交调用、错误脱敏、资源清理 |
+| 新增 `kafka-worker.test.mjs` | 取消、超时、无提交调用、错误原文、资源清理 |
 | 新增 `kafka-ai.test.mjs` | 身份、控制权、发布文本、限量输出、记录关联 |
 | 新增 `kafka-completion.test.mjs` | 中文帮助、参数位置、接受候选不执行 |
 | `package-runtime-closure.test.mjs` | Kafka Worker 及相对导入完整，客户端／Host 主入口无驱动 |

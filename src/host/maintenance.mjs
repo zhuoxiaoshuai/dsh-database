@@ -143,9 +143,10 @@ export class Maintenance {
       pending.clear()
       return { status: 'success', affectedRows: affected, message: '已提交 1 行变更。' }
     } catch (error) {
-      if (plan.kind !== 'ddl' && !committed) await this.operations.rollback(db).catch(() => {})
+      let rollbackConfirmed = false
+      if (plan.kind !== 'ddl' && !committed) { try { await this.operations.rollback(db); rollbackConfirmed = true } catch { /* retain uncertainty */ } }
       if (commitStarted) return { status: 'unknown', message: '提交阶段连接中断，结果未知。请刷新核验，不要直接重试。' }
-      throw error
+      throw Object.assign(error, { effect: rollbackConfirmed ? 'none' : 'unknown', phase: commitStarted ? 'commit' : 'execute' })
     } finally {
       if (this.#releaseSession) await this.#releaseSession()
       else await this.operations.close(db)

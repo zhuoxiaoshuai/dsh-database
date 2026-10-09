@@ -1,12 +1,12 @@
 import { randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, copyFileSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { rename, rm, writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { databaseWorkspaceRoot } from './dsh-home.ts'
 import type { Result } from '../shared/workbench.ts'
 import {
   canTransition, clipSql, clipResultPreview, clipNarrative, EXECUTION_REASON_MAX, EXECUTION_TITLE_MAX, inferExecutionType, isTerminalStatus, publicExecution, summarizeParams,
-  type ExecutionEventKind, type ExecutionRecord, type ExecutionStatus, type ExecutionType, type WorkbenchEvent,
+  type ExecutionEventKind, type ExecutionRecord, type ExecutionStatus, type ExecutionType, type WorkbenchEvent, type DocumentExecutionIdentity,
 } from '../shared/execution.ts'
 
 const CONVERSATION_CAP = 100
@@ -27,6 +27,29 @@ export class ExecutionStore {
   #flushChain: Promise<void> = Promise.resolve()
   #flushScheduled = false
   #lastText = ''
+  #retryTimer?: ReturnType<typeof setTimeout>
+  #retryAttempt = 0
+  #writing = false
+  #manualRetry?: Promise<{ saved: boolean }>
+  storageDegraded = false
+  get persistenceRetrying(): boolean { return !!this.#retryTimer || !!this.#manualRetry || this.#flushScheduled || this.#writing }
+
+  /** Retries only the latest authoritative memory snapshot, through the original write chain. */
+  retryPersistence(): Promise<{ saved: boolean }> {
+    if (this.#closed) return Promise.reject(new Error('插件已释放。'))
+    if (this.#manualRetry) return this.#manualRetry
+    if (this.#retryTimer) clearTimeout(this.#retryTimer)
+    this.#retryTimer = undefined; this.#retryAttempt = 0
+    this.#lastText = this.#serialize()
+    const task = this.#flushChain.then(async () => {
+      do { await this.#flushAsync() } while (this.#lastText && !this.storageDegraded)
+      return { saved: !this.storageDegraded && !this.#lastText }
+    })
+    this.#flushChain = task.then(() => {})
+    this.#manualRetry = task
+    void task.finally(() => { if (this.#manualRetry === task) this.#manualRetry = undefined; this.#notify() }).catch(() => {})
+    return task
+  }
 
   constructor(directory?: string, persistMode: 'sync' | 'async' = 'sync') {
     const root = databaseWorkspaceRoot(directory)
@@ -58,6 +81,9 @@ export class ExecutionStore {
     type?: ExecutionType
     queryRevision?: number
     executedSql?: string
+    documentText?: string
+    context?: Record<string, string>
+    identity?: DocumentExecutionIdentity
     historyVisible?: boolean
   }): ExecutionRecord {
     if (this.#closed) throw new Error('插件已释放。')
@@ -91,18 +117,25 @@ export class ExecutionStore {
       type: input.type || inferExecutionType(input.operation),
       queryRevision: input.queryRevision,
       executedSql: clipSql(input.executedSql || input.sql),
+      documentText: typeof input.documentText === 'string' ? input.documentText.slice(0, 65536) : undefined,
+      context: input.context ? { ...input.context } : undefined,
+      identity: input.identity ? { ...input.identity, context: { ...input.identity.context } } : undefined,
       historyVisible: input.historyVisible === true,
       revision: 1,
     }
     this.#records.set(record.executionId, record)
     this.#trim()
-    this.#persist()
+    try { this.#persist() } catch (error) { this.#records.delete(record.executionId); throw error }
     this.#notifyConversation(record.conversationId)
     return this.get(record.conversationId, record.executionId)!
   }
 
   attachAbort(executionId: string, controller: AbortController): void {
     this.#controllers.set(executionId, controller)
+  }
+
+  releaseAbort(executionId: string, controller: AbortController): void {
+    if (this.#controllers.get(executionId) === controller) this.#controllers.delete(executionId)
   }
 
   list(conversationId: string): ExecutionRecord[] {
@@ -136,7 +169,7 @@ export class ExecutionStore {
       const type = row.type || inferExecutionType(row.operation)
       return row.connectionId === connectionId
         && (type === 'query' || type === 'write' || type === 'explain')
-        && row.status === 'succeeded'
+        && isTerminalStatus(row.status)
         && (row.resultPersisted || !!row.resultMeta)
     })
     return match ? this.get(conversationId, match.executionId, true) : undefined
@@ -179,11 +212,12 @@ export class ExecutionStore {
     return record
   }
 
-  annotate(executionId: string, patch: { sql?: string; params?: unknown; draft?: Record<string, unknown>; tables?: string[]; title?: string; reason?: string; conclusion?: string; type?: ExecutionType; executedSql?: string }): void {
+  annotate(executionId: string, patch: { identity?: DocumentExecutionIdentity; sql?: string; params?: unknown; draft?: Record<string, unknown>; tables?: string[]; title?: string; reason?: string; conclusion?: string; type?: ExecutionType; executedSql?: string }): void {
     const record = this.#records.get(executionId)
     if (!record) return
     if (patch.sql !== undefined) record.sql = clipSql(patch.sql)
     if (patch.executedSql !== undefined) record.executedSql = clipSql(patch.executedSql)
+    if (patch.identity !== undefined) record.identity = { ...patch.identity, context: { ...patch.identity.context } }
     if (patch.params !== undefined) record.paramSummary = summarizeParams(patch.params)
     if (patch.draft !== undefined) record.draft = patch.draft
     if (patch.tables !== undefined) record.tables = patch.tables.slice(0, 32)
@@ -201,7 +235,14 @@ export class ExecutionStore {
     const record = this.#records.get(executionId)
     if (!record) return
     if (isTerminalStatus(record.status)) {
-      this.event(executionId, 'late-result', '迟到结果已丢弃，未改写终态。')
+      // Cancellation may settle before the Worker returns the already committed batch prefix.
+      // Preserve that receipt without changing the unknown terminal fact.
+      const enriched = record.status === 'unknown' && result?.steps?.some(step => step.status === 'unknown')
+      if (enriched) {
+        const preview = clipResultPreview(result)
+        if (preview) { this.#results.set(executionId, preview); record.resultPreview = preview; record.resultPersisted = true }
+      }
+      this.event(executionId, 'late-result', enriched ? '迟到回执已补充，未知终态保持不变。' : '迟到结果已丢弃，未改写终态。')
       return
     }
     if (result) {
@@ -272,6 +313,7 @@ export class ExecutionStore {
 
   async dispose(): Promise<void> {
     this.#closed = true
+    if (this.#retryTimer) { clearTimeout(this.#retryTimer); this.#retryTimer = undefined }
     for (const record of this.#records.values()) {
       if (isTerminalStatus(record.status)) continue
       this.#controllers.get(record.executionId)?.abort()
@@ -332,7 +374,7 @@ export class ExecutionStore {
           victimTime = keep[i].updatedAt
         }
       }
-      if (victimIdx < 0) break
+      if (victimIdx < 0) { keep.push(active); continue }
       keep[victimIdx] = active
     }
     return keep.map(row => row.executionId)
@@ -353,7 +395,7 @@ export class ExecutionStore {
     if (keep.size > GLOBAL_CAP) {
       const victims = [...keep]
         .map(id => this.#records.get(id))
-        .filter((row): row is ExecutionRecord => !!row)
+        .filter((row): row is ExecutionRecord => !!row && isTerminalStatus(row.status))
         .sort((a, b) => {
           const terminal = Number(isTerminalStatus(b.status)) - Number(isTerminalStatus(a.status))
           return terminal || a.updatedAt.localeCompare(b.updatedAt)
@@ -377,6 +419,11 @@ export class ExecutionStore {
         if (!row || typeof row.executionId !== 'string' || typeof row.conversationId !== 'string') continue
         this.#records.set(row.executionId, {
           ...row,
+          ...(!isTerminalStatus(row.status) ? {
+            status: row.events?.some((event: ExecutionEventKind | { kind?: string }) => typeof event === 'object' && event.kind === 'dispatched') || row.status === 'running' ? 'unknown' : 'cancelled',
+            message: '进程重启，原操作已中断；已派发操作请核验实际结果。',
+            conclusion: '启动恢复：未自动重放。',
+          } : {}),
           sql: clipSql(row.sql),
           events: Array.isArray(row.events) ? row.events.slice(-50) : [],
           resultPreview: clipResultPreview(row.resultPreview),
@@ -384,24 +431,29 @@ export class ExecutionStore {
           historyVisible: row.historyVisible === true,
           title: clipNarrative(row.title, EXECUTION_TITLE_MAX),
           reason: clipNarrative(row.reason, EXECUTION_REASON_MAX),
-          conclusion: clipNarrative(row.conclusion, 200),
+          conclusion: !isTerminalStatus(row.status) ? '启动恢复：未自动重放。' : clipNarrative(row.conclusion, 200),
         })
         if (row.resultPreview) this.#results.set(row.executionId, clipResultPreview(row.resultPreview)!)
       }
       this.#trim()
-    } catch { /* unreadable ledger is ignored */ }
+      if (parsed.records.some((row: ExecutionRecord) => !isTerminalStatus(row.status))) this.#persist()
+    } catch {
+      this.storageDegraded = true
+      if (!existsSync(`${this.#path}.corrupt.bak`)) { try { copyFileSync(this.#path, `${this.#path}.corrupt.bak`) } catch { /* preserve original file */ } }
+    }
   }
 
   #persist(): void {
     // 序列化（含预算裁剪）在调用线程完成；实际写盘按 persistMode 同步执行或排队异步执行
     const text = this.#serialize()
     if (this.#persistMode === 'sync') {
-      this.#writeTempSync(text)
+      try { this.#writeTempSync(text); this.storageDegraded = false }
+      catch (error) { this.storageDegraded = true; throw error }
       return
     }
     // 循环写：写前取最新 text，同刻高频调用只落盘最终状态
     this.#lastText = text
-    if (this.#flushScheduled) return
+    if (this.#flushScheduled || this.#retryTimer) return
     this.#flushScheduled = true
     this.#flushChain = this.#flushChain.then(() => this.#flushAsync())
   }
@@ -409,6 +461,7 @@ export class ExecutionStore {
   #serialize(): string {
     const ordered = [...this.#records.values()].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))
     const dropPreview = new Set<string>()
+    const minimal = new Set<string>()
     const serialize = () => JSON.stringify({
       version: 2,
       records: ordered.map(row => ({
@@ -428,19 +481,23 @@ export class ExecutionStore {
         status: row.status,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
-        sql: row.sql,
+        sql: minimal.has(row.executionId) ? undefined : row.sql,
         paramSummary: row.paramSummary,
         message: row.message,
         resultMeta: row.resultMeta,
         resultPersisted: !dropPreview.has(row.executionId) && !!row.resultPreview,
-        events: row.events,
-        draft: row.draft && { kind: row.draft.kind, schema: row.draft.schema, table: row.draft.table, sql: clipSql(row.draft.sql) },
+        events: minimal.has(row.executionId) ? row.events.filter(event => event.kind === 'dispatched').concat(row.events.slice(-1)) : row.events,
+        draft: !minimal.has(row.executionId) && row.draft ? { kind: row.draft.kind, schema: row.draft.schema, table: row.draft.table, sql: clipSql(row.draft.sql) } : undefined,
         revision: row.revision,
         initiator: row.initiator,
         type: row.type,
         historyVisible: row.historyVisible === true,
         queryRevision: row.queryRevision,
-        executedSql: row.executedSql,
+        executedSql: minimal.has(row.executionId) || row.dialect === 'redis' || row.dialect === 'kafka' ? undefined : row.executedSql,
+        documentText: minimal.has(row.executionId) || row.dialect === 'redis' || row.dialect === 'kafka' ? undefined : row.documentText,
+        context: row.context,
+        // Never retain Redis/Kafka command bodies through the identity envelope.
+        identity: minimal.has(row.executionId) || (row.dialect !== 'mysql' && row.dialect !== 'oracle') ? undefined : row.identity,
         title: row.title,
         reason: row.reason,
         conclusion: row.conclusion,
@@ -463,13 +520,21 @@ export class ExecutionStore {
       }
     }
     while (Buffer.byteLength(text) > FILE_BUDGET && ordered.length) {
-      const oldest = ordered.shift()
-      if (!oldest) break
+      const index = ordered.findIndex(row => isTerminalStatus(row.status))
+      if (index < 0) break
+      const [oldest] = ordered.splice(index, 1)
       this.#records.delete(oldest.executionId)
       this.#results.delete(oldest.executionId)
       text = serialize()
     }
-    if (/protectedPassword|"password"\s*:|dpapi/i.test(text)) throw new Error('执行记录拒绝写入敏感字段。')
+    if (Buffer.byteLength(text) > FILE_BUDGET) {
+      for (const row of ordered) {
+        if (isTerminalStatus(row.status)) continue
+        minimal.add(row.executionId)
+        text = serialize()
+        if (Buffer.byteLength(text) <= FILE_BUDGET) break
+      }
+    }
     return text
   }
 
@@ -486,7 +551,8 @@ export class ExecutionStore {
   async #flushAsync(): Promise<void> {
     this.#flushScheduled = false
     const text = this.#lastText
-    this.#lastText = ''
+    if (!text) return
+    this.#writing = true
     try {
       await mkdir(dirname(this.#path), { recursive: true })
       const temp = `${this.#path}.${randomUUID()}.tmp`
@@ -494,6 +560,20 @@ export class ExecutionStore {
         await writeFile(temp, text, { mode: 0o600, flag: 'wx' })
         await rename(temp, this.#path)
       } finally { await rm(temp, { force: true }) }
-    } catch { /* 磁盘异常时丢弃本次落盘，内存状态不受影响 */ }
+      if (this.#lastText === text) this.#lastText = ''
+      this.storageDegraded = false
+      this.#retryAttempt = 0
+      if (this.#retryTimer) clearTimeout(this.#retryTimer)
+      this.#retryTimer = undefined
+      this.#notify()
+    } catch {
+      this.storageDegraded = true
+      this.#notify()
+      const delay = [1000, 5000, 30000][this.#retryAttempt++]
+      if (!this.#closed && delay !== undefined && !this.#retryTimer) {
+        this.#retryTimer = setTimeout(() => { this.#retryTimer = undefined; this.#flushChain = this.#flushChain.then(() => this.#flushAsync()) }, delay)
+        this.#retryTimer.unref()
+      }
+    } finally { this.#writing = false; this.#notify() }
   }
 }

@@ -1,7 +1,7 @@
 import React from 'react'
 import { mysqlSource } from '../../shared/data-sources/mysql.ts'
 import { mysqlConnectionForm } from '../workspace/connection/connection-form-mysql.tsx'
-import { ActiveConnectionPane } from '../active-connection-pane.tsx'
+import { useSqlWorkspaceBindings } from '../sql/workspace-bindings.tsx'
 import type { ClientSourceModule } from './types.ts'
 import { sqlHistory } from './sql-history.tsx'
 
@@ -11,5 +11,5 @@ const logo = { viewBox: '0 0 128 128', artwork: (
 
 export const mysqlModule: ClientSourceModule = {
   id: 'mysql', descriptor: mysqlSource, connection: mysqlConnectionForm, history: sqlHistory('mysql'), logo,
-  workspace: { mode: 'legacy-sql', render: context => <ActiveConnectionPane {...context} /> },
+  workspace: { mode: 'standard', useBindings: useSqlWorkspaceBindings },
 }

@@ -25,11 +25,7 @@ export type WorkspaceFile = {
   lastActiveId?: string
 }
 
-export const memoryPasswordProtector: PasswordProtector = {
-  available: true,
-  protect: async value => Buffer.from(value, 'utf8').toString('base64'),
-  unprotect: async value => Buffer.from(value, 'base64').toString('utf8'),
-}
+export { memoryPasswordProtector } from '../password-protector.ts'
 
 function workspaceRoot(directory?: string) {
   return databaseWorkspaceRoot(directory)
@@ -175,6 +171,10 @@ export function uniqueCopyName(name: string, taken: Iterable<string>, max = 80):
 
 export function publicConnection(row: StoredDatabaseConnection, live?: Connection, workbench?: ConnectionWorkbench): Connection {
   const merged: ConnectionWorkbench = { ...workbench }
+  if (merged.aiDocument && (merged.aiDocument.sourceId === 'mysql' || merged.aiDocument.sourceId === 'oracle')) {
+    const document = merged.aiDocument
+    merged.sharedQuery = { sql: document.text, schema: document.context.schema || '', revision: document.revision, controller: document.controller, controllerReason: document.controllerReason }
+  }
   if (row.visibleSchemas?.length) merged.visibleSchemas = row.visibleSchemas
   else delete merged.visibleSchemas
   return {

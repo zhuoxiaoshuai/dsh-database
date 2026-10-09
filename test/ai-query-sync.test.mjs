@@ -1,35 +1,21 @@
+import { emptyExecutionDocument, updateExecutionDocument, controlExecutionDocument } from '../src/shared/execution-document.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { applyExecutionResult, applyQueryChanged, displayFromLatest, displayMatchingEditor, hydrateSharedQuery, keepHydratedDisplay } from '../src/shared/query-sync.ts'
-import { emptySharedQuery, takeSharedQueryControl } from '../src/shared/workbench.ts'
+import { applyExecutionResult as applyResult, displayFromLatest as recoverResult, displayMatchingEditor as matchingEditor, keepHydratedDisplay as keepDisplay } from '../src/shared/query-sync.ts'
+import { emptySharedQuery } from '../src/shared/workbench.ts'
 import { inferExecutionType, isDisplayHistoryExecution, historyItemsForConnection } from '../src/shared/execution.ts'
 import { isLegacyRedisHistoryExecution } from '../src/client/redis/history.ts'
 
+// Existing behavior fixtures now include the execution identity required by production.
+const identified = value => value && ({ generation: 'g1', schema: '', initiator: 'ai',
+  documentText: (value.executedSql || '').replace(/^EXPLAIN\s+/i, ''), ...value })
+const applyExecutionResult = (current, event, owner) => applyResult(identified(current), identified(event), { generation: 'g1', schema: '', ...owner })
+const displayMatchingEditor = (value, sql) => matchingEditor(identified(value), sql)
+const keepHydratedDisplay = (current, next, sql) => keepDisplay(identified(current), identified(next), sql)
+const displayFromLatest = (id, query, latest, generation = 'g1') =>
+  recoverResult(id, query, latest && { ...identified(latest), initiator: latest.initiator || query.controller }, generation)
+
 const query = (overrides = {}) => ({ ...emptySharedQuery(), sql: 'SELECT A', revision: 2, controller: 'ai', ...overrides })
-
-test('QUERY_CHANGED applies newer revision for the current connection', () => {
-  const next = applyQueryChanged(query(), {
-    type: 'QUERY_CHANGED', connectionId: 'a', queryRevision: 3, sql: 'SELECT B', controller: 'ai',
-  }, { connectionId: 'a' })
-  assert.equal(next?.sql, 'SELECT B')
-  assert.equal(next?.revision, 3)
-})
-
-test('QUERY_CHANGED ignores other connections and stale revisions', () => {
-  assert.equal(applyQueryChanged(query(), {
-    type: 'QUERY_CHANGED', connectionId: 'b', queryRevision: 9, sql: 'SELECT X', controller: 'ai',
-  }, { connectionId: 'a' }), undefined)
-  assert.equal(applyQueryChanged(query({ revision: 5 }), {
-    type: 'QUERY_CHANGED', connectionId: 'a', queryRevision: 4, sql: 'SELECT OLD', controller: 'ai',
-  }, { connectionId: 'a' }), undefined)
-})
-
-test('local user editing blocks AI QUERY_CHANGED', () => {
-  const next = applyQueryChanged(query({ controller: 'user', sql: 'SELECT B', revision: 4 }), {
-    type: 'QUERY_CHANGED', connectionId: 'a', queryRevision: 5, sql: 'SELECT A', controller: 'ai',
-  }, { connectionId: 'a', localEditing: true })
-  assert.equal(next, undefined)
-})
 
 test('AI result cannot overwrite the current grid after user takeover', () => {
   const kept = applyExecutionResult(undefined, {
@@ -48,37 +34,21 @@ test('matching finished execution becomes DisplayResult', () => {
   assert.equal(shown?.result.rows[0][0], '1')
 })
 
-test('FINISHED still displays when queryRevision drifted after authorize rewrite', () => {
+test('FINISHED with an obsolete revision cannot replace the current result', () => {
   const shown = applyExecutionResult(undefined, {
     type: 'EXECUTION_FINISHED', connectionId: 'a', executionId: 'e1', initiator: 'ai',
     queryRevision: 18, executedSql: 'SELECT id FROM records', result: { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 },
   }, { connectionId: 'a', controller: 'ai', sql: 'SELECT id FROM records', queryRevision: 19 })
-  assert.equal(shown?.executionId, 'e1')
-  assert.equal(shown?.result.rows[0][0], '1')
+  assert.equal(shown, undefined)
 })
 
 test('AI explain result is kept when editor still has the inner SELECT', () => {
   const shown = applyExecutionResult(undefined, {
     type: 'EXECUTION_FINISHED', connectionId: 'a', executionId: 'e1', initiator: 'ai', kind: 'explain',
-    executedSql: 'EXPLAIN SELECT A', result: { columns: ['plan'], rows: [['idx']], truncated: false, elapsedMs: 1 },
+    queryRevision: 2, executedSql: 'EXPLAIN SELECT A', result: { columns: ['plan'], rows: [['idx']], truncated: false, elapsedMs: 1 },
   }, { connectionId: 'a', controller: 'ai', sql: 'SELECT A', queryRevision: 2 })
   assert.equal(shown?.kind, 'explain')
   assert.equal(shown?.result.rows[0][0], 'idx')
-})
-
-test('QUERY_CHANGED merges schema', () => {
-  const next = applyQueryChanged(query({ schema: 'old' }), {
-    type: 'QUERY_CHANGED', connectionId: 'a', queryRevision: 3, sql: 'SELECT B', controller: 'ai', schema: 'app',
-  }, { connectionId: 'a' })
-  assert.equal(next?.schema, 'app')
-})
-
-test('hydrate keeps local SQL while the user is editing', () => {
-  const local = query({ controller: 'user', sql: 'SELECT B', revision: 4 })
-  const remote = query({ controller: 'ai', sql: 'SELECT A', revision: 9, schema: 'app' })
-  const merged = hydrateSharedQuery(local, remote, { connectionId: 'a', localEditing: true })
-  assert.equal(merged.sql, 'SELECT B')
-  assert.equal(merged.revision, 4)
 })
 
 test('stale AI result is dropped when the editor already has a newer SQL', () => {
@@ -133,7 +103,7 @@ test('hydrate does not replace a live grid with an empty latest', () => {
 
 test('failed execution uses the host error message', () => {
   const shown = applyExecutionResult(undefined, {
-    type: 'EXECUTION_FAILED', connectionId: 'a', executionId: 'e2', initiator: 'ai', executedSql: 'SELECT A', message: '语法错误',
+    type: 'EXECUTION_FAILED', connectionId: 'a', executionId: 'e2', initiator: 'ai', queryRevision: 2, executedSql: 'SELECT A', message: '语法错误',
   }, { connectionId: 'a', controller: 'ai', sql: 'SELECT A', queryRevision: 2 })
   assert.equal(shown?.result.message, '语法错误')
 })
@@ -141,18 +111,10 @@ test('failed execution uses the host error message', () => {
 test('hydrate latest requires matching connection, sql for user control, and generation', () => {
   const shared = query({ sql: 'SELECT A', revision: 2 })
   assert.ok(displayFromLatest('a', shared, { executionId: 'e', connectionId: 'a', queryRevision: 2, executedSql: 'SELECT A', type: 'query', result: { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 } }))
-  assert.ok(displayFromLatest('a', shared, { executionId: 'e', connectionId: 'a', queryRevision: 1, executedSql: 'SELECT A', type: 'query', result: { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 } }))
+  assert.equal(displayFromLatest('a', shared, { executionId: 'e', connectionId: 'a', queryRevision: 1, executedSql: 'SELECT A', type: 'query', result: { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 } }), undefined)
   assert.equal(displayFromLatest('a', shared, { executionId: 'e', connectionId: 'b', queryRevision: 2, executedSql: 'SELECT A', type: 'query', result: { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 } }), undefined)
   assert.equal(displayFromLatest('a', query({ controller: 'user', sql: 'SELECT B', revision: 3 }), { executionId: 'e', connectionId: 'a', queryRevision: 2, executedSql: 'SELECT A', type: 'query', result: { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 } }), undefined)
   assert.equal(displayFromLatest('a', shared, { executionId: 'e', connectionId: 'a', queryRevision: 2, executedSql: 'SELECT A', type: 'query', result: { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 }, generation: 'old' }, 'new'), undefined)
-})
-
-test('CONTROL_CHANGED merges controller without requiring newer sql', () => {
-  const next = applyQueryChanged(query(), {
-    type: 'CONTROL_CHANGED', connectionId: 'a', queryRevision: 3, sql: 'SELECT A', controller: 'user',
-  }, { connectionId: 'a' })
-  assert.equal(next?.controller, 'user')
-  assert.equal(next?.sql, 'SELECT A')
 })
 
 test('verify-like executions are not display history', () => {
@@ -182,8 +144,29 @@ test('Redis history lists AI ops only', () => {
 })
 
 test('explicit takeover changes controller without requiring a SQL edit', () => {
-  const next = takeSharedQueryControl(emptySharedQuery())
+  const next = controlExecutionDocument(emptyExecutionDocument('mysql'), 'user')
   assert.equal(next.controller, 'user')
   assert.equal(next.controllerReason, 'user-takeover')
   assert.equal(next.revision, 2)
+})
+test('legacy results without complete identity stay in history, not the current editor', () => {
+  const latest = { executionId: 'legacy', connectionId: 'a', queryRevision: 2, executedSql: 'SELECT A',
+    type: 'query', result: { columns: [], rows: [], truncated: false, elapsedMs: 1 } }
+  assert.equal(recoverResult('a', query(), latest, 'g1'), undefined)
+  assert.equal(applyResult(undefined, { ...latest, type: 'EXECUTION_FINISHED' },
+    { connectionId: 'a', generation: 'g1', schema: '', controller: 'ai', sql: 'SELECT A', queryRevision: 2 }), undefined)
+})
+
+test('selection live and recovery use the full document, never substring ownership', () => {
+  const owner = { connectionId: 'a', generation: 'g1', schema: 'app', controller: 'user', sql: 'SELECT 1; SELECT 2', queryRevision: 4 }
+  const result = { columns: ['n'], rows: [['2']], truncated: false, elapsedMs: 1 }
+  const execution = { executionId: 'selected', connectionId: 'a', generation: 'g1', schema: 'app', initiator: 'user',
+    queryRevision: 4, executedSql: 'SELECT 2', documentText: owner.sql, result }
+  const live = applyResult(undefined, { ...execution, type: 'EXECUTION_FINISHED' }, owner)
+  const recovered = recoverResult('a', { sql: owner.sql, schema: owner.schema, revision: 4, controller: 'user' }, { ...execution, type: 'query' }, 'g1')
+  assert.deepEqual(live, recovered)
+  for (const patch of [{ documentText: 'SELECT 2' }, { schema: 'other' }, { generation: 'g2' }, { queryRevision: 5 }, { documentText: undefined }]) {
+    assert.equal(applyResult(undefined, { ...execution, ...patch, type: 'EXECUTION_FAILED' }, owner), undefined)
+    assert.equal(recoverResult('a', { sql: owner.sql, schema: owner.schema, revision: 4, controller: 'user' }, { ...execution, ...patch, type: 'query' }, 'g1'), undefined)
+  }
 })

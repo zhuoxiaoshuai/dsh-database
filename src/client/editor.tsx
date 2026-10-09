@@ -10,7 +10,7 @@ import type { Connection, Dialect, SqlDialect } from '../shared/workbench.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { createEditorCompletionRefresh, createSqlCompletionSource, opensTableSlot } from './sql/completion/source.ts'
 import { createCompletionInteraction } from './completion/interaction.ts'
-import { useEditorHost } from './workspace/source/editor-host.ts'
+import { hasUserTextChange, useEditorHost } from './workspace/source/editor-host.ts'
 import { clientWorkspaceDescriptor } from '../shared/data-sources/registry.ts'
 
 function dialectSupport(dialect: Dialect) {
@@ -37,7 +37,7 @@ export function SqlEditor(props: {
   const refreshCompletions = useRef(createEditorCompletionRefresh())
   const { root, view, current } = useEditorHost(props, current => {
     const source = createSqlCompletionSource(() => current.current)
-    const interaction = createCompletionInteraction(source, { activateOnCompletion: completion => opensTableSlot(completion.label) })
+    const interaction = createCompletionInteraction(source, { onClose: editor => refreshCompletions.current.dismiss(editor), activateOnCompletion: completion => opensTableSlot(completion.label) })
     return { extensions: [
       lineNumbers(), history(), drawSelection(), ...interaction.extensions, syntaxHighlighting(HighlightStyle.define([
         { tag: tags.keyword, color: 'var(--db-sql-keyword)' },
@@ -65,8 +65,9 @@ export function SqlEditor(props: {
       ]),
       EditorView.contentAttributes.of({ 'aria-label': 'SQL 编辑器', 'spellcheck': 'false' }),
       EditorView.updateListener.of(update => {
-        if (update.docChanged) current.current.onChange(update.state.doc.toString())
+        if (hasUserTextChange(update)) current.current.onChange(update.state.doc.toString())
         if (update.docChanged || update.selectionSet) {
+          refreshCompletions.current.observe(update.view, current.current)
           const text = update.state.sliceDoc(update.state.selection.main.from, update.state.selection.main.to)
           current.current.onSelectionChange?.(text)
           current.current.onCursorChange?.(update.state.selection.main.head)

@@ -4,7 +4,7 @@ import { EditorView, keymap } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
 import { closeCompletion, completionStatus, startCompletion, type CompletionSource } from '@codemirror/autocomplete'
 import { createCompletionInteraction } from '../completion/interaction.ts'
-import { useEditorHost } from '../workspace/source/editor-host.ts'
+import { hasUserTextChange, useEditorHost } from '../workspace/source/editor-host.ts'
 import { createRedisCompletionSource, redisKeySlot, redisRemoteKeyCompletion } from './completion.ts'
 import type { RedisKeySuggestResult } from '../../shared/redis-result.ts'
 
@@ -55,7 +55,7 @@ export function RedisCommandEditor(props: {
         ]),
         EditorView.contentAttributes.of({ 'aria-label': 'Redis 命令', 'spellcheck': 'false' }),
         EditorView.updateListener.of(update => {
-          if (update.docChanged) current.current.onChange(update.state.doc.toString())
+          if (hasUserTextChange(update)) current.current.onChange(update.state.doc.toString())
           if (update.docChanged || update.selectionSet) current.current.onCursorChange(update.state.selection.main.head)
         }),
       ], dispose: () => { for (const controller of pending.current) controller.abort(); interaction.dispose() } }

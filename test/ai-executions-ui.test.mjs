@@ -1,8 +1,9 @@
+import { emptyExecutionDocument, updateExecutionDocument, controlExecutionDocument } from '../src/shared/execution-document.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { EXECUTION_STATUS_LABELS, executionChain, executionChainNewestFirst, executionConclusion, executionLocalDayLabel, executionOutcomeSummary, executionTitle, groupExecutionsByLocalDay, inferExecutionType, isTerminalStatus } from '../src/shared/execution.ts'
 import { DATABASE_OPERATIONS } from '../src/shared/database-actions.ts'
-import { applySharedQueryPatch, emptySharedQuery } from '../src/shared/workbench.ts'
+import { emptySharedQuery } from '../src/shared/workbench.ts'
 import { structureStatusLabel } from '../src/shared/structure-outcome.ts'
 
 test('AI execution labels and terminal states match the plugin UI contract', () => {
@@ -121,9 +122,9 @@ test('step chain display puts newest execution first without changing executionC
 })
 
 test('writing sql from execution detail takes user control of shared query', () => {
-  const start = emptySharedQuery()
-  const next = applySharedQueryPatch(start, { sql: 'SELECT 1', schema: 'app' }, 'user')
+  const start = emptyExecutionDocument('mysql')
+  const next = updateExecutionDocument(start, 'SELECT 1', 'user', start.revision, { schema: 'app' })
   assert.equal(next.controller, 'user')
-  assert.equal(next.sql, 'SELECT 1')
-  assert.throws(() => applySharedQueryPatch(next, { sql: 'SELECT 2' }, 'ai', next.revision), /用户已接管/)
+  assert.equal(next.text, 'SELECT 1')
+  assert.throws(() => updateExecutionDocument(next, 'SELECT 2', 'ai', next.revision), /用户已接管/)
 })

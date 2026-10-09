@@ -20,6 +20,11 @@ await build({
     let knowledge = []
     const bridge = {
       mode: 'host', connections: [connection], tables: () => [], execute: async () => { throw new Error('unsupported') },
+      executeText: async (_connection, text, context) => {
+        if (context.database !== '0') throw new Error('fixture execution target changed')
+        document.body.dataset.textExecutionCalls = String(Number(document.body.dataset.textExecutionCalls || '0') + 1)
+        return { result: { type: 'string', value: 'PONG' }, elapsedMs: 3 }
+      },
       explorer: async (_connection, action, input) => {
         document.body.dataset.explorerCalls = String(Number(document.body.dataset.explorerCalls || '0') + 1)
         if (action === 'list') return { sourceId: 'redis', nodes: ['sample:key', 'command'].map(title => ({ ref: 'key:' + encodeURIComponent(title), title, kind: 'key', hasChildren: false })), complete: true }
@@ -109,3 +114,4 @@ try {
   console.log(JSON.stringify({ status: 'PASS', checks: ['Redis explorer', 'Redis command', 'AI Query', 'knowledge save', 'shared tabs', 'SQL template connection binding'], pageErrors: errors }))
 } finally { await page.close(); await browser.close(); await new Promise(resolve => server.close(resolve)) }
 await import('./source-module-ui-acceptance.mjs')
+await import('./redis-read-ui-acceptance.mjs')

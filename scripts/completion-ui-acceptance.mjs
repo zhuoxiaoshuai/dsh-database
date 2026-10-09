@@ -8,6 +8,9 @@ import { chromium } from 'playwright'
 const fixture = `
   import React, { useState } from 'react'
   import { createRoot } from 'react-dom/client'
+  import { EditorView } from '@codemirror/view'
+  import { completionStatus, currentCompletions, selectedCompletionIndex } from '@codemirror/autocomplete'
+  window.completionProbe = () => { const view = EditorView.findFromDOM(document.querySelector('.cm-editor')); return { composing: view.composing, focused: view.hasFocus, status: completionStatus(view.state), selected: selectedCompletionIndex(view.state), options: currentCompletions(view.state).map(item => item.label) } }
   import { SqlEditor } from './src/client/editor.tsx'
   import { SchemaCache } from './src/client/schema/schema-cache.ts'
   import { RedisCommandEditor } from './src/client/redis/command-editor.tsx'
@@ -15,9 +18,10 @@ const fixture = `
 
   const cache = new SchemaCache(async (_connection, request) => {
     await new Promise(resolve => setTimeout(resolve, 80))
-    if (request.kind === 'tables') return { items: [{ name: 'users', kind: 'BASE TABLE' }, { name: 'orders', kind: 'BASE TABLE' }], more: false, collectedAt: '', source: 'fixture' }
-    return { columns: [{ name: 'id', type: 'integer' }, { name: 'username', type: 'varchar' }], primaryKeys: ['id'], collectedAt: '', source: 'fixture' }
-  }, { emitCoalesceMs: 0, schedule: task => task() })
+    if (request.kind === 'tables') return { items: [{ name: 'users', kind: 'BASE TABLE' }, { name: 'user_stats', kind: 'BASE TABLE' }, { name: 'orders', kind: 'BASE TABLE' }, { name: '用户', kind: 'BASE TABLE', comment: '客户资料' }, { name: 'cold_names', kind: 'BASE TABLE' }, { name: 'cold_closed', kind: 'BASE TABLE' }], more: false, collectedAt: '', source: 'fixture' }
+    if (request.table?.startsWith('cold_')) await new Promise(resolve => { window[request.table] = resolve })
+    return { columns: [{ name: '姓名', type: 'varchar', comment: '客户名称' }, { name: 'name', type: 'varchar' }, { name: 'id', type: 'integer' }, { name: 'username', type: 'varchar' }], primaryKeys: ['id'], collectedAt: '', source: 'fixture' }
+  }, { emitCoalesceMs: 0, prewarmTableLimit: 0, schedule: task => task() })
   const redisKeys = ['cache:local', 'space key']
 
   function App() {
@@ -73,6 +77,11 @@ try {
       console.error('completion debug', dialect, await editor.textContent(), await page.locator('.cm-tooltip').allTextContents(), errors)
       throw error
     })
+    await page.waitForFunction(() => window.completionProbe().status === 'active')
+    const firstSelection = await page.evaluate(() => window.completionProbe().selected)
+    await page.keyboard.press('ArrowDown')
+    assert.notEqual(await page.evaluate(() => window.completionProbe().selected), firstSelection)
+    await page.keyboard.press('ArrowUp')
     await page.keyboard.press('Enter')
     assert.match(await editor.textContent(), /FROM users/)
     await editor.click()
@@ -96,6 +105,30 @@ try {
     await option.waitFor({ state: 'hidden' })
   }
   await page.getByLabel('数据库类型').selectOption('mysql')
+  const typeSql = async text => { await editor.click(); await page.keyboard.press('ControlOrMeta+A'); await page.keyboard.insertText(text) }
+  await typeSql('SELECT * FROM 用户 WHERE 客户')
+  await page.locator('.cm-tooltip-autocomplete li').filter({ hasText: '姓名' }).waitFor()
+  await page.waitForFunction(() => window.completionProbe().status === 'active')
+  await page.keyboard.press('Enter')
+  assert.match(await editor.textContent(), /WHERE 姓名$/)
+  await typeSql('SELECT * FROM 用户 WHERE name')
+  await page.keyboard.press('ArrowLeft'); await page.keyboard.press('ArrowLeft')
+  await page.keyboard.press('Control+Shift+Space')
+  await page.waitForFunction(() => window.completionProbe().status === 'active')
+  await page.keyboard.press('Enter')
+  assert.match(await editor.textContent(), /WHERE name$/)
+  await typeSql('SELECT * FROM cold_names WHERE na')
+  await page.waitForFunction(() => window.cold_names)
+  await page.evaluate(() => window.cold_names())
+  await page.locator('.cm-tooltip-autocomplete li').filter({ hasText: /^name/ }).first().waitFor()
+  await page.waitForFunction(() => window.completionProbe().status === 'active')
+  await page.keyboard.press('Enter'); assert.match(await editor.textContent(), /WHERE name$/)
+  await typeSql('SELECT * FROM cold_closed WHERE na')
+  await page.waitForFunction(() => window.cold_closed)
+  await page.keyboard.press('Escape'); await page.evaluate(() => window.cold_closed())
+  await page.waitForTimeout(150)
+  assert.equal(await page.locator('.cm-tooltip-autocomplete:visible').count(), 0)
+  await typeSql('SELECT * FROM us')
   await page.evaluate(() => document.body.setAttribute('data-ds-dark-theme', ''))
   await editor.click()
   await page.keyboard.type('SELECT * FROM us')

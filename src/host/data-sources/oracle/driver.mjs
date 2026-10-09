@@ -2,9 +2,19 @@ import { applyOracleTemporalSession, canonicalizeOracleTemporal, classifyOracleT
 import { DRIVER_TIMEOUTS } from '../../request-timeouts.mjs'
 import { oracleConnectionConfig, oracleIdentityMatches, readOracleIdentity } from './connection.mjs'
 import { formatFetchedValue } from '../../cell-value.mjs'
-import { rejectDatabaseError } from '../../connect-error.mjs'
+import { nativeErrorText } from '../../connect-error.mjs'
+import { writeDriverError } from '../sql-write-error.mjs'
 
 const quote = value => '"' + String(value).replaceAll('"', '""') + '"'
+const driverErrorFields = ['code', 'errno', 'sqlState', 'errorNum', 'fatal']
+
+function nativeDriverError(error) {
+  const next = new Error(nativeErrorText(error, '数据库没有返回错误说明。'))
+  if (error && typeof error === 'object') {
+    for (const key of driverErrorFields) if (error[key] != null) next[key] = error[key]
+  }
+  return next
+}
 
 export const sql = Object.freeze({
   id: 'oracle',
@@ -26,7 +36,7 @@ export const sql = Object.freeze({
   indexName: (_identifier, qualified) => qualified,
   dropIndex: (_target, _identifier, qualified) => `DROP INDEX ${qualified}`,
   dropConstraint: (target, identifier) => `ALTER TABLE ${target} DROP CONSTRAINT ${identifier}`,
-  analyzeTable: (_target, schema, table) => `BEGIN DBMS_STATS.GATHER_TABLE_STATS(ownname => '${schema.toUpperCase()}', tabname => '${table.toUpperCase()}'); END;`,
+  analyzeTable: (_target, schema, table) => `BEGIN DBMS_STATS.GATHER_TABLE_STATS(ownname => '${schema.replaceAll("'", "''")}', tabname => '${table.replaceAll("'", "''")}'); END;`,
   bindValue: (column, value, placeholder) => {
     const temporal = column && classifyOracleTemporal(column)
     return temporal
@@ -90,7 +100,7 @@ export const oracleDialect = Object.freeze({
     try {
       result = await connection.execute(statement, params, { resultSet: true, prefetchRows: Math.min(limit, 50), fetchArraySize: Math.min(limit, 50), fetchTypeHandler: oracleFetchTypeHandler(oracle) })
     } catch (error) {
-      throw new Error(rejectDatabaseError(error))
+      throw nativeDriverError(error)
     }
     const columns = result.metaData.map(meta => meta.name)
     const rows = []
@@ -110,7 +120,7 @@ export const oracleDialect = Object.freeze({
         if (truncated) break
       }
     } finally { await result.resultSet.close() }
-    return { columns, rows, truncated }
+    return { columns, binaryColumns: result.metaData.flatMap((meta, index) => meta.dbType === oracle.DB_TYPE_RAW ? [index] : []), rows, truncated }
   },
   async executeExplain(connection, statement) {
     try {
@@ -118,10 +128,11 @@ export const oracleDialect = Object.freeze({
       const plan = await connection.execute("SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY(NULL, NULL, 'ALL'))")
       return {
         columns: plan.metaData.map(meta => meta.name),
+        binaryColumns: [],
         rows: plan.rows.map(row => row.map(value => value === null ? null : String(value))),
       }
     } catch (error) {
-      throw new Error(rejectDatabaseError(error))
+      throw nativeDriverError(error)
     }
   },
   async prepareWrite(connection, schema) {
@@ -135,7 +146,7 @@ export const oracleDialect = Object.freeze({
       const result = await connection.execute(statement, [], { autoCommit: true })
       return Number(result?.rowsAffected ?? 0)
     } catch (error) {
-      throw new Error(rejectDatabaseError(error))
+      throw writeDriverError(error, nativeErrorText(error, '数据库没有返回错误说明。'))
     }
   },
   cancel(connection) {
