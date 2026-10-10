@@ -9,6 +9,7 @@ import { chromium } from 'playwright'
 import assert from 'node:assert/strict'
 import { installedBusiness } from './installed-business.mjs'
 import { installedRedis } from './installed-redis.mjs'
+import { installedNacos } from './installed-nacos.mjs'
 import { installedKafka } from './installed-kafka.mjs'
 import { dismissHarnessOnboarding } from './harness-onboarding.mjs'
 
@@ -152,6 +153,7 @@ try {
   }
   if (process.env.DSH_TEST_REDIS === '1') report.checks.push(await installedRedis(page, sessionId))
   if (process.env.DSH_TEST_KAFKA === '1') report.checks.push(await installedKafka(page, sessionId))
+  if (process.env.DSH_TEST_NACOS === '1') report.checks.push(await installedNacos(page, sessionId, run))
   assert.deepEqual(pageErrors, [])
   assert.deepEqual(serverErrors, [])
   report.checks.push('No browser page errors')

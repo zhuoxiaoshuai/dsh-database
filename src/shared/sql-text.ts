@@ -1,3 +1,4 @@
+import type { Dialect } from './workbench.ts'
 import { clientWorkspaceDescriptor } from './data-sources/registry.ts'
 
 // 去除前导注释（-- 行注释 / # MySQL 行注释 / /* 块注释 */），用于语句类型预判。
@@ -7,7 +8,7 @@ export function isExplainSql(text: string): boolean {
 }
 
 /** 包装为方言 EXPLAIN；已是 EXPLAIN 则原样返回（去掉末尾分号）。 */
-export function wrapExplainSql(dialect: 'mysql' | 'oracle' | 'redis' | 'kafka', sql: string): string {
+export function wrapExplainSql(dialect: Dialect, sql: string): string {
   const source = clientWorkspaceDescriptor(dialect)
   if (source.family !== 'sql') throw new Error('此数据源不支持 SQL EXPLAIN。')
   const trimmed = sql.trim().replace(/;\s*$/, '')

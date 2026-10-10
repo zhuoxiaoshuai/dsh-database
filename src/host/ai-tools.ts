@@ -1,3 +1,4 @@
+import {toolOwner, type ToolExecution} from './ai-tool-context.ts'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { redactQueryResult, type RedactionRule } from './ai-redaction.ts'
 import type { ConnectionService } from './connection-service.ts'
@@ -13,18 +14,7 @@ import { aiConnectionHeal, resolveAiConnection } from './ai-connection-resolve.t
 declare const __PLUGIN_VERSION__: string
 const PLUGIN_VERSION = typeof __PLUGIN_VERSION__ === 'string' ? __PLUGIN_VERSION__ : 'dev'
 
-type ToolExecution = {
-  callId?: string
-  rootCallId?: string
-  signal?: AbortSignal
-  agent?: { session?: { id?: string } }
-}
-
-function sessionId(execution: ToolExecution, validOwner: (id: string) => boolean): string {
-  const id = execution.agent?.session?.id || ''
-  if (!validOwner(id)) throw new Error('当前工具调用缺少有效对话身份，未访问任何数据库。')
-  return id
-}
+const sessionId = toolOwner
 
 function resolveSql<Live extends boolean = true>(service: ConnectionService, session: string, connectionId: unknown, generation: unknown, requireLive: Live = true as Live) {
   return resolveAiConnection({

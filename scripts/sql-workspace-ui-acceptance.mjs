@@ -35,7 +35,7 @@ await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
   import { createRoot } from 'react-dom/client'
   import { StandardSourceMount } from './src/client/workspace-sources.tsx'
   import { clientModules } from './src/client/data-sources/registry.ts'
-  import { SchemaCache } from './src/client/schema/schema-cache.ts'
+  import {useSqlCatalogController} from './src/client/sql/catalog-controller.ts'
   import { updateExecutionDocument, controlExecutionDocument } from './src/shared/execution-document.ts'
   import { validateBrowserFormat } from './src/host/sql-browser-request.ts'
   import './src/client/style.css'
@@ -107,15 +107,15 @@ await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
       return { items: [] }
     },
   }
-  const cache = new SchemaCache(bridge.catalog, { prewarmTableLimit: 0 })
   let remount
   function Fixture() {
     const [epoch, setEpoch] = useState(0)
     const [connection, setConnection] = useState({ id: sourceId + '-fixture', generation: 'g1', name: sourceId, dialect: sourceId, environment: 'sit', database: schema, live: true, health: 'ready', workbench: { schema, queryTabs: [{ id: 'sql:restored', name: '原查询', sql: 'SELECT 1' }], activeTabId: 'sql:restored' } })
-    const pendingRef = useRef(), actionsRef = useRef()
+    const sql=useSqlCatalogController(bridge,connection)
+    const {cache,pendingRef,actionsRef}=sql
     const originalConnection = useRef()
     remount = () => setEpoch(value => value + 1)
-    const context = { conversationId: 'fixture', host: bridge, connection, connections: [connection], cache, pendingRef, actionsRef, refreshToken: 0, catalogRoot: '', onPick() {}, onSchema() {}, onTreeBusy() {}, onTreeFocus() {}, onWorkbench(id, patch) { patches.push(patch); if (originalConnection.current?.id === id) originalConnection.current = { ...originalConnection.current, workbench: { ...originalConnection.current.workbench, ...patch } }; setConnection(previous => previous.id === id ? { ...previous, workbench: { ...previous.workbench, ...patch } } : previous) } }
+    const context = { conversationId: 'fixture', host: bridge, connection, connections: [connection], sql, refreshToken: 0, catalogRoot: '', onPick() {}, onSchema() {}, onTreeBusy() {}, onTreeFocus() {}, onWorkbench(id, patch) { patches.push(patch); if (originalConnection.current?.id === id) originalConnection.current = { ...originalConnection.current, workbench: { ...originalConnection.current.workbench, ...patch } }; setConnection(previous => previous.id === id ? { ...previous, workbench: { ...previous.workbench, ...patch } } : previous) } }
     const module = clientModules.get(sourceId)
     window.fixture = { addHistory: (id, text, target, status = 'succeeded') => history.push({ ...catalogRecord, executionId: id, title: id, operation: 'workbench_shared_query', type: 'write', connectionId: sourceId + '-fixture', generation: 'g1', schema: target, executedSql: text, status, events: [] }), calls, patches, publications, formats, remount: () => remount(), openObject: () => actionsRef.current.openObject(schema, 'demo', 'table'), inspect: () => ({ maxWaiters, documentCalls, sharedQuery: queryProjection(), reads, connectionId: connection.id, generation: connection.generation }), reconnect: () => setConnection(previous => ({ ...previous, generation: 'g2' })), switchConnection: () => { originalConnection.current = connection; setConnection(previous => ({ ...previous, id: sourceId + '-second', workbench: { schema, queryTabs: [{ id: 'sql:restored', name: '原查询', sql: 'SELECT 1' }], activeTabId: 'sql:restored' } })) }, restoreConnection: () => setConnection(originalConnection.current) }
     return <div className="db-workbench"><StandardSourceMount key={epoch} module={module} context={context} /></div>

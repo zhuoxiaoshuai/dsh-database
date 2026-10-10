@@ -7,11 +7,11 @@ export function sourceFixtureRegistrations() {
   const host = JSON.stringify(resolve('test/fixtures/source-module-host.ts'))
   const client = JSON.stringify(resolve('test/fixtures/source-module-client.tsx'))
   const edits = [
-    ['src/shared/data-sources/registry.ts', `import { mockDescriptor } from ${host}\n`, 'mysqlSource, oracleSource, redisSource, kafkaSource,', 'mysqlSource, oracleSource, redisSource, kafkaSource, mockDescriptor,', "['mysql', 'oracle', 'redis', 'kafka']", "['mysql', 'oracle', 'redis', 'kafka', 'mock-source']"],
-    ['src/host/data-sources/modules.ts', `import { mockHostModule } from ${host}\n`, '[mysqlModule, oracleModule, redisModule, kafkaModule]', '[mysqlModule, oracleModule, redisModule, kafkaModule, mockHostModule]'],
-    ['src/host/data-sources/runtime-registry.mjs', `import { mockRuntime } from ${host}\n`, '[mysqlRuntime, oracleRuntime, redisRuntime, kafkaRuntime]', '[mysqlRuntime, oracleRuntime, redisRuntime, kafkaRuntime, mockRuntime]'],
+    ['src/shared/data-sources/registry.ts', `import { mockDescriptor } from ${host}\n`, 'mysqlSource, oracleSource, redisSource, kafkaSource, nacosSource,', 'mysqlSource, oracleSource, redisSource, kafkaSource, nacosSource, mockDescriptor,', "['mysql', 'oracle', 'redis', 'kafka', 'nacos']", "['mysql', 'oracle', 'redis', 'kafka', 'nacos', 'mock-source']"],
+    ['src/host/data-sources/modules.ts', `import { mockHostModule } from ${host}\n`, '[mysqlModule, oracleModule, redisModule, kafkaModule, nacosModule]', '[mysqlModule, oracleModule, redisModule, kafkaModule, nacosModule, mockHostModule]'],
+    ['src/host/data-sources/runtime-registry.mjs', `import { mockRuntime } from ${host}\n`, '[mysqlRuntime, oracleRuntime, redisRuntime, kafkaRuntime, nacosRuntime]', '[mysqlRuntime, oracleRuntime, redisRuntime, kafkaRuntime, nacosRuntime, mockRuntime]'],
     ['src/host/knowledge-policy-registry.ts', `import { mockPolicy } from ${host}\n`, '[redisKnowledgePolicy, kafkaKnowledgePolicy]', '[redisKnowledgePolicy, kafkaKnowledgePolicy, mockPolicy]', "['redis' as DataSourceId, 'kafka' as DataSourceId]", "['redis' as DataSourceId, 'kafka' as DataSourceId, 'mock-source']"],
-    ['src/client/data-sources/registry.ts', `import { mockClientModule } from ${client}\n`, '[mysqlModule, oracleModule, redisModule, kafkaModule]', '[mysqlModule, oracleModule, redisModule, kafkaModule, mockClientModule]'],
+    ['src/client/data-sources/registry.ts', `import { mockClientModule } from ${client}\n`, '[mysqlModule, oracleModule, redisModule, kafkaModule, nacosModule]', '[mysqlModule, oracleModule, redisModule, kafkaModule, nacosModule, mockClientModule]'],
   ]
   return { name: 'test-only-static-source', setup(build) {
     build.onLoad({ filter: /(?:registry|modules|runtime-registry|knowledge-policy-registry)\.(?:ts|mjs)$/ }, async args => {

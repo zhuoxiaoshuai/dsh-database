@@ -1,3 +1,4 @@
+import {toolOwner, type ToolExecution} from './ai-tool-context.ts'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ConnectionService } from './connection-service.ts'
 import type { ExecutionStore } from './execution-store.ts'
@@ -5,14 +6,9 @@ import { authorizeRedisCommand } from './redis-policy.ts'
 import { nativeErrorText } from './connect-error.mjs'
 import { resolveAiConnection } from './ai-connection-resolve.ts'
 
-type ToolExecution = { callId?: string; rootCallId?: string; signal?: AbortSignal; agent?: { session?: { id?: string } } }
 
 export function registerRedisAiTools(ctx: { tools: { register(tool: unknown): void } }, service: ConnectionService, _executions: ExecutionStore, validOwner: (id: string) => boolean): void {
-  const owner = (execution: ToolExecution) => {
-    const id = execution.agent?.session?.id || ''
-    if (!validOwner(id)) throw new Error('当前工具调用缺少有效对话身份。')
-    return id
-  }
+  const owner = (execution:ToolExecution) => toolOwner(execution,validOwner)
   const selected = (session: string, connectionId: unknown, generation: unknown) => resolveAiConnection({
     connections: service.list(session),
     family: 'redis',

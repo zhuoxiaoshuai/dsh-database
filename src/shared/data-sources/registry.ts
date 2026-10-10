@@ -2,7 +2,8 @@ import { mysqlSource } from './mysql.ts'
 import { oracleSource } from './oracle.ts'
 import { redisSource } from './redis.ts'
 import { kafkaSource } from './kafka.ts'
-import type { DataSourceId, SqlClientDescriptor, SqlDataSourceId, RedisClientDescriptor, KafkaClientDescriptor } from './types.ts'
+import { nacosSource } from './nacos.ts'
+import type { DataSourceId, SqlClientDescriptor, SqlDataSourceId, RedisClientDescriptor, KafkaClientDescriptor, NacosClientDescriptor } from './types.ts'
 
 const sources: ReadonlyMap<SqlDataSourceId, SqlClientDescriptor> = new Map([
   [mysqlSource.id, mysqlSource],
@@ -30,14 +31,14 @@ export function createClientSourceRegistry<Id extends string, Source extends { i
   } })
 }
 
-const workspaceSources = createClientSourceRegistry<DataSourceId, SqlClientDescriptor | RedisClientDescriptor | KafkaClientDescriptor>([
-  mysqlSource, oracleSource, redisSource, kafkaSource,
-], ['mysql', 'oracle', 'redis', 'kafka'])
+const workspaceSources = createClientSourceRegistry<DataSourceId, SqlClientDescriptor | RedisClientDescriptor | KafkaClientDescriptor | NacosClientDescriptor>([
+  mysqlSource, oracleSource, redisSource, kafkaSource, nacosSource,
+], ['mysql', 'oracle', 'redis', 'kafka', 'nacos'])
 
 export const supportedDataSources = Object.freeze([...sources.keys()])
 export const supportedAllDataSources = Object.freeze(workspaceSources.ids())
 export const clientRedisSource = (): RedisClientDescriptor => redisSource
-export function clientWorkspaceDescriptor(id: DataSourceId): SqlClientDescriptor | RedisClientDescriptor | KafkaClientDescriptor {
+export function clientWorkspaceDescriptor(id: DataSourceId): SqlClientDescriptor | RedisClientDescriptor | KafkaClientDescriptor | NacosClientDescriptor {
   return workspaceSources.get(id)
 }
 export const legacyDefaultDataSource: SqlDataSourceId = 'mysql'

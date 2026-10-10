@@ -1,3 +1,5 @@
+import {workerExchange} from './worker-exchange.ts'
+import { NacosService } from './nacos-service.ts'
 import { Worker } from 'node:worker_threads'
 import { randomUUID } from 'node:crypto'
 import type { Connection, ConnectionTest, CatalogRequest, CatalogResult, ConnectionWorkbench, DatabaseWorkspaceSnapshot, QueryEditSource, Result, SharedQuery, SourceConnectionInput, SourceConnectionSettings } from '../shared/workbench.ts'
@@ -310,6 +312,7 @@ export class ConnectionService {
     if (generation !== undefined && this.#entries.get(id)?.connection.generation !== generation) throw new Error('连接已变化，请刷新。')
     const workbench = this.#layout(session, this.#rows!).workbenches[id]
     if (workbench?.aiDocument?.sourceId === saved.settings.dialect) return workbench.aiDocument
+    if (!getSourceRuntime(saved.settings.dialect).documentKind) throw new Error('此数据源不支持此能力。')
     const old = workbench?.sharedQuery
     return old && getSourceRuntime(saved.settings.dialect).documentKind === 'sql'
       ? { sourceId: saved.settings.dialect, text: old.sql, context: { schema: old.schema || ('database' in saved.settings ? saved.settings.database : '') }, revision: old.revision, controller: old.controller, controllerReason: old.controllerReason }
@@ -326,7 +329,7 @@ export class ConnectionService {
     if (!Number.isSafeInteger(expectedRevision) || !expectedRevision) throw new Error('缺少有效文档修订，请刷新。')
     const previous = this.getExecutionDocument(session, id, generation)
     const binding = this.#entries.get(id)?.connection || this.list(session).find(item => item.id === id)!
-    const normalized = context === undefined ? undefined : hostModules.get(previous.sourceId).execution.normalizeContext(context, binding)
+    const normalized = context === undefined ? undefined : hostModules.get(previous.sourceId).execution!.normalizeContext(context, binding)
     const next = updateExecutionDocument(previous, text, source, expectedRevision, normalized)
     return next === previous ? previous : this.#saveDocument(session, id, next)
   }
@@ -440,6 +443,19 @@ export class ConnectionService {
     if (typeof body.generation !== 'string' || entry?.connection.generation !== body.generation) throw new Error('连接已变化，请刷新。')
     return this.knowledge.dispatch(saved.settings.dialect, connectionId, body)
   }
+  private nacosService?: NacosService
+  nacosRequest(session: string, id: string, generation: unknown, action: string, input: Record<string, unknown>, actor: 'user' | 'ai', signal?: AbortSignal, callId?: string, rootCallId?: string) {
+    const validate = () => {
+      if (this.explorerTarget(session, id, generation) !== 'nacos') throw new Error('此工具仅支持 Nacos。')
+    }
+    validate()
+    const connection = this.#entries.get(id)!.connection
+    this.nacosService ??= new NacosService(this.#executions)
+    return this.nacosService.request(session, connection, action, input, actor,
+      (operation, request, workSignal, dispatched) => this.#withReadonly(id, () => this.#dispatch(session, id, generation, operation, request,
+        workSignal, undefined, {beforeDispatch: validate, onDispatched: dispatched}), actor === 'ai' ? 'ai' : 'manual') as Promise<Record<string, unknown>>,
+      validate, signal, callId, rootCallId)
+  }
   private explorerTarget(session: string, id: string, generation: unknown) {
     if (this.#closed || !this.sessionValid(session)) throw new Error('当前对话已失效。')
     const entry = this.#entries.get(id)
@@ -466,7 +482,7 @@ export class ConnectionService {
   }
   private sourceRead(session: string, id: string, generation: unknown, action: string, input: Record<string, unknown>, signal?: AbortSignal): Promise<Record<string, unknown>> {
     const entry = this.#entries.get(id)
-    if (!entry || !hostModules.get(entry.connection.dialect).explorer.readonlyActions?.includes(action)
+    if (!entry || !hostModules.get(entry.connection.dialect).explorer?.readonlyActions?.includes(action)
       || !getSourceRuntime(entry.connection.dialect).actions.includes(action)) throw new Error('对象请求与数据源不匹配。')
     return this.#withReadonly(id, () => this.#dispatch(session, id, generation, action, input, signal), 'manual') as Promise<Record<string, unknown>>
   }
@@ -702,18 +718,13 @@ export class ConnectionService {
     let retained = false
     try {
       const payload = { ...input, password: secret, caPem }
-      const result = await new Promise<ConnectionTest & { databases: string[] }>((resolve, reject) => {
-        const timer = setTimeout(() => { reject(fail(connectTimeoutMessage(testOnly), CONNECTION_ERROR_CODES.timeout)); void worker.terminate() }, testOnly ? HOST_TIMEOUTS.connectTest : HOST_TIMEOUTS.connect)
-        const finish = () => clearTimeout(timer)
-        worker.once('message', message => { finish(); (message.ready || message.ok) ? resolve(message.result) : reject(new Error(message.error || '连接已中断。')) })
-        worker.once('error', err => {
-          console.warn('[database] connection worker failed during init', err)
-          finish()
-          reject(new Error(workerInitFailureMessage(err)))
-        })
-        worker.once('exit', () => { finish(); reject(fail('连接已关闭。', CONNECTION_ERROR_CODES.closed)) })
-        worker.postMessage({ input: payload, testOnly }); payload.password = ''; payload.caPem = ''; input.password = ''
-      })
+      const result = await workerExchange<ConnectionTest & {databases:string[]}>(worker,undefined,testOnly?HOST_TIMEOUTS.connectTest:HOST_TIMEOUTS.connect,undefined,finish=>({
+        message:message=>(message.ready||message.ok)?finish(undefined,message.result):finish(new Error(message.error || '连接已中断。')),
+        error:err=>{console.warn('[database] connection worker failed during init',err);finish(new Error(workerInitFailureMessage(err)))},
+        exit:()=>finish(fail('连接已关闭。',CONNECTION_ERROR_CODES.closed)),
+        timeout:()=>{finish(fail(connectTimeoutMessage(testOnly),CONNECTION_ERROR_CODES.timeout));void worker.terminate()},
+        send:()=>{worker.postMessage({input:payload,testOnly});payload.password='';payload.caPem='';input.password=''},
+      }))
       if (this.#closed || !this.sessionValid(session)) throw fail('当前对话已失效，连接已关闭。', CONNECTION_ERROR_CODES.session)
       if (testOnly) { secret = ''; return { version: result.version, database: result.database, elapsedMs: result.elapsedMs } }
       if (replaceId && (this.#entries.get(replaceId) !== original || this.#rows!.get(replaceId) !== originalSaved)) throw fail('原连接已变化或被删除，请刷新后重试。', CONNECTION_ERROR_CODES.stale)
@@ -837,6 +848,7 @@ export class ConnectionService {
     const entry = this.#entries.get(id)
     if (!entry || this.#closed || !this.sessionValid(session) || entry.connection.generation !== generation) throw fail('连接已变化或当前对话已失效，请刷新。', CONNECTION_ERROR_CODES.stale)
     const execution = hostModules.get(entry.connection.dialect).execution
+    if (!execution) throw new Error('此数据源不支持此能力。')
     const normalized = execution.normalizeContext(context, entry.connection)
     const document = queryRevision === undefined ? undefined : this.getExecutionDocument(session, id, generation)
     const prepared = await prepareTextOperation(execution, text, normalized, options?.sql, signal)
@@ -924,18 +936,11 @@ export class ConnectionService {
     this.#busyAdd(entry.worker)
     const requestId = randomUUID()
     try {
-      const result = await new Promise<CatalogResult>((resolve, reject) => {
+      const result = await workerExchange<CatalogResult>(entry.worker,requestId,hostDeadlineFor(action),signal, settle => {
         let progress: Record<string, unknown> | undefined
-        let settled = false
         const finish = (error?: Error, value?: CatalogResult) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          signal?.removeEventListener('abort', cancel)
-          entry.worker.off('message', message)
-          entry.worker.off('exit', exited)
           if (error && progress && (action === 'query' || action === 'manual-query')) Object.assign(error, { effect: (error as {effect?: string}).effect || 'unknown', phase: (error as {phase?: string}).phase || 'receipt', steps: (error as {steps?: unknown}).steps || progress.steps, batch: (error as {batch?: unknown}).batch || progress.batch })
-          error ? reject(error) : resolve(value!)
+          settle(error,value)
         }
         const terminateWorker = (text: string) => {
           if (progress && !this.#closed && (this.#entries.get(id) === entry || (entry.unexpectedlyClosed && !this.#entries.has(id))) && this.sessionValid(session)) finish(undefined, { ...progress, status: 'unknown', message: text, collectedAt: new Date().toISOString(), source: '插件已接收的 DDL 逐步执行回执' })
@@ -954,7 +959,6 @@ export class ConnectionService {
           else finish(action === 'redis-command' || action === 'redis-key' ? new Error('Redis 连接已关闭，执行结果未知，请核验。') : fail('连接已关闭。', CONNECTION_ERROR_CODES.closed))
         }
         const message = (reply: { requestId?: string; error?: string; code?: string; result?: CatalogResult; progress?: Record<string, unknown>; sqlProgress?: Record<string, unknown>; effect?: string; phase?: string; category?: string; databaseCode?: string; steps?: unknown; batch?: unknown; cancelled?: boolean }) => {
-          if (reply.requestId !== requestId) return
           if (this.#entries.get(id) !== entry || !this.sessionValid(session)) finish(fail('连接或对话已变化，已丢弃迟到结果。', CONNECTION_ERROR_CODES.stale))
           else if (reply.progress || reply.sqlProgress) { progress = reply.progress || reply.sqlProgress; return }
           else if (!reply.error && (reply.cancelled || signal?.aborted)) finish(action === 'redis-command' || action === 'redis-key' ? new Error('Redis 操作已取消，执行结果未知，请核验。') : fail('读取已取消。', CONNECTION_ERROR_CODES.cancelled))
@@ -962,19 +966,21 @@ export class ConnectionService {
           else if (reply.result === undefined) finish(Object.assign(new Error('缺少有效执行回执，结果未知。'), { effect: 'unknown', phase: 'receipt' }))
           else finish(undefined, reply.result)
         }
-        const timer = setTimeout(() => {
+        const timeout = () => {
           try { entry.worker.postMessage({ cancel: true, requestId }) } catch { /* ignore */ }
           const deadline = hostDeadlineFor(action)
           if (action === 'maintenance') terminateWorker(hostTimeoutMessage(action, deadline))
           else finish(Object.assign(new Error(authorized?.kind === 'write' ? `写入超过 ${Math.round(deadline / 1000)} 秒，结果未知，请核验，勿重复提交。` : action === 'redis-command' || action === 'redis-key' ? 'Redis 操作超时，执行结果未知，请核验。' : hostTimeoutMessage(action, deadline)), { effect: 'unknown', phase: 'receipt' }))
-        }, hostDeadlineFor(action))
-        entry.worker.on('message', message); entry.worker.once('exit', exited); signal?.addEventListener('abort', cancel, { once: true })
+        }
+        const send = () => {
         try { hooks?.beforeDispatch?.() } catch (error) { finish(error as Error); return }
         if (signal?.aborted) { finish(fail('请求已取消。', CONNECTION_ERROR_CODES.cancelled)); return }
         try {
           entry.worker.postMessage({ requestId, action, input: { ...input, conversationId: session }, ...(authorized ? { authorized, lane: input.lane === 'manual' ? 'manual' : 'query' } : {}) })
           hooks?.onDispatched?.()
         } catch (error) { finish(error as Error) }
+        }
+        return {message,exit:exited,abort:cancel,timeout,send}
       })
       if (this.#cache.size >= 64) this.#cache.delete(this.#cache.keys().next().value!)
       if (action === 'catalog') this.#cache.set(key, { time: Date.now(), value: result })
@@ -1052,28 +1058,12 @@ export class ConnectionService {
     const requestId = randomUUID()
     this.#busyAdd(entry.worker)
     try {
-      return await new Promise((resolve, reject) => {
-        let settled = false
-        const finish = (error?: Error, value?: CatalogResult & ConnectionTest & { health?: string }) => {
-          if (settled) return
-          settled = true
-          clearTimeout(timer)
-          entry.worker.off('message', onMessage)
-          entry.worker.off('exit', onExit)
-          error ? reject(error) : resolve(value!)
-        }
-        const onExit = () => finish(fail('连接已关闭。', CONNECTION_ERROR_CODES.closed))
-        const onMessage = (reply: { requestId?: string; error?: string; code?: string; result?: CatalogResult & ConnectionTest; health?: Connection['health'] }) => {
-          if (reply.requestId !== requestId) return
-          if (reply.health) this.#applyHealth(entry, reply.health)
-          if (reply.error) finish(workerError(reply.error, reply.code))
-          else finish(undefined, reply.result)
-        }
-        const timer = setTimeout(() => finish(fail(connectTimeoutMessage(false), CONNECTION_ERROR_CODES.timeout)), timeout)
-        entry.worker.on('message', onMessage)
-        entry.worker.once('exit', onExit)
-        entry.worker.postMessage({ requestId, action, input })
-      })
+      return await workerExchange<CatalogResult & ConnectionTest & {health?:string}>(entry.worker,requestId,timeout,undefined,finish=>({
+        exit:()=>finish(fail('连接已关闭。',CONNECTION_ERROR_CODES.closed)),
+        message:reply=>{if(reply.health)this.#applyHealth(entry,reply.health);reply.error?finish(workerError(reply.error,reply.code)):finish(undefined,reply.result)},
+        timeout:()=>finish(fail(connectTimeoutMessage(false),CONNECTION_ERROR_CODES.timeout)),
+        send:()=>entry.worker.postMessage({requestId,action,input}),
+      }))
     } finally { this.#busyDone(entry.worker) }
   }
   async #recover(session: string, id: string): Promise<Connection> {

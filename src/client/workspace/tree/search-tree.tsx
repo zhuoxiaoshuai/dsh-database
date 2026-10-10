@@ -1,3 +1,4 @@
+import {ResourceList} from '../parts/resource-list.tsx'
 import React, { Children, useState } from 'react'
 import { RefreshCw, Search, X } from 'lucide-react'
 import { PaneGutter } from '../shell/pane-gutter.tsx'
@@ -49,19 +50,17 @@ export function SearchTree({ label, title, action, search, searchPlaceholder, re
   width?: number
   onResize?: React.PointerEventHandler<HTMLDivElement>
 }): React.ReactElement {
-  return <div className="db-search-tree" aria-label={label} style={width === undefined ? undefined : { '--db-search-tree-width': `${width}px` } as React.CSSProperties}>
-    <div className="db-search-tree-head"><span>{title}</span>{action}</div>
+  return <ResourceList title={label} className="db-search-tree" style={width === undefined ? undefined : { '--db-search-tree-width': `${width}px` } as React.CSSProperties}
+    header={<>    <div className="db-search-tree-head"><span>{title}</span>{action}</div>
     <div className="db-sidebar-toolbar">
       <div className="db-catalog-search"><Search size={15} /><input aria-label={label} placeholder={searchPlaceholder} value={search} onChange={event => onSearch(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') onSubmitSearch() }} />{search && search !== resetSearchValue && <button className="db-icon-button" type="button" aria-label="重置匹配" onClick={() => onSearch(resetSearchValue)}><X size={12} /></button>}</div>
       <button className="db-icon-button" type="button" aria-label={refreshLabel} disabled={busy || disabled} onClick={onRefresh}><RefreshCw size={14} className={busy ? 'db-spin' : undefined} /></button>
     </div>
-    <div className="db-search-tree-body db-conn-tree" aria-busy={busy || undefined}>
-      {error && <p className="db-error" role="alert">{error}</p>}
-      {Children.count(children) ? children : empty}
-    </div>
-    {footer && <div className="db-search-tree-foot">{footer}</div>}
-    {onResize && <PaneGutter axis="x" onResize={onResize} />}
-  </div>
+</>} bodyClassName="db-search-tree-body db-conn-tree" error={error} loading={busy} loadingContent={null}
+    empty={!Children.count(children)} emptyContent={empty} paging={footer} pagingClassName="db-search-tree-foot"
+    extra={onResize && <PaneGutter axis="x" onResize={onResize} />}>
+    {Children.count(children) ? children : busy ? empty : null}
+  </ResourceList>
 }
 
 /** Connection-tree row inside a search shell. `depth` is kept for callers; indent comes from nested branches. */

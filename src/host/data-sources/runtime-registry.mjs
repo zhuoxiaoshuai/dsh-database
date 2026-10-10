@@ -2,6 +2,7 @@ import { mysqlRuntime } from './mysql/runtime.mjs'
 import { oracleRuntime } from './oracle/runtime.mjs'
 import { redisRuntime } from './redis/runtime.mjs'
 import { kafkaRuntime } from './kafka/runtime.mjs'
+import { nacosRuntime } from './nacos/runtime.mjs'
 
 export function createRuntimeRegistry(entries) {
   const byId = new Map()
@@ -10,7 +11,7 @@ export function createRuntimeRegistry(entries) {
       || typeof entry.workerEntry !== 'string' || !/^[a-z][a-z0-9-]*-worker\.mjs$/.test(entry.workerEntry)
       || typeof entry.requiresPassword !== 'boolean' || typeof entry.usesCustomCa !== 'function'
       || !Array.isArray(entry.actions) || !entry.actions.length || entry.actions.some(action => typeof action !== 'string' || !action)
-      || new Set(entry.actions).size !== entry.actions.length || !['sql', 'command'].includes(entry.documentKind)) {
+      || new Set(entry.actions).size !== entry.actions.length || (entry.documentKind !== undefined && !['sql', 'command'].includes(entry.documentKind))) {
       throw new Error(`数据源运行能力不完整或重复：${String(entry?.id)}`)
     }
     byId.set(entry.id, entry)
@@ -25,6 +26,6 @@ export function createRuntimeRegistry(entries) {
   })
 }
 
-const runtimes = createRuntimeRegistry([mysqlRuntime, oracleRuntime, redisRuntime, kafkaRuntime])
+const runtimes = createRuntimeRegistry([mysqlRuntime, oracleRuntime, redisRuntime, kafkaRuntime, nacosRuntime])
 export const getSourceRuntime = id => runtimes.get(id)
 export const registeredSourceRuntimes = () => runtimes.ids()

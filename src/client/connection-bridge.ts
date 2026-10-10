@@ -6,10 +6,12 @@ import type { RedisResponse } from '../shared/redis-result.ts'
 export function connectionBridge(conversationId: string, base: WorkspaceBridge, preview = false): WorkspaceBridge {
   const endpoint = `${preview ? '/api/database/connections' : '/plugins/database/connections'}?conversationId=${encodeURIComponent(conversationId)}`
   const request = async (body?: unknown, signal?: AbortSignal) => {
-    const input = body && typeof body === 'object' ? body as { id?: string; action?: string; input?: { kind?: string } } : undefined
+    const input = body && typeof body === 'object' ? body as { id?: string; action?: string; input?: { kind?: string; operation?:string } } : undefined
     const connectionId = typeof input?.id === 'string' ? input.id : undefined
-    const executing = ['query', 'manual-query', 'source-execute', 'execution-document-run', 'shared-query-run', 'shared-query-explain', 'explain'].includes(input?.action || '')
+    const nacosWrite=input?.action==='nacos-request' && input.input?.operation==='nacos-write'
+    const executing = nacosWrite || ['query', 'manual-query', 'source-execute', 'execution-document-run', 'shared-query-run', 'shared-query-explain', 'explain'].includes(input?.action || '')
       || input?.action === 'maintenance' && input.input?.kind === 'execute'
+    if (body && new TextEncoder().encode(JSON.stringify(body)).byteLength > 524288) throw new Error('请求超过 512 KiB，不能提交。')
     if (signal?.aborted) throw transportRequestError('未派发，请求已取消。', connectionId, 'before-fetch')
     let response: Response
     try { response = await fetch(endpoint, { signal, method: body ? 'POST' : 'GET', credentials: 'same-origin', cache: 'no-store', headers: body ? { 'Content-Type': 'application/json' } : undefined, body: body ? JSON.stringify(body) : undefined }) }
@@ -31,8 +33,9 @@ export function connectionBridge(conversationId: string, base: WorkspaceBridge, 
       throw Object.assign(new ConnectionRequestError(message, code, connectionId), { ...value, trustedReceipt, requestPhase: 'response', effect: value.effect, phase: value.phase, category: value.category, databaseCode: value.databaseCode, executionId: value.executionId, executionStatus: value.status, steps: value.steps, batch: value.batch,
         generation: value.generation, schema: value.schema, context: value.context, documentText: value.documentText, executedSql: value.executedSql, queryRevision: value.queryRevision, initiator: value.initiator })
     }
+    const nacosReceipt=nacosWrite && (value as any).saved===true && (value as any).executionStatus==='succeeded'
     const maintenanceReceipt = input?.action === 'maintenance' && ['success', 'failed', 'unknown', 'cancelled'].includes(String(value.status))
-    if (executing && !maintenanceReceipt && !validExecutionReply(value, input?.action)) throw transportRequestError('成功响应缺少有效执行回执，请求结果未知。', connectionId, 'response')
+    if (executing && !nacosReceipt && !maintenanceReceipt && !validExecutionReply(value, input?.action)) throw transportRequestError('成功响应缺少有效执行回执，请求结果未知。', connectionId, 'response')
     return value
   }
   const sourceRequest = (connection: Connection, action: string, input: object, signal?: AbortSignal) =>

@@ -87,6 +87,13 @@ export async function connectionApi(service: ConnectionService, executions: Exec
         if (id === undefined) return
         send(200, { execution: executions.latestDisplay(owner, id) || null })
       },
+      'nacos-request': async input => {
+        const id = requireId(input)
+        if (id === undefined) return
+        const request = input.input as Record<string, unknown>
+        if (!request || typeof request.operation !== 'string' || request.actor !== undefined || request.initiator !== undefined) throw new Error('Nacos 请求无效。')
+        send(200, await withResponseAbort(res, signal => service.nacosRequest(owner, id, input.generation, request.operation as string, request, 'user', signal)))
+      },
       catalog: serviceRequest('catalog'),
       query: serviceRequest('query'),
       'manual-query': serviceRequest('manual-query'),

@@ -17,16 +17,13 @@ export type WorkspaceSourceContext = {
   host: WorkspaceBridge
   connection: Connection
   connections: Connection[]
-  cache: SchemaCache
-  pendingRef: React.MutableRefObject<PendingSchemaPick | undefined>
-  actionsRef: React.MutableRefObject<TreePaneActions | undefined>
+  sql?: ReturnType<typeof import('./sql/catalog-controller.ts').useSqlCatalogController>
   refreshToken: number
   catalogRoot: string
+  onCatalogRoot?(id: string): void
   onPick(id: string): void
   onWorkbench?(id: string, patch: ConnectionWorkbench): void
-  onSchema(schema: string): void
-  onTreeBusy(busy: boolean): void
-  onTreeFocus(next?: TreeFocus): void
+
 }
 
 export type WorkspaceSource = WorkspaceRegistration<DataSourceId, WorkspaceSourceContext, React.ReactElement>

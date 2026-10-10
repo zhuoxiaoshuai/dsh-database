@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { resolve, dirname } from 'node:path'
-import { createDataSourceRegistry, getDataSource, getRedisDataSource, registeredDataSources, registeredAllDataSources } from '../src/host/data-sources/registry.mjs'
+import { createDataSourceRegistry, getDataSource, getRedisDataSource, registeredDataSources, registeredAllDataSources } from './helpers/runtime-providers.mjs'
 import { createRuntimeRegistry, getSourceRuntime, registeredSourceRuntimes } from '../src/host/data-sources/runtime-registry.mjs'
 import { getSqlDataSource as getSqlRuntimeProvider, registeredDataSources as registeredSqlRuntimeProviders } from '../src/host/data-sources/sql-registry.mjs'
 import { getRedisDataSource as getRedisRuntimeProvider } from '../src/host/data-sources/redis-registry.mjs'
@@ -45,13 +45,19 @@ test('registry rejects duplicates and incomplete provider contracts', () => {
 })
 
 test('connection runtime selection and credential rules belong to the registered source', () => {
-  const mysql = getSourceRuntime('mysql'), oracle = getSourceRuntime('oracle'), redis = getSourceRuntime('redis'), kafka = getSourceRuntime('kafka')
-  assert.deepEqual(registeredSourceRuntimes(), [...registeredAllDataSources(), 'kafka'])
+  const mysql = getSourceRuntime('mysql'), oracle = getSourceRuntime('oracle'), redis = getSourceRuntime('redis'), kafka = getSourceRuntime('kafka'), nacos = getSourceRuntime('nacos')
+  assert.deepEqual(registeredSourceRuntimes(), [...registeredAllDataSources(), 'kafka', 'nacos'])
   for (const id of registeredAllDataSources()) assert.equal(getSourceRuntime(id), id === 'redis' ? getRedisDataSource(id).runtime : getDataSource(id).runtime)
   assert.equal(mysql.workerEntry, 'connection-worker.mjs')
   assert.equal(oracle.workerEntry, 'connection-worker.mjs')
   assert.equal(redis.workerEntry, 'redis-worker.mjs')
   assert.equal(kafka.workerEntry, 'kafka-worker.mjs')
+  assert.equal(nacos.workerEntry, 'nacos-worker.mjs')
+  assert.equal(nacos.requiresPassword, false)
+  assert.equal(nacos.usesCustomCa({}), false)
+  assert.equal(nacos.documentKind, undefined)
+  assert.ok(nacos.actions.includes('nacos-write'))
+  assert.equal(clientWorkspaceDescriptor('nacos').connection.requiresPassword, false)
   assert.equal(mysql.requiresPassword, true)
   assert.equal(oracle.requiresPassword, true)
   assert.equal(redis.requiresPassword, false)

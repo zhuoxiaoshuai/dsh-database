@@ -71,10 +71,9 @@ export function KafkaOverview({ bridge, connection, catalog = 'topics', refreshT
   const groupSearchRef = useRef('')
   const connectionRef = useRef(connection)
   const childLoading = useRef(new Set<string>())
-  const detailToken = useRef(0)
-  const detailAbort = useRef<AbortController | null>(null)
   const identity = `${connection.id}\0${connection.generation || ''}\0${mode}\0${refreshToken}`
   const scope = useRef(createRequestScope(identity))
+  const detailTicket = useRef<ReturnType<typeof scope.current.begin>>()
   const identityRef = useRef(identity)
   if (identityRef.current !== identity) { scope.current.invalidate(identity); identityRef.current = identity }
   topicSearchRef.current = topicSearch
@@ -93,8 +92,8 @@ export function KafkaOverview({ bridge, connection, catalog = 'topics', refreshT
     if (!signal.aborted && connectionRef.current.id === connection.id && connectionRef.current.generation === connection.generation) onNames?.({ groups: explorerItems(page).map(item => item.title) })
     return { items: explorerItems(page), nextCursor: page.nextCursor }
   }
-  const topics = usePagedList(loadTopics)
-  const groups = usePagedList(loadGroups)
+  const topics = usePagedList(loadTopics, identity)
+  const groups = usePagedList(loadGroups, identity)
   const topicsReplace = topics.replace
   const groupsReplace = groups.replace
   const topicsReset = topics.reset
@@ -103,7 +102,7 @@ export function KafkaOverview({ bridge, connection, catalog = 'topics', refreshT
   const resetDetails = () => {
     scope.current.invalidate(identity)
     childLoading.current.clear()
-    detailAbort.current?.abort(); detailToken.current += 1
+    if (detailTicket.current) scope.current.cancel(detailTicket.current)
     setSelected(undefined); setDetail(undefined); setDetailError(''); setDetailBusy(false)
     setChildren({}); setChildError({}); setChildCursor({}); setChildBusy({})
   }
@@ -111,7 +110,7 @@ export function KafkaOverview({ bridge, connection, catalog = 'topics', refreshT
   useEffect(() => {
     resetDetails()
     setDrawerOpen(false)
-    detailAbort.current?.abort()
+    if (detailTicket.current) scope.current.cancel(detailTicket.current)
     if (!connection.live) {
       topicsReset()
       groupsReset()
@@ -127,8 +126,7 @@ export function KafkaOverview({ bridge, connection, catalog = 'topics', refreshT
     return () => {
       topicsReset()
       groupsReset()
-      detailAbort.current?.abort()
-      detailToken.current += 1
+      if (detailTicket.current) scope.current.cancel(detailTicket.current)
       scope.current.invalidate(identity)
       childLoading.current.clear()
     }
@@ -136,23 +134,21 @@ export function KafkaOverview({ bridge, connection, catalog = 'topics', refreshT
 
   const open = async (node: ExplorerNode) => {
     if (!bridge.explorer) return
-    const current = ++detailToken.current
-    detailAbort.current?.abort()
-    const controller = new AbortController()
-    const ticket = scope.current.begin()
-    detailAbort.current = controller
+    if (detailTicket.current) scope.current.cancel(detailTicket.current)
+    const ticket = scope.current.latest('detail')
+    detailTicket.current = ticket
     setSelected(node)
     setDetail(undefined)
     setDrawerOpen(false)
     setDetailBusy(true)
     setDetailError('')
     try {
-      const read = await bridge.explorer(connection, 'read', { ref: node.ref }, controller.signal) as TopicDetail | KafkaGroupResult | KafkaGroupTopicResult
-      if (scope.current.isCurrent(ticket) && current === detailToken.current && !controller.signal.aborted) setDetail(read)
+      const read = await bridge.explorer(connection, 'read', { ref: node.ref }, ticket.signal) as TopicDetail | KafkaGroupResult | KafkaGroupTopicResult
+      if (scope.current.isCurrent(ticket) && !ticket.signal.aborted) setDetail(read)
     } catch (caught) {
-      if (scope.current.isCurrent(ticket) && current === detailToken.current && !controller.signal.aborted) setDetailError(caught instanceof Error ? caught.message : '详情读取失败。')
+      if (scope.current.isCurrent(ticket) && !ticket.signal.aborted) setDetailError(caught instanceof Error ? caught.message : '详情读取失败。')
     } finally {
-      if (scope.current.isCurrent(ticket) && current === detailToken.current) setDetailBusy(false)
+      if (scope.current.isCurrent(ticket)) setDetailBusy(false)
       scope.current.finish(ticket)
     }
   }

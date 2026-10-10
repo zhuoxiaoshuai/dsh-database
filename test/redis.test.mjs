@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { getDataSource, getRedisDataSource, registeredAllDataSources, createDataSourceRegistry } from '../src/host/data-sources/registry.mjs'
+import { getDataSource, getRedisDataSource, registeredAllDataSources, createDataSourceRegistry } from './helpers/runtime-providers.mjs'
 import { validateConnection, connectionFingerprint, canReuseSavedLogin, passwordRequired } from '../src/shared/connection-input.ts'
 import { redisKeyMatches, redisScanMatch } from '../src/shared/redis-scan-match.ts'
 import { authorizeRedisCommand } from '../src/host/redis-policy.ts'
@@ -17,7 +17,7 @@ test('Redis has an isolated contract and SQL callers reject it', () => {
   assert.equal(pkg.dependencies.redis, '6.2.1')
   assert.ok(pkg.files.includes('lib/redis-worker.mjs'))
   assert.deepEqual(registeredAllDataSources(), ['mysql', 'oracle', 'redis'])
-  assert.deepEqual([...supportedAllDataSources], [...registeredAllDataSources(), 'kafka'])
+  assert.deepEqual([...supportedAllDataSources], [...registeredAllDataSources(), 'kafka', 'nacos'])
   assert.equal(getRedisDataSource('redis').family, 'redis')
   assert.deepEqual(getRedisDataSource('redis').capabilities, clientRedisSource().capabilities)
   assert.doesNotMatch(readFileSync(new URL('../src/shared/data-sources/redis.ts', import.meta.url), 'utf8'), /from ['"](?:redis|node:|\.\.\/\.\.\/host)/)

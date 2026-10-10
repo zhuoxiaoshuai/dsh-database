@@ -42,7 +42,7 @@ await build({
         if (action === 'execution-document-get') return { document: aiDocument }
         if (action === 'execution-document-update') { aiDocument = { ...aiDocument, text: body.text, revision: aiDocument.revision + 1, controller: 'user' }; return { document: aiDocument } }
         if (action === 'execution-document-control') { aiDocument = { ...aiDocument, controller: body.controller, revision: aiDocument.revision + 1 }; return { document: aiDocument } }
-        if (action === 'execution-document-run') return { result: { type: 'string', value: 'PONG' }, elapsedMs: 3 }
+        if (action === 'execution-document-run') return { result: { result: { type: 'string', value: 'PONG' }, elapsedMs: 3 }, executionId:'redis-ui-run',status:'succeeded',identity:{conversationId:'fixture',connectionId:connection.id,generation:connection.generation,sourceId:'redis',context:{database:'0'},queryRevision:aiDocument.revision,documentText:aiDocument.text,executedSql:aiDocument.text,initiator:'user'} }
         return { items: [] }
       },
       templates: async (action, body) => {

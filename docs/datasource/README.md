@@ -14,6 +14,7 @@ mysql.md
 oracle.md
 redis.md
 kafka.md
+nacos.md
 elasticsearch.md
 
 每份文档建议只包含以下内容。

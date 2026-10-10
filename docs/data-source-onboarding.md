@@ -14,7 +14,7 @@ HTTP 回包缺失、截断或无效时不能推断写入失败。新增来源需
 
 浏览器声明不是执行身份或授权证明。现有 SQL 共编接口通过 `sql-browser-request.ts` 和 `updateSharedQueryFromBrowser` 限制可写字段；内部工具仍使用可信服务调用。新增源不得由浏览器指定 ai/system 来源、结果字段或记录元信息。SQL 格式化使用当前 Host SQL 与真实方言验证，不套用到其他命令模型。
 
-客户端仅支持 `standard`，四源 Host 文本能力均为 `standard-text`。MySQL／Oracle 通过共享 SQL 客户端绑定和 createSqlTextExecution 分别接入；共编文档统一使用 ExecutionDocument，SQL Worker 和结构化维护保留专属适配。先定义本源真实连接配置、对象、可执行文本、上下文和结果，再实现差异能力。不要伪造 schema/table/database 等 SQL 字段。
+客户端使用 `standard`；仅声明文本执行能力的来源使用 Host `standard-text`。Nacos 使用资源 pages，不声明文本执行。MySQL／Oracle 通过共享 SQL 客户端绑定和 createSqlTextExecution 分别接入；共编文档统一使用 ExecutionDocument，SQL Worker 和结构化维护保留专属适配。先定义本源真实连接配置、对象、实际需要的执行能力、上下文和结果，再实现差异能力。不要伪造 schema/table/database 等 SQL 字段。
 
 共享类型目前是封闭联合类型，新增源需要显式扩展，并逐项修正类型检查指出的穷尽分支。当前 family 和 descriptor 也按既有类别声明；差异较大的新 family 必须扩展对应类型并验证，不得为了编译把新源伪装成 Kafka。测试 fixture 的类型绕过仅用于隔离验证。
 
@@ -30,8 +30,8 @@ SQL 目录生命周期可参考 `sql-catalog-operation.ts` 与 `ConnectionServic
 | 2 | `src/shared/data-sources/<source>.ts`、`registry.ts` | 名称、能力、纯函数；不导入 React、Node、驱动或 Host |
 | 3 | `src/host/data-sources/<source>/connection.mjs`、`module.ts` | 验证、指纹、保存配置规范化；必要时 sameLogin、requiresPassword、toSavedSettings |
 | 4 | `src/host/<source>-worker.mjs`、源目录 `runtime.mjs` | Worker 握手、受限 actions、请求/取消/超时/资源释放；驱动只在 Worker 路径加载 |
-| 5 | 源目录 `execution.ts` | normalizeContext、prepareText、authorize；产生 action/input、摘要和可选终态分类 |
-| 6 | 源目录 `explorer.ts`、`ai-tools.ts`、`knowledge.ts` | 对象读取、工具注册与文档投影、经验存储适配和分析 |
+| 5 | 可选源目录 `execution.ts` | 仅有文本执行时声明 normalizeContext、prepareText、authorize；其他结构化服务复用 runOperation |
+| 6 | 按需声明 `explorer.ts`、`ai-tools.ts`、`knowledge.ts` | 仅实现真实支持能力；资源页可通过专属服务读取，不提供空执行/经验接口 |
 | 7 | `src/client/data-sources/<source>.tsx` 及源目录组件 | 表单、总览、编辑器、补全、结果、历史详情；返回 standard bindings |
 | 8 | 下表静态绑定及构建 | 两端声明一致、导入闭包、Worker 完整、测试源不进发布包 |
 
@@ -152,3 +152,17 @@ Redis `read-operation.ts` 和 `ConnectionService.executeRedisReadTool()` 展示�
 公共外围可选 `summarizeFailure(error, lifecycle, status)` 仅提供安全持久摘要，未提供时保留默认行为。Redis 读取固定摘要不保存原始 Key／match／结果，保留当前 SHA-256 Key 目标摘要；工具输出不增加内部终态字段。读取不发布虚构文本或编辑器结果事件。
 
 Key 补全不写记录，总览刷新不增加历史噪声。`test/redis-target.test.mjs` 用显式释放队列的 Worker 验证接管、改文、切库、代次与取消；`scripts/redis-read-ui-acceptance.mjs` 挂载实际公共工作台与工具注册，由 `test:workspace-ui` 调用。这是受控 Worker 证据；真实 Redis 普通／TLS 的取消和断线由 `test:redis` 的透明 TCP 中继另行验证。
+
+## 公共框架与资源型来源（2026-10-10）
+
+Host 模块只要求 id、runtime 和 connection；execution、explorer、knowledge、ai 按需声明。客户端只要求 id/descriptor、connection 和 workspace，tree/history 按需声明。注册器验证已声明能力，入口在缺少能力时明确拒绝。runtime.documentKind 只由有执行文档的来源声明。Nacos 是资源型 pages 的参考，不为其添加 command 文档、SQL 方言或数据库池。
+
+连接行由公共 ConnectionTreeBranch 管理。tree.render 提供来源资源子树并通过 onSelect 绑定导航；SQL 的子树与 schema/navigation/cache 控制分别位于 client/sql/connection-tree.tsx 和 catalog-controller.ts。导航状态按连接隔离，重连时在新资源请求启动前失效旧缓存。SQL TreePaneActions 仍是 SQL 内部协议，不能扩展为全局事件总线。
+
+请求使用 createRequestScope.latest(key)：同 key 替换，其他 key 可并发；invalidate 清理整个连接范围。usePagedList 显式传资源 identity，保留来源游标解释。资源页的页码接口可以直接复用 request scope，不强制转换为追加列表。ResourceList 只负责搜索/刷新/状态/分页外壳；源提供控件与数据。SearchTree 被迁移到该外壳，Redis/Kafka 与 Nacos 都实际使用它。
+
+DialogFrame 处理可访问性、关闭与遮罩；ConfirmWriteDialog/连接确认和 Nacos 预览复用它。navigation.beforeClose 覆盖按钮及程序关闭；useNavigationGuard 在连接/会话等动作边界保护脏草稿并提供 beforeunload。只注册真实未保存资源，不给已自动保存的 SQL 文本虚构 dirty 状态。编辑器复用 useEditorHost 与 textEditorExtensions，限制由调用方声明，SQL 补全仍独立。
+
+workerExchange 负责 requestId 匹配、超时、监听清理与单次结束；ConnectionService 保留来源派发、缓存、进度、事务、取消/回执策略。生产 SQL/Redis family registry 分层保留，旧合并 registry 已移除；测试聚合真实 registry。可信 AI owner 统一由 ai-tool-context 获取，Redis/Kafka 知识操作复用 knowledge-dispatch，不创建新工具编排。
+
+Nacos UI/AI → Host NacosService → 既有 Worker 通信 → ConfigurationService/NamingService → NacosHttpClient。写入预览签名无状态；写回执使用现有 operation-runtime/ExecutionStore。完整边界见 [Nacos 指南](datasource/nacos.md)。

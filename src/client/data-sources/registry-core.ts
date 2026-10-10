@@ -8,8 +8,12 @@ export function createClientModuleRegistry(entries: readonly ClientSourceModule[
   for (const module of entries) {
     if (!module || !ids.has(module.id) || byId.has(module.id) || module.descriptor?.id !== module.id
       || module.connection?.id !== module.id || !module.workspace
-      || module.history?.id !== module.id || typeof module.history?.renderText !== 'function'
-      || typeof module.history?.resultEnvelope !== 'function' || typeof module.history?.renderResult !== 'function'
+      || (module.tree !== undefined && ((!module.tree.render && !module.tree.nodes && !module.tree.roots)
+        || (module.tree.render !== undefined && typeof module.tree.render !== 'function')
+        || (module.tree.nodes !== undefined && typeof module.tree.nodes !== 'function')
+        || (module.tree.roots !== undefined && (!Array.isArray(module.tree.roots) || module.tree.roots.some(root=>!root.id || !root.label)))))
+      || (module.history !== undefined && (module.history.id !== module.id || typeof module.history.renderText !== 'function'
+      || typeof module.history.resultEnvelope !== 'function' || typeof module.history.renderResult !== 'function'))
       || module.workspace.mode !== 'standard' || typeof module.workspace.useBindings !== 'function') {
       throw new Error(`数据源客户端模块不完整或重复：${String(module?.id)}`)
     }

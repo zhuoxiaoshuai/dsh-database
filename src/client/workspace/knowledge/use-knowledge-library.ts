@@ -38,7 +38,7 @@ export function useKnowledgeLibrary(bridge: WorkspaceBridge, connection: Connect
   }, [identity])
   useEffect(() => {
     if (!active || !bridge.templates) return
-    const ticket = scope.current.begin()
+    const ticket = scope.current.latest('search')
     void bridge.templates('knowledge-search', { connectionId: connection.id, generation: connection.generation, query: search }, ticket.signal)
       .then(body => { if (scope.current.isCurrent(ticket)) setItems((body as { items?: KnowledgeItem[] }).items || []) })
       .catch(caught => { if (scope.current.isCurrent(ticket)) setError(caught instanceof Error ? caught.message : '读取经验失败。') })

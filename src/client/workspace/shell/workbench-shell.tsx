@@ -1,12 +1,12 @@
+import {SqlConnectionTree} from '../../sql/connection-tree.tsx'
+import {refreshCatalogLayer} from '../../schema/refresh.ts'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FolderTree, Plus, Search, X } from 'lucide-react'
-import { SchemaCache } from '../../schema/schema-cache.ts'
+import { useSqlCatalogController } from '../../sql/catalog-controller.ts'
 import { ConnectionTreeBranch } from './connection-tree-branch.tsx'
 import { PaneGutter, PANE_GUTTER } from './pane-gutter.tsx'
 import { workspaceSources } from '../../workspace-sources.tsx'
 import { clientModules } from '../../data-sources/registry.ts'
-import type { TreePaneActions } from '../../tree-pane-actions.ts'
-import type { TreeFocus } from '../../tree-focus.ts'
 import { useDragResize } from '../parts/use-drag-resize.ts'
 import { coerceVisibleSchemas, preferredCatalogRoot, schemaCatalogChildren, type Connection, type ConnectionWorkbench, type PendingSchemaPick, type WorkspaceBridge } from '../../../shared/workbench.ts'
 import { connectionIdOf, errorCodeOf, isAbortError, shouldMarkConnectionOffline } from '../../../shared/connection-errors.ts'
@@ -28,7 +28,7 @@ export function WorkbenchShell({
   connection: Connection
   connections: Connection[]
   reconnecting?: string
-  onPick(id: string): void
+  onPick(id: string): void | boolean | Promise<void | boolean>
   onAdd(): void
   onEdit(id: string): void
   onCopy?(id: string): void
@@ -42,18 +42,15 @@ export function WorkbenchShell({
   const [collapsed, setCollapsed] = useState(false)
   const [sideWidth, setSideWidth] = useState(220)
   const [expandedIds, setExpandedIds] = useState<string[]>(() => connections.filter(item => item.live).map(item => item.id))
-  const [cacheTick, setCacheTick] = useState(0)
-  const [schema, setSchema] = useState(connection.workbench?.schema || '')
-  const [catalogRoot, setCatalogRoot] = useState(() => preferredCatalogRoot(catalogChildren(connection), '', connection.workbench?.visibleSchemas))
-  const [treeBusy, setTreeBusy] = useState(false)
-  const [treeFocus, setTreeFocus] = useState<TreeFocus | undefined>()
+  const [catalogRoots, setCatalogRoots] = useState<Record<string,string>>({})
+  const catalogRoot = catalogRoots[connection.id] || preferredCatalogRoot(catalogChildren(connection), '', connection.workbench?.visibleSchemas)
+  const setCatalogRoot = (root: string | ((previous:string)=>string), id=connection.id) => setCatalogRoots(old=>({...old,[id]:typeof root==='function'?root(old[id] || ''):root}))
+  useEffect(()=>{setCatalogRoots(old=>Object.fromEntries(Object.entries(old).filter(([id])=>connections.some(c=>c.id===id))))},[connections])
   const [filterTarget, setFilterTarget] = useState<string>()
   const [filterDraft, setFilterDraft] = useState<string[]>([])
   const [filterSearch, setFilterSearch] = useState('')
   const [sourceRefresh, setSourceRefresh] = useState<Record<string, number>>({})
   const [connectionMenu, setConnectionMenu] = useState<{ id: string; x: number; y: number }>()
-  const pendingRef = useRef<PendingSchemaPick | undefined>()
-  const actionsRef = useRef<TreePaneActions | undefined>()
   const liveSeen = useRef(new Set(connections.filter(item => item.live).map(item => item.id)))
   const onUnavailableRef = useRef(onUnavailable)
   onUnavailableRef.current = onUnavailable
@@ -77,11 +74,8 @@ export function WorkbenchShell({
       ...(explorer ? { explorer: ((item: Connection, action: 'list' | 'read', input: object, signal?: AbortSignal) => wrap(item, () => (explorer as (connection: Connection, action: 'list' | 'read', input: object, signal?: AbortSignal) => Promise<unknown>)(item, action, input, signal))) as NonNullable<WorkspaceBridge['explorer']> } : {}),
     }
   }, [bridge])
-  const catalogRef = useRef(host.catalog)
-  catalogRef.current = host.catalog
-  const stableCatalog = useCallback((item: Connection, input: Parameters<NonNullable<WorkspaceBridge['catalog']>>[1], signal?: AbortSignal) => catalogRef.current!(item, input, signal), [])
-  const cache = useMemo(() => new SchemaCache(stableCatalog), [stableCatalog])
-  useEffect(() => cache.subscribe(() => setCacheTick(n => n + 1)), [cache])
+  const sql = useSqlCatalogController(host, connection,connections)
+  const {cache,cacheTick,schema,treeBusy,treeFocus,pendingRef,actionsRef,onSchema,onTreeBusy,onTreeFocus} = sql
   useEffect(() => {
     setExpandedIds(ids => {
       let next = ids.filter(id => connections.some(item => item.id === id && item.live))
@@ -97,11 +91,8 @@ export function WorkbenchShell({
   }, [connections])
   useEffect(() => {
     const roots = catalogChildren(connection)
-    setCatalogRoot(current => preferredCatalogRoot(roots, current, connection.workbench?.visibleSchemas))
+    if (!clientModules.get(connection.dialect).tree?.render) setCatalogRoot(current => preferredCatalogRoot(roots, current, connection.workbench?.visibleSchemas))
   }, [connection.id, connection.dialect, connection.generation, connection.databases, connection.workbench?.visibleSchemas])
-  const onSchema = useCallback((next: string) => setSchema(next), [])
-  const onTreeBusy = useCallback((busy: boolean) => setTreeBusy(busy), [])
-  const onTreeFocus = useCallback((next?: TreeFocus) => setTreeFocus(next), [])
   const match = (name: string) => !search.trim() || name.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())
   const visibleConnections = connections.filter(item => match(item.name) || item.id === connection.id)
   const visibleConnectionIds = visibleConnections.map(item => item.id).join('\0')
@@ -122,10 +113,11 @@ export function WorkbenchShell({
   const startResize = useDragResize((start, next) => {
     setSideWidth(Math.min(420, Math.max(160, sideWidth + (next.clientX - start.clientX))))
   })
-  const useConnection = (item: Connection, schemaName?: string, extra?: Pick<PendingSchemaPick, 'folder' | 'open'>) => {
+  const useConnection = async (item: Connection, schemaName?: string, extra?: Pick<PendingSchemaPick, 'folder' | 'open'>) => {
     const selected = item.id === connection.id
     if (schemaName || extra) pendingRef.current = { connectionId: item.id, schema: schemaName || '', ...extra }
-    if (!selected) onPick(item.id)
+    if (!selected && await onPick(item.id) === false) {pendingRef.current=undefined;return}
+    if (!selected) return
     else if (schemaName) actionsRef.current?.activateSchema(schemaName)
   }
   return <section className="db-shell" aria-label="数据库工作台">
@@ -142,42 +134,11 @@ export function WorkbenchShell({
           {visibleConnections.map(item => {
             const connecting = reconnecting === item.id
             const selected = item.id === connection.id
+            const SourceTree = clientModules.get(item.dialect).tree?.render
             return <ConnectionTreeBranch
               key={item.id}
               item={item}
-              selected={selected}
-              connecting={connecting}
-              actionBlocked={reconnecting === item.id ? '连接正在处理请求，暂时不能断开或删除。' : undefined}
-              treeBusy={selected && treeBusy}
-              search={search}
-              schema={selected ? schema : ''}
-              cache={cache}
-              treeFocus={selected ? treeFocus : undefined}
-              expanded={expandedIds.includes(item.id)}
-              overflow={connectionMenu?.id === item.id ? { x: connectionMenu.x, y: connectionMenu.y } : undefined}
-              onPick={() => { pendingRef.current = undefined; onPick(item.id) }}
-              onConnect={() => onConnect?.(item.id)}
-              onEdit={() => onEdit(item.id)}
-              onCopy={() => onCopy?.(item.id)}
-              onDisconnect={() => onDisconnect?.(item.id)}
-              onDelete={() => onDelete?.(item.id)}
-              onToggleExpanded={() => setExpandedIds(ids => ids.includes(item.id) ? ids.filter(id => id !== item.id) : [...ids, item.id])}
-              onRefresh={() => {
-                setSourceRefresh(previous => ({ ...previous, [item.id]: (previous[item.id] || 0) + 1 }))
-              }}
-              onFilter={() => {
-                pendingRef.current = undefined
-                if (!selected) onPick(item.id)
-                setFilterDraft(coerceVisibleSchemas(item.workbench?.visibleSchemas))
-                setFilterSearch('')
-                setFilterTarget(item.id)
-              }}
-              catalogRoot={selected ? catalogRoot : ''}
-              onActivateRoot={id => {
-                pendingRef.current = undefined
-                setCatalogRoot(id)
-                if (!selected) onPick(item.id)
-              }}
+              sourceTree={SourceTree && expandedIds.includes(item.id) && item.live ? <SourceTree bridge={host} connection={item} selectedId={selected ? catalogRoots[item.id] || '' : undefined} refreshToken={sourceRefresh[item.id] || 0} onSelect={async id => {if(!selected && await onPick(item.id)===false)return;setCatalogRoot(id,item.id)}} /> : clientWorkspaceDescriptor(item.dialect).showsSchemaTree && expandedIds.includes(item.id) && item.live ? <SqlConnectionTree item={item} cache={cache} selected={selected} schema={selected?schema:""} search={search} treeFocus={selected?treeFocus:undefined} onPick={()=>{void onPick(item.id)}}
               onActivateSchema={name => useConnection(item, name)}
               onShowHomeFolder={(schemaName, kind) => {
                 useConnection(item, schemaName, { folder: kind })
@@ -197,6 +158,38 @@ export function WorkbenchShell({
                 useConnection(item, schemaName)
                 if (selected) actionsRef.current?.openContextMenu(event, schemaName, tableName, kind)
               }}
+ /> : undefined}
+              selected={selected}
+              connecting={connecting}
+              actionBlocked={reconnecting === item.id ? '连接正在处理请求，暂时不能断开或删除。' : undefined}
+              treeBusy={selected && treeBusy}
+              search={search}
+              expanded={expandedIds.includes(item.id)}
+              overflow={connectionMenu?.id === item.id ? { x: connectionMenu.x, y: connectionMenu.y } : undefined}
+              onPick={() => { pendingRef.current = undefined; onPick(item.id) }}
+              onConnect={() => onConnect?.(item.id)}
+              onEdit={() => onEdit(item.id)}
+              onCopy={() => onCopy?.(item.id)}
+              onDisconnect={() => onDisconnect?.(item.id)}
+              onDelete={() => onDelete?.(item.id)}
+              onToggleExpanded={() => setExpandedIds(ids => ids.includes(item.id) ? ids.filter(id => id !== item.id) : [...ids, item.id])}
+              onRefresh={() => {
+                if(clientWorkspaceDescriptor(item.dialect).showsSchemaTree)void refreshCatalogLayer(cache,item,{layer:"connection"}).catch(()=>{})
+                setSourceRefresh(previous => ({ ...previous, [item.id]: (previous[item.id] || 0) + 1 }))
+              }}
+              onFilter={() => {
+                pendingRef.current = undefined
+                if (!selected) onPick(item.id)
+                setFilterDraft(coerceVisibleSchemas(item.workbench?.visibleSchemas))
+                setFilterSearch('')
+                setFilterTarget(item.id)
+              }}
+              catalogRoot={selected ? catalogRoot : ''}
+              onActivateRoot={async id => {
+                if (!selected && await onPick(item.id)===false)return
+                pendingRef.current = undefined
+                setCatalogRoot(id,item.id)
+              }}
               onOpenOverflow={next => setConnectionMenu({ id: item.id, x: next.x, y: next.y })}
               onCloseOverflow={() => setConnectionMenu(current => current?.id === item.id ? undefined : current)}
             />
@@ -213,7 +206,7 @@ export function WorkbenchShell({
       <div className="db-shell-pane">
         <React.Fragment key={`${conversationId}:${connection.id}`}>
         {workspaceSources.get(connection.dialect).render({
-          conversationId, host, connection, connections, cache, pendingRef, actionsRef, refreshToken: sourceRefresh[connection.id] || 0, catalogRoot, onPick, onWorkbench, onSchema, onTreeBusy, onTreeFocus,
+          conversationId, host, connection, connections, sql, refreshToken: sourceRefresh[connection.id] || 0, catalogRoot, onCatalogRoot:root=>setCatalogRoot(root), onPick, onWorkbench,
         })}
         </React.Fragment>
       </div>

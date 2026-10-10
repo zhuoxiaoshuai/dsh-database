@@ -6,6 +6,8 @@
 
 使用插件先读[中文首页](../README.zh.md)或[English README](../README.md)。Kafka 的完整命令、认证、结果上限和写入约束见[中文使用指南](datasource/kafka.md)／[English guide](datasource/kafka.en.md)。
 
+Nacos 的范围、操作与敏感内容保护见[中文指南](datasource/nacos.md)／[English guide](datasource/nacos.en.md)。公共模块变更与验收证据见[实施记录](nacos-p0-implementation.md)。
+
 ## 1. 长期稳定文档
 
 ### data-source-onboarding.md

@@ -5,7 +5,7 @@
 ![全程由 AI 编写](https://img.shields.io/badge/全程由_AI_编写-555?style=flat-square)
 [![stars](https://img.shields.io/github/stars/zhuoxiaoshuai/dsh-database?style=flat-square)](https://github.com/zhuoxiaoshuai/dsh-database)
 
-在 DeepSeek Harness 会话右侧连接 MySQL、Oracle、Redis 和 Kafka，浏览对象、运行查询，并与 AI 共用查询编辑器。支持 SQL 网格维护与经验库，以及 Kafka 消息检索和 SIT 排障操作。
+在 DeepSeek Harness 会话右侧连接 MySQL、Oracle、Redis、Kafka 和 Nacos，浏览对象、运行查询，并与 AI 共用查询编辑器。支持 SQL 网格维护与经验库，以及 Kafka 消息检索和 SIT 排障操作。
 
 这份仓库全程由 AI 编写。
 
@@ -22,8 +22,11 @@
 | MySQL／Oracle | 库／Schema、表、列和结构；多查询与对象页签、SQL 批量、执行计划、网格维护、SQL 经验分析 |
 | Redis | DB／Key 浏览、类型、TTL、值和单条命令台 |
 | Kafka | Topic／消费组、分区、水位与 Lag、消息预览、有界检索，以及 SIT 发布与修复 |
+| Nacos 2.4.3 | Namespace、Group/Data ID 搜索、配置发布/删除、历史/Diff、监听者与服务实例读取 |
 
-四种数据源共享查询、AI Query、历史和经验入口，编辑器与结果保留各自的数据源语义。
+SQL、Redis、Kafka 共享查询、AI Query、历史和经验入口。Nacos 通过资源页面复用连接外壳、页签、编辑器、列表和操作记录，不创建 SQL/命令文档或经验库。
+
+Nacos 2.4.3 支持配置编辑、历史/Diff、监听者、服务和实例查询。人工在所有环境预览确认后可写；AI 仅 SIT 可写，局部修改保留敏感值。详见 [Nacos 指南](docs/datasource/nacos.md)。
 
 ## 安装
 
@@ -38,7 +41,7 @@ dsh plugin --profile web add https://github.com/zhuoxiaoshuai/dsh-database/relea
 ```sh
 npm ci --legacy-peer-deps
 npm pack
-dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.18.tgz
+dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.32.tgz
 ```
 
 卸载：
@@ -57,7 +60,7 @@ dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/r
 
 插件是同一份，只是 profile 不同。`--profile web` 不会装进桌面应用。
 
-上述下载链接指向 `alpha.12.15` 发布包。本地源码当前为 `alpha.12.18`；包名以 `npm pack` 的输出为准，打包时会自动构建。发布包与本地源码的验收记录应分别核对。
+上述下载链接指向 `alpha.12.15` 发布包。本地源码当前为 `alpha.12.32`；包名以 `npm pack` 的输出为准，打包时会自动构建。发布包与本地源码的验收记录应分别核对。
 
 ## 首次使用
 

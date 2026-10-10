@@ -1,7 +1,6 @@
+import {textEditorExtensions} from '../workspace/source/text-editor-extensions.ts'
 import React, { useEffect, useRef } from 'react'
-import { EditorState } from '@codemirror/state'
-import { EditorView, keymap } from '@codemirror/view'
-import { defaultKeymap, history, historyKeymap } from '@codemirror/commands'
+import { EditorView } from '@codemirror/view'
 import { closeCompletion, completionStatus, startCompletion, type CompletionSource } from '@codemirror/autocomplete'
 import { createCompletionInteraction } from '../completion/interaction.ts'
 import { hasUserTextChange, useEditorHost } from '../workspace/source/editor-host.ts'
@@ -48,12 +47,7 @@ export function RedisCommandEditor(props: {
     }
     const interaction = createCompletionInteraction([createRedisCompletionSource(() => current.current.keys || []), remoteSource])
     return { extensions: [
-        history(), EditorView.lineWrapping, EditorState.changeFilter.of(transaction => transaction.newDoc.length <= 65536), ...interaction.extensions,
-        keymap.of([
-          { key: 'Mod-Enter', run: editor => { current.current.onRun(editor.state.doc.toString()); return true } },
-          ...defaultKeymap, ...historyKeymap,
-        ]),
-        EditorView.contentAttributes.of({ 'aria-label': 'Redis 命令', 'spellcheck': 'false' }),
+        ...textEditorExtensions('Redis 命令',65536,text=>current.current.onRun(text)), ...interaction.extensions,
         EditorView.updateListener.of(update => {
           if (hasUserTextChange(update)) current.current.onChange(update.state.doc.toString())
           if (update.docChanged || update.selectionSet) current.current.onCursorChange(update.state.selection.main.head)

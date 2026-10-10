@@ -7,6 +7,8 @@ export class KnowledgeService {
   constructor(store: SqlTemplateStore) { this.store = store }
   dispatch(sourceId: DataSourceId, connectionId: string, body: Record<string, unknown>): Promise<unknown> | unknown {
     if (!connectionId) throw new Error('请提供 connectionId。')
-    return hostModules.get(sourceId).knowledge.dispatch(this.store, connectionId, body)
+    const provider = hostModules.get(sourceId).knowledge
+    if (!provider) throw new Error('此数据源不支持此能力。')
+    return provider.dispatch(this.store, connectionId, body)
   }
 }

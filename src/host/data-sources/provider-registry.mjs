@@ -1,7 +1,3 @@
-import { mysqlProvider } from './mysql/index.mjs'
-import { oracleProvider } from './oracle/index.mjs'
-import { redisProvider } from './redis/index.mjs'
-
 const requiredDriverMethods = [
   'openCatalog', 'openQuery', 'openMaintenance', 'destroy', 'cancel', 'probe',
   'prepareReadonly', 'reset', 'runSelect', 'prepareWrite', 'executeWrite',
@@ -39,17 +35,3 @@ export function createDataSourceRegistry(providers) {
   })
 }
 
-const registry = createDataSourceRegistry([mysqlProvider, oracleProvider, redisProvider])
-export const getDataSource = id => getSqlDataSource(id)
-export const getSqlDataSource = id => {
-  const provider = registry.get(id)
-  if (provider.family !== 'sql') throw new Error(`不是 SQL 数据源：${String(id || '')}`)
-  return provider
-}
-export const getRedisDataSource = id => {
-  const provider = registry.get(id)
-  if (provider.family !== 'redis') throw new Error(`不是 Redis 数据源：${String(id || '')}`)
-  return provider
-}
-export const registeredDataSources = () => registry.ids().filter(id => registry.get(id).family === 'sql')
-export const registeredAllDataSources = () => registry.ids()

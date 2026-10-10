@@ -1,3 +1,4 @@
+import { allowNavigation } from '../parts/navigation-guard.ts'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CircleAlert, Check, Database, Info, Plus, Power, Trash2, X } from 'lucide-react'
 import { WorkbenchShell } from './workbench-shell.tsx'
@@ -8,7 +9,7 @@ import { coerceVisibleSchemas, unavailableBridge, type Connection, type Connecti
 import { canReuseSavedLogin } from '../../../shared/connection-input.ts'
 import { databaseCss } from '../../style-css.ts'
 import { isHostDark, subscribeHostTheme } from '../parts/host-theme.ts'
-import { useBackdropDismiss, useDialog } from '../parts/dialog.ts'
+import {DialogFrame} from '../parts/dialog-frame.tsx'
 
 function ensureStyle(): void {
   if (typeof document === 'undefined') return
@@ -45,15 +46,7 @@ function ConfirmDialog({
   onCancel(): void
   onConfirm(): void
 }): React.ReactElement {
-  const dialog = useRef<HTMLDivElement>(null)
-  useDialog(dialog, () => { if (!busy) onCancel() }, true)
-  const backdrop = useBackdropDismiss(() => { if (!busy) onCancel() })
-  return <div className="db-overlay db-modal" onMouseDown={backdrop.onMouseDown} onClick={backdrop.onClick}>
-    <div ref={dialog} className="db-dialog" role="dialog" aria-modal="true" aria-label={label} onClick={event => event.stopPropagation()}>
-      <div className="db-dialog-heading"><div><h2>{title}</h2><p>{body}</p></div><button className="db-icon-button" aria-label={closeLabel} onClick={onCancel}><X size={18} /></button></div>
-      <div className="db-dialog-footer"><button onClick={onCancel}>取消</button><button className="db-danger-button" disabled={busy} onClick={onConfirm}>{confirmIcon}{confirmLabel}</button></div>
-    </div>
-  </div>
+  return <DialogFrame title={title} close={onCancel} busy={busy} footer={<><button disabled={busy} onClick={onCancel}>取消</button><button className="db-danger-button" disabled={busy} onClick={onConfirm}>{confirmIcon}{confirmLabel}</button></>}><p>{body}</p></DialogFrame>
 }
 
 export function DatabaseWorkspace({ conversationId, visible = true, preview = false, onActive, onDialogChange }: Props): React.ReactElement {
@@ -134,6 +127,7 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
     const next = connectionBridge(conversationId, unavailableBridge, preview)
     void (async () => {
       try {
+        if (!await allowNavigation(sqlOwner) || !current) return
         const snapshot = await next.listWorkspace?.()
         if (!current || !snapshot) return
         applySnapshot(snapshot, 'session')
@@ -172,6 +166,7 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
 
   const active = connections.find(row => row.id === activeId)
   const open = async (connection: Connection) => {
+    if(connection.id!==activeId && !await allowNavigation(sqlOwner))return
     if (!connection.live) {
       if (canReuseSavedLogin(connection) && connection.settings) {
         if (busy) return
@@ -193,10 +188,10 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
       }
       setForm({ editing: connection }); return
     }
-    rememberActive(connection.id)
+    if (await allowNavigation(sqlOwner)) rememberActive(connection.id)
   }
   const disconnectShared = async () => {
-    if (!disconnectTarget || busy) return
+    if (!disconnectTarget || busy || !await allowNavigation(sqlOwner)) return
     setBusy(disconnectTarget.id); setToast(undefined)
     try {
       await bridge.disconnectConnection?.(disconnectTarget.id)
@@ -208,7 +203,7 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
     finally { if (alive.current) setBusy(undefined) }
   }
   const remove = async () => {
-    if (!deleteTarget || busy) return
+    if (!deleteTarget || busy || !await allowNavigation(sqlOwner)) return
     setBusy(deleteTarget.id); setToast(undefined)
     try {
       await bridge.removeConnection?.(deleteTarget.id)
@@ -223,7 +218,7 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
     finally { if (alive.current) setBusy(undefined) }
   }
   const copy = async (id: string) => {
-    if (busy || !bridge.duplicateConnection) return
+    if (busy || !bridge.duplicateConnection || !await allowNavigation(sqlOwner)) return
     const source = connections.find(row => row.id === id)
     if (!source) return
     setBusy(id); setToast(undefined)
@@ -241,10 +236,10 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
     } catch (error) { if (alive.current) showToast(error instanceof Error ? error.message : '无法复制连接。', 'error') }
     finally { if (alive.current) setBusy(undefined) }
   }
-  const connected = (connection: Connection) => {
+  const connected = async (connection: Connection) => {
     setConnections(rows => rows.some(row => row.id === connection.id) ? rows.map(row => row.id === connection.id ? blendLiveConnection(row, connection) : row) : [...rows, connection])
     setForm(undefined)
-    rememberActive(connection.id)
+    if (activeId === connection.id || await allowNavigation(sqlOwner)) rememberActive(connection.id)
     if (connection.passwordWarning) showToast(connection.passwordWarning, 'info')
     else showToast(`已连接 ${connection.name} · ${connection.version}`, 'ok')
   }
@@ -260,10 +255,12 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
       showToast(error instanceof Error ? error.message : '无法保存工作台设置。', 'error')
     })
   }, [bridge, showToast])
-  const pick = (id: string) => {
+  const pick = async (id: string) => {
     const connection = connections.find(row => row.id === id)
-    if (!connection) return
+    if (!connection) return false
+    if (id !== activeId && !await allowNavigation(sqlOwner)) return false
     rememberActive(connection.id)
+    return true
   }
   const toastIcon = toast?.kind === 'error' ? <CircleAlert size={16} /> : toast?.kind === 'ok' ? <Check size={15} /> : <Info size={15} />
   const markOffline = (id: string) => {

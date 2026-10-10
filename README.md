@@ -5,7 +5,7 @@
 ![written entirely with AI](https://img.shields.io/badge/written-entirely%20with%20AI-555?style=flat-square)
 [![stars](https://img.shields.io/github/stars/zhuoxiaoshuai/dsh-database?style=flat-square)](https://github.com/zhuoxiaoshuai/dsh-database)
 
-Connect to MySQL, Oracle, Redis and Kafka from the right sidebar of a DeepSeek Harness conversation. Browse objects, run queries, and share a query editor with AI. SQL grid maintenance and a knowledge library support database work; bounded Kafka reads and SIT repair actions support diagnosis.
+Connect to MySQL, Oracle, Redis, Kafka and Nacos from the right sidebar of a DeepSeek Harness conversation. Browse objects, run queries, and share a query editor with AI. SQL grid maintenance and a knowledge library support database work; bounded Kafka reads and SIT repair actions support diagnosis.
 
 This repository was written entirely with AI.
 
@@ -22,8 +22,11 @@ Names in the screenshots are test data.
 | MySQL / Oracle | Database/schema, table, column and structure browsing; query/object tabs, SQL batches, execution plans, grid maintenance and SQL knowledge analysis |
 | Redis | DB/key browsing, types, TTL, values and a single-command console |
 | Kafka | Topics/groups, partitions, watermarks, lag, message previews, bounded search and SIT publish/repair actions |
+| Nacos 2.4.3 | Namespace, Group/Data ID search, configuration publishing/deletion, history/Diff, listeners and service/instance reads |
 
-All sources share query, AI Query, history and knowledge entry points. Editors and results retain source-specific semantics.
+SQL, Redis and Kafka share query, AI Query, history and knowledge entry points. Nacos reuses the connection shell, tabs, editors, lists and operation records through resource pages. It has no SQL/command document or knowledge library.
+
+Nacos 2.4.3 supports configuration editing, history/Diff, listeners and service instances. Human writes require preview and confirmation in every environment; AI writes are SIT-only and preserve sensitive values. See the [Nacos guide](docs/datasource/nacos.en.md).
 
 ## Install
 
@@ -38,7 +41,7 @@ From a clone you can also pack it locally:
 ```sh
 npm ci --legacy-peer-deps
 npm pack
-dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.18.tgz
+dsh plugin --profile web add ./dsh-database-0.1.0-alpha.12.32.tgz
 ```
 
 To uninstall:
@@ -57,7 +60,7 @@ dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/r
 
 It is the same plugin on a different profile. `--profile web` does not install into the desktop app.
 
-The download URL above targets the `alpha.12.15` release package. The source currently declares `alpha.12.18`; use the filename printed by `npm pack`, which builds automatically. Check acceptance evidence separately for the release package and local source.
+The download URL above targets the `alpha.12.15` release package. The source currently declares `alpha.12.32`; use the filename printed by `npm pack`, which builds automatically. Check acceptance evidence separately for the release package and local source.
 
 ## First use
 

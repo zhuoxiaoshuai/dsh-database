@@ -11,7 +11,6 @@ export function WorkspaceTabs({ tabs, active, onActivate, onClose, label = '工�
   label?: string
 }): React.ReactElement {
   const close = (tab: WorkspaceTab) => {
-    if (tab.dirty && typeof window !== 'undefined' && !window.confirm('此页签有未保存的更改，确定关闭？')) return
     onClose?.(tab.id)
   }
   return <div className="db-query-tabs" role="tablist" aria-label={label}>

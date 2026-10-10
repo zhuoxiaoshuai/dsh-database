@@ -1,7 +1,7 @@
 import type React from 'react'
-import type { Connection } from '../../shared/workbench.ts'
+import type { Connection, WorkspaceBridge } from '../../shared/workbench.ts'
 import type { DataSourceId } from '../../shared/data-sources/types.ts'
-import type { KafkaClientDescriptor, RedisClientDescriptor, SqlClientDescriptor } from '../../shared/data-sources/types.ts'
+import type { KafkaClientDescriptor, NacosClientDescriptor, RedisClientDescriptor, SqlClientDescriptor } from '../../shared/data-sources/types.ts'
 import type { ConnectionFormSource } from '../workspace/connection/connection-form-types.ts'
 import type { WorkspaceSourceContext } from '../workspace-sources.tsx'
 import type { SourceWorkspaceProps } from '../workspace/source/source-workspace.tsx'
@@ -14,15 +14,16 @@ export type SourceLogo = {
   viewBox: string
   className?: string
   artwork: React.ReactNode
+  compact?: { viewBox: string; artwork: React.ReactNode }
 }
 
 type ClientSourceBase = {
   id: DataSourceId
-  descriptor: SqlClientDescriptor | RedisClientDescriptor | KafkaClientDescriptor
+  descriptor: SqlClientDescriptor | RedisClientDescriptor | KafkaClientDescriptor | NacosClientDescriptor
   connection: ConnectionFormSource
   logo: SourceLogo
-  tree?: { roots?: readonly CatalogRoot[]; nodes?(connection: Connection): readonly CatalogRoot[]; filterNoun?: string }
-  history: HistoryDetailSource
+  tree?: { render?: React.ComponentType<{bridge: WorkspaceBridge; connection: Connection; onSelect(id: string): void; selectedId?: string; refreshToken?: number}>; roots?: readonly CatalogRoot[]; nodes?(connection: Connection): readonly CatalogRoot[]; filterNoun?: string }
+  history?: HistoryDetailSource
 }
 
 type SourceBindings<T> = T extends unknown ? Omit<T, 'bridge' | 'connection' | 'navigation'> : never

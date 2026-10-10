@@ -7,7 +7,7 @@ export function validateConnection(value: unknown, options?: { passwordOptional?
   const v = value as Record<string, unknown>
   const str = (key: string, max: number) => { if (typeof v[key] !== 'string' || v[key].length > max) throw new Error('连接字段格式或长度不正确。'); return v[key] as string }
   const dialect = v.dialect
-  if (!isDataSourceId(dialect) || dialect === 'kafka') throw new Error('请选择 MySQL、Oracle 或 Redis。')
+  if (!isDataSourceId(dialect) || dialect === 'kafka') throw new Error('请选择 MySQL、Oracle、Redis 或 Nacos。')
   const source = clientWorkspaceDescriptor(dialect)
   if (source.family === 'kafka') throw new Error('Kafka 连接使用独立配置。')
   const host = str('host', 253).trim(), database = str('database', 128).trim(), username = str('username', 128).trim()

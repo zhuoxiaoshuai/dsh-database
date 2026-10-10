@@ -10,8 +10,8 @@ import type { SqlTextEntryOptions, SqlPreparedState, SqlAuthorizedStatement } fr
 
 export interface HostSourceModule {
   id: DataSourceId
-  family: 'sql' | 'redis' | 'kafka'
-  runtime: { id: DataSourceId; workerEntry: string; actions: readonly string[] }
+  family: 'sql' | 'redis' | 'kafka' | 'nacos'
+  runtime: { id: DataSourceId; workerEntry: string; actions: readonly string[]; documentKind?: 'sql' | 'command' }
   connection: {
     validate(input: unknown, options?: { passwordOptional?: boolean }): SourceConnectionInput
     fingerprint(input: never): string
@@ -20,11 +20,11 @@ export interface HostSourceModule {
     toSavedSettings?(input: SourceConnectionInput, caPem: string): SourceConnectionSettings
     normalizeStoredSettings(raw: SourceConnectionSettings): SourceConnectionSettings
   }
-  ai: { key: string; register(ctx: { tools: { register(tool: unknown): void } }, service: ConnectionService,
+  ai?: { key: string; register(ctx: { tools: { register(tool: unknown): void } }, service: ConnectionService,
     executions: ExecutionStore, validOwner: (id: string) => boolean, rules: RedactionRule[]): void }
-  explorer: ExplorerProvider<DataSourceId>
-  knowledge: KnowledgeProvider<DataSourceId>
-  execution: StandardTextExecution
+  explorer?: ExplorerProvider<DataSourceId>
+  knowledge?: KnowledgeProvider<DataSourceId>
+  execution?: StandardTextExecution
 }
 
 export interface StandardTextExecution {

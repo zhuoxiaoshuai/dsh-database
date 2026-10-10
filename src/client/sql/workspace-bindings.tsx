@@ -30,8 +30,10 @@ type Tab =
   | { id: string; kind: 'templates' }
 
 export function useSqlWorkspaceBindings({
-  conversationId, host, connection, connections, cache, pendingRef, actionsRef, onPick, onWorkbench, onSchema, onTreeBusy, onTreeFocus, navigation,
+  conversationId, host, connection, connections, sql: catalog, onPick, onWorkbench, navigation,
 }: WorkspaceSourceContext): StandardSourceBindings {
+  if (!catalog) throw new Error('SQL 工作台缺少目录控制器。')
+  const {cache,pendingRef,actionsRef,onSchema,onTreeBusy,onTreeFocus} = catalog
   let sqlCache = closedDrafts.get(host)
   if (!sqlCache) { sqlCache = new Map(); closedDrafts.set(host, sqlCache) }
   const sqlCacheRef = { current: sqlCache }
@@ -42,13 +44,11 @@ export function useSqlWorkspaceBindings({
   const [taken] = useState(() => consumePendingSchema(pendingRef, connection.id))
   const initialSchema = taken.schema || connection.workbench?.schema || ''
   const [schemas, setSchemas] = useState<Record<string, unknown>[]>(() => cache.schemasSnapshot(connection) || [])
-  const [schema, setSchema] = useState(initialSchema)
+  const {schema,treeBusy,treeFocus,onSchema:setSchema,onTreeBusy:setTreeBusy,onTreeFocus:setTreeFocus}=catalog
   const [objects, setObjects] = useState<Record<string, unknown>[]>(() => {
     const cached = initialSchema ? cache.tablesSnapshot(connection, initialSchema) : undefined
     return cached ? cached.map(item => item.record) : []
   })
-  const [treeBusy, setTreeBusy] = useState(false)
-  const [treeFocus, setTreeFocus] = useState<TreeFocus | undefined>(initialSchema ? { kind: 'schema', schema: initialSchema } : undefined)
   const [folder, setFolder] = useState<ObjectKind>(taken.folder || 'table')
   const [hint, setHint] = useState('')
   const pendingOpen = taken.open && initialSchema ? { schema: initialSchema, table: taken.open.table, kind: taken.open.kind } : undefined
@@ -107,9 +107,7 @@ export function useSqlWorkspaceBindings({
   })
   persistPatch.current = workbenchPatch()
 
-  useLayoutEffect(() => { onSchema(schema) }, [schema, onSchema])
-  useLayoutEffect(() => { onTreeBusy(treeBusy) }, [treeBusy, onTreeBusy])
-  useLayoutEffect(() => { onTreeFocus(treeFocus) }, [treeFocus, onTreeFocus])
+  useLayoutEffect(()=>{setSchema(initialSchema);setTreeFocus(initialSchema?{kind:'schema',schema:initialSchema}:undefined)},[connection.id])
 
   useEffect(() => {
     const save = onWorkbenchRef.current

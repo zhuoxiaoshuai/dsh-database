@@ -62,6 +62,7 @@ export function registerDatabase(rawContext: Context, workerUrl: URL, options?: 
     const registered = new Map<string, unknown>()
     for (const id of hostModules.ids()) {
       const ai = hostModules.get(id).ai
+      if (!ai) continue
       const previous = registered.get(ai.key)
       if (previous && previous !== ai.register) throw new Error(`AI 工具组重复且实现不一致：${ai.key}`)
       if (previous) continue

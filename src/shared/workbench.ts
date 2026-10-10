@@ -10,7 +10,7 @@ import { sanitizeExecutionDocument, type ExecutionDocument } from './execution-d
 export type { Environment } from './connection-permission.ts'
 export { environmentLabel, isWritableEnvironment, normalizeEnvironment } from './connection-permission.ts'
 export type SqlDialect = 'mysql' | 'oracle'
-export type Dialect = SqlDialect | 'redis' | 'kafka'
+export type Dialect = SqlDialect | 'redis' | 'kafka' | 'nacos'
 export type QueryController = 'ai' | 'user'
 export type QueryEditSource = 'ai' | 'user' | 'system' | 'format'
 export type SharedQueryLastRun = { columns: string[]; rowCount: number; truncated: boolean; elapsedMs: number; message?: string; at: string; executionId?: string }
@@ -137,6 +137,8 @@ export interface ConnectionInput {
   host: string
   port: number
   database: string
+  protocol?: 'http' | 'https'
+  contextPath?: string
   oracleMode: 'service' | 'sid'
   redisMode?: 'standalone' | 'sentinel' | 'cluster'
   sentinelMaster?: string

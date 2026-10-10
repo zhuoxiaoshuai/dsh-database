@@ -6,6 +6,7 @@ export type NavigationConfig = {
   initialItems: NavigationItem[]
   initialActive: string
   fallback: string
+  beforeClose?(item: NavigationItem): boolean | Promise<boolean>
   onClose?(item: NavigationItem): void
 }
 
@@ -19,10 +20,12 @@ export function useWorkspaceNavigation() {
     setTabs(previous => previous.some(tab => tab.id === item.id) ? previous : [...previous, item])
     setActive(item.id)
   }, [])
-  const close = useCallback((id: string) => {
+  const close = useCallback(async (id: string) => {
     if (id === config.current?.fallback) return
     const closing = tabsRef.current.find(tab => tab.id === id)
     if (!closing) return
+    if (config.current?.beforeClose && !await config.current.beforeClose(closing)) return
+    if (!tabsRef.current.includes(closing)) return
     config.current?.onClose?.(closing)
     const next = tabsRef.current.filter(tab => tab.id !== id)
     tabsRef.current = next

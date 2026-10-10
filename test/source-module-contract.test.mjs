@@ -53,18 +53,23 @@ test('combined modules reject incomplete capabilities and unknown IDs', () => {
   assert.equal(client.get('mysql'), clientModule)
   assert.throws(() => client.get('unknown'), /不支持/)
   assert.throws(() => createClientModuleRegistry([{ ...clientModule, workspace: undefined }], ['mysql']), /不完整/)
-  assert.throws(() => createClientModuleRegistry([{ ...clientModule, history: undefined }], ['mysql']), /不完整/)
+  assert.equal(createClientModuleRegistry([{ ...clientModule, history: undefined }], ['mysql']).get('mysql').history, undefined)
+  assert.throws(() => createClientModuleRegistry([{ ...clientModule, history: {} }], ['mysql']), /不完整/)
   assert.throws(() => createClientModuleRegistry([{ ...clientModule, workspace: { mode: 'legacy-sql', render: () => null } }], ['mysql']), /不完整/)
   assert.throws(() => createClientModuleRegistry([{ ...clientModule, workspace: { mode: 'standard', useBindings: undefined } }], ['mysql']), /不完整/)
   assert.throws(() => createClientModuleRegistry([clientModule, clientModule], ['mysql']), /重复/)
-  const hostModule = { id: 'mysql', runtime: { id: 'mysql' }, connection: { validate() {}, fingerprint() {}, normalizeStoredSettings() {} },
+  const hostModule = { id: 'mysql', runtime: { id: 'mysql',documentKind:'sql' }, connection: { validate() {}, fingerprint() {}, normalizeStoredSettings() {} },
     explorer: { list() {}, read() {} }, knowledge: { dispatch() {} }, ai: { key: 'sql', register() {} },
     execution: { mode: 'standard-text', prepareText() {}, normalizeContext() {}, authorize() {} } }
+  assert.throws(()=>createClientModuleRegistry([{...clientModule,tree:{}}],['mysql']),/不完整/)
+  assert.throws(()=>createHostModuleRegistry([{...hostModule,runtime:{id:'mysql'}}],['mysql']),/不完整/)
   const host = createHostModuleRegistry([hostModule], ['mysql'])
   assert.equal(host.get('mysql'), hostModule)
   assert.throws(() => host.get('unknown'), /不支持/)
-  assert.throws(() => createHostModuleRegistry([{ ...hostModule, knowledge: undefined }], ['mysql']), /不完整/)
-  assert.throws(() => createHostModuleRegistry([{ ...hostModule, ai: undefined }], ['mysql']), /不完整/)
+  assert.equal(createHostModuleRegistry([{ ...hostModule, knowledge: undefined }], ['mysql']).get('mysql').knowledge, undefined)
+  assert.throws(() => createHostModuleRegistry([{ ...hostModule, knowledge: {} }], ['mysql']), /不完整/)
+  assert.equal(createHostModuleRegistry([{ ...hostModule, ai: undefined }], ['mysql']).get('mysql').ai, undefined)
+  assert.throws(() => createHostModuleRegistry([{ ...hostModule, ai: {} }], ['mysql']), /不完整/)
   assert.throws(() => createHostModuleRegistry([{ ...hostModule, connection: { ...hostModule.connection, normalizeStoredSettings: undefined } }], ['mysql']), /不完整/)
   const standard = { ...hostModule, execution: { mode: 'standard-text', prepareText() {}, normalizeContext() {}, authorize() {} } }
   assert.equal(createHostModuleRegistry([standard], ['mysql']).get('mysql'), standard)

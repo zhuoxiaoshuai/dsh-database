@@ -40,6 +40,7 @@ test('isolated provider tree is copied and every relative runtime import is ship
       const dependency = resolve(dirname(source), match[1])
       assert.ok(existsSync(dependency), `${source} imports missing ${match[1]}`)
       const modulePath = relative(resolve(root, 'src/host'), dependency).replaceAll('\\', '/')
+      if (source.endsWith('nacos/http-client.mjs') || source.endsWith('nacos\\http-client.mjs')) { assert.match(build, /entryPoints:\['src\/host\/data-sources\/nacos\/http-client.mjs'\]/); continue }
       if (!modulePath.startsWith('data-sources/')) assert.ok(copiedHost.has(modulePath), `${modulePath} is not in the host copy list`)
     }
   }

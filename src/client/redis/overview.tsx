@@ -1,3 +1,5 @@
+import {createRequestScope} from '../workspace/parts/request-scope.ts'
+import {useNavigationGuard} from '../workspace/parts/navigation-guard.ts'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Folder, KeyRound, Plus, X } from 'lucide-react'
 import type { Connection, WorkspaceBridge } from '../../shared/workbench.ts'
@@ -81,8 +83,7 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
   const patternReady = useRef(false)
   const scanMode = useRef<'page' | 'all'>('page')
   const scanToken = useRef(0)
-  const readAbort = useRef<AbortController | null>(null)
-  const readToken = useRef(0)
+  const readScope = useRef(createRequestScope(''))
   const shownKey = useRef('')
   const databaseRef = useRef(database)
   databaseRef.current = database
@@ -112,7 +113,7 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
     if (!signal.aborted) onKeys?.(items)
     return { items, nextCursor: next === '0' ? undefined : next }
   }
-  const paged = usePagedList(loadKeys)
+  const paged = usePagedList(loadKeys, `${connection.id}:${connection.generation}:${database}`)
   const redisKey = async (input: Record<string, unknown>, signal?: AbortSignal) => {
     if (!bridge.redis || !connection.live) throw new Error('请先连接 Redis。')
     return bridge.redis(connection, 'redis-key', { ...input, database: databaseRef.current }, signal) as unknown as Record<string, unknown>
@@ -144,9 +145,9 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
     setDetailError('')
     setCreating(false)
     paged.reset()
-    if (!connection.live || !database) return () => { scanToken.current += 1; paged.reset(); readAbort.current?.abort() }
+    if (!connection.live || !database) return () => { scanToken.current += 1; paged.reset(); readScope.current.invalidate(`${connection.id}:${connection.generation}:${database}`) }
     void paged.replace().then(ok => { if (ok && token === scanToken.current) setStarted(true) })
-    return () => { scanToken.current += 1; paged.reset(); readAbort.current?.abort(); readToken.current += 1 }
+    return () => { scanToken.current += 1; paged.reset(); readScope.current.invalidate(`${connection.id}:${connection.generation}:${database}`) }
   }, [connection.id, connection.generation, connection.live, refreshToken, database])
 
   useEffect(() => {
@@ -159,15 +160,13 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
 
   const read = async (name: string, nextCursor = '0', nextOffset = 0, mode: { bits?: boolean } = {}) => {
     if (!bridge.redis || !connection.live) { setDetailError('请先连接 Redis。'); return }
-    readAbort.current?.abort()
-    const controller = new AbortController()
-    readAbort.current = controller
-    const token = ++readToken.current
+    readScope.current.invalidate(`${connection.id}:${connection.generation}:${database}`)
+    const ticket = readScope.current.latest('key')
     pageRef.current = { cursor: nextCursor, offset: nextOffset, bits: !!mode.bits }
     setDetailError('')
     try {
-      const result = await redisKey({ key: name, operation: 'read', cursor: nextCursor, offset: nextOffset, ...(mode.bits ? { bits: true } : {}) }, controller.signal)
-      if (token !== readToken.current || controller.signal.aborted || shownKey.current !== name) return
+      const result = await redisKey({ key: name, operation: 'read', cursor: nextCursor, offset: nextOffset, ...(mode.bits ? { bits: true } : {}) }, ticket.signal)
+      if (!readScope.current.isCurrent(ticket) || shownKey.current !== name) return
       const loaded = stringFromDetail(result)
       setDraft(current => {
         if (!current || shownKey.current !== name) return current
@@ -181,11 +180,12 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
         }
       })
     } catch (caught) {
-      if (token === readToken.current && !controller.signal.aborted) setDetailError(caught instanceof Error ? caught.message : '读取 Key 失败。')
-    }
+      if (readScope.current.isCurrent(ticket)) setDetailError(caught instanceof Error ? caught.message : '读取 Key 失败。')
+    } finally {readScope.current.finish(ticket)}
   }
+  useNavigationGuard(bridge.conversationId || '', connection.id, !!draft?.dirty, () => window.confirm('Key 有未保存更改，确定离开？'))
   const openKey = (name: string) => {
-    if (writingRef.current) return
+    if (writingRef.current || (draft?.dirty && !window.confirm('Key 有未保存更改，确定切换？'))) return
     setDrawerOpen(false)
     shownKey.current = name
     setSelected(name)

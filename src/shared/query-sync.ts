@@ -1,3 +1,4 @@
+import { isDataSourceId } from './data-sources/registry.ts'
 import type { Result, SharedQuery } from './workbench.ts'
 import type { DisplayResult, WorkbenchEvent, DocumentExecutionIdentity, DocumentExecutionResult } from './execution.ts'
 import type { ExecutionDocument } from './execution-document.ts'
@@ -28,7 +29,7 @@ export function documentResult(value: unknown): DocumentExecutionResult | undefi
   if (!identity || typeof input.executionId !== 'string' || !input.executionId
     || !input.result || typeof input.result !== 'object' || Array.isArray(input.result)) return
   if (typeof identity.conversationId !== 'string' || typeof identity.connectionId !== 'string'
-    || !['mysql', 'oracle', 'redis', 'kafka'].includes(identity.sourceId) || typeof identity.generation !== 'string'
+    || !isDataSourceId(identity.sourceId) || typeof identity.generation !== 'string'
     || !identity.context || typeof identity.context !== 'object' || Array.isArray(identity.context)
     || Object.values(identity.context).some(value => typeof value !== 'string')
     || !Number.isInteger(identity.queryRevision) || identity.queryRevision < 1

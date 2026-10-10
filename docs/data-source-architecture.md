@@ -1,5 +1,11 @@
 # DSH 数据源平台架构
 
+## 资源型能力与公共收敛（2026-10-10）
+
+基础模块按实际需要声明 Explorer、Knowledge、文本执行、AI、历史渲染。注册验证已声明能力；未声明入口明确拒绝。Nacos 不建立 ExecutionDocument，结构化读写复用 operation-runtime 与 ExecutionStore。ConnectionService 仍唯一拥有连接/generation，来源服务不增加登录或操作 Store。
+
+SQL 目录控制移至 SQL 模块；公共树仅负责连接行与来源子树挂载。资源请求以 createRequestScope.latest(key) 处理替换，分页/错误外壳、弹窗/确认、编辑基础扩展使用已迁移的公共组件。Worker 匹配/超时/清理使用 workerExchange，保留各协议效果判断。详细接口与迁移消费者见[接入指南](data-source-onboarding.md#公共框架与资源型来源2026-10-10)。
+
 ## 执行边界与协调收敛（2026-10-05）
 
 - Host 在派发前捕获 `DocumentExecutionIdentity`：会话、连接、来源、generation、规范化 context、修订、完整文档、执行文本和 initiator。成功、失败、事件共享该快照。旧扁平字段仅兼容响应；SQL 内核读取 ExecutionDocument，不通过 SharedQuery 或历史投影检查文档。
@@ -48,8 +54,9 @@ database_import_connections 登记四源配置，Kafka 包括 brokers、tls、sa
 | Oracle | standard（共享 SQL 绑定） | standard-text；目录／浏览／维护专属入口 | Service/SID、SQL、目录、时间类型、维护与恢复 |
 | Redis | standard | standard-text（命令）；专属结构化入口（SCAN／Key） | 命令隔离连接、SCAN、Key 编辑、DB 上下文与补全 |
 | Kafka | standard | standard-text | Topic/组搜索分页、成员与 Lag、有界 PEEK、消息 JSON/预览导出 |
+| Nacos | standard pages | NacosService 结构化入口；无文本文档 | Namespace、配置/历史/Diff/监听者、服务/实例；人工预览写与 SIT AI 局部写 |
 
-standard 复用公共导航、页面容器、状态栏、执行窗口、AI 历史外框和经验列表布局。SQL 保留多查询／对象页签，Redis／Kafka 保持单查询页；四源共编统一使用 ExecutionDocument。Redis 的 SCAN、Key 浏览／编辑和读取工具继续采用专属入口。新增源采用 standard＋standard-text；完整施工顺序和静态绑定位置见 [接入指南](data-source-onboarding.md)。
+standard 复用公共导航、页面容器、状态栏、执行窗口、AI 历史外框和经验列表布局。SQL 保留多查询／对象页签，Redis／Kafka 保持单查询页；四源共编统一使用 ExecutionDocument。Redis 的 SCAN、Key 浏览／编辑和读取工具继续采用专属入口。新增源采用 standard；文本执行按实际能力声明，资源页可不使用 standard-text；完整施工顺序和静态绑定位置见 [接入指南](data-source-onboarding.md)。
 
 ## 客户端页面绑定
 

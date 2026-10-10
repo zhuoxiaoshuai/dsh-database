@@ -4,6 +4,7 @@ import { mysqlModule } from './mysql/module.ts'
 import { oracleModule } from './oracle/module.ts'
 import { redisModule } from './redis/module.ts'
 import { kafkaModule } from './kafka/module.ts'
+import { nacosModule } from './nacos/module.ts'
 import type { HostSourceModule } from './module-types.ts'
 
 export function createHostModuleRegistry(entries: readonly HostSourceModule[], expected: readonly DataSourceId[]) {
@@ -14,11 +15,12 @@ export function createHostModuleRegistry(entries: readonly HostSourceModule[], e
     if (!module || !ids.has(module.id) || byId.has(module.id) || module.runtime?.id !== module.id
       || typeof module.connection?.validate !== 'function' || typeof module.connection?.fingerprint !== 'function'
       || typeof module.connection?.normalizeStoredSettings !== 'function'
-      || !module.ai?.key || typeof module.ai?.register !== 'function'
-      || typeof module.explorer?.list !== 'function' || typeof module.explorer?.read !== 'function'
-      || typeof module.knowledge?.dispatch !== 'function'
-      || module.execution?.mode !== 'standard-text' || typeof module.execution.prepareText !== 'function'
-      || typeof module.execution.normalizeContext !== 'function' || typeof module.execution.authorize !== 'function') throw new Error(`Host 数据源模块不完整或重复：${String(module?.id)}`)
+      || (module.execution !== undefined && !['sql','command'].includes(module.runtime.documentKind || ''))
+      || (module.ai !== undefined && (!module.ai.key || typeof module.ai.register !== 'function'))
+      || (module.explorer !== undefined && (typeof module.explorer.list !== 'function' || typeof module.explorer.read !== 'function'))
+      || (module.knowledge !== undefined && typeof module.knowledge.dispatch !== 'function')
+      || (module.execution !== undefined && (module.execution.mode !== 'standard-text' || typeof module.execution.prepareText !== 'function'
+      || typeof module.execution.normalizeContext !== 'function' || typeof module.execution.authorize !== 'function'))) throw new Error(`Host 数据源模块不完整或重复：${String(module?.id)}`)
     byId.set(module.id, module)
   }
   for (const id of ids) if (!byId.has(id)) throw new Error(`缺少 Host 数据源模块：${id}`)
@@ -29,4 +31,4 @@ export function createHostModuleRegistry(entries: readonly HostSourceModule[], e
   } })
 }
 
-export const hostModules = createHostModuleRegistry([mysqlModule, oracleModule, redisModule, kafkaModule], supportedAllDataSources)
+export const hostModules = createHostModuleRegistry([mysqlModule, oracleModule, redisModule, kafkaModule, nacosModule], supportedAllDataSources)

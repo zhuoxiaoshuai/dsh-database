@@ -1,5 +1,5 @@
 export type SqlDataSourceId = 'mysql' | 'oracle'
-export type DataSourceId = SqlDataSourceId | 'redis' | 'kafka'
+export type DataSourceId = SqlDataSourceId | 'redis' | 'kafka' | 'nacos'
 
 export interface SourceConnectionDescriptor {
   requiresUsername: boolean
@@ -25,6 +25,16 @@ export interface KafkaClientDescriptor {
   displayName: string
   badge: string
   capabilities: { topics: true; describe: true; peek: true }
+  showsSchemaTree: false
+}
+
+export interface NacosClientDescriptor {
+  connection: SourceConnectionDescriptor
+  id: 'nacos'
+  family: 'nacos'
+  displayName: string
+  badge: string
+  defaultPort: number
   showsSchemaTree: false
 }
 

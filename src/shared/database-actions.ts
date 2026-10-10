@@ -31,6 +31,7 @@ export const CONNECTION_API_ACTIONS = [
   'redis-scan',
   'redis-key-suggest',
   'redis-key',
+  'nacos-request',
   'source-execute',
   'explorer-list',
   'explorer-read',
