@@ -1,0 +1,53 @@
+export type ThemeScheme = 'light' | 'dark'
+export type ThemeTokens = Record<`--db-${string}`, string>
+export type WorkbenchTheme = { name: string; shared: ThemeTokens; light: ThemeTokens; dark: ThemeTokens }
+
+/** Complete palettes live here; components consume semantic CSS variables only. */
+export const workbenchThemes: Record<string, WorkbenchTheme> = {
+  'mist-green': {
+    name: '雾灰青绿',
+    shared: {
+      '--db-radius-control': '6px', '--db-radius-panel': '8px', '--db-radius-overlay': '10px',
+      '--db-transition': '140ms', '--db-border-width': '1px',
+    },
+    light: {
+      '--db-bg': '#F4F6F5', '--db-panel': '#FBFCFB', '--db-editor': '#FBFCFB', '--db-overlay-panel': '#FFFFFF',
+      '--db-nav': '#EEF2F0', '--db-hover': '#E8EEEB', '--db-tree-sel': '#DFEAE5', '--db-selection': '#CCDED4',
+      '--db-text': '#26352F', '--db-muted': '#596A61', '--db-placeholder': '#5F7167',
+      '--db-line': '#DCE4DF', '--db-control-line': '#81948A', '--db-accent': '#496C5D', '--db-on-accent': '#FFFFFF',
+      '--db-accent-hover': '#3F5F51', '--db-accent-active': '#365345', '--db-tint': '#E8EFEB',
+      '--db-ok': '#3E7056', '--db-warn': '#866329', '--db-error': '#A34F4F', '--db-info': '#536E87',
+      '--db-on-danger': '#FFFFFF', '--db-danger-hover': '#8D4242', '--db-state-mix': '8%',
+      '--db-disabled-text': '#6E7B73', '--db-disabled-bg': '#EDF0EE', '--db-disabled-line': '#D5DDD8',
+      '--db-shadow': '0 6px 22px #26352F14', '--db-shadow-soft': '0 1px 3px #26352F0A', '--db-backdrop': '#18251D38',
+      '--db-sql-keyword': '#675882', '--db-sql-string': '#47705A', '--db-sql-number': '#89602E',
+      '--db-code-property': '#4C6881', '--db-code-comment': '#63766C', '--db-search-match': '#EBDDAD',
+      '--db-diff-add': '#E1EDE5', '--db-diff-remove': '#F2E3E3', '--db-diff-add-text': '#315E43', '--db-diff-remove-text': '#934646',
+    },
+    dark: {
+      '--db-bg': '#181E1B', '--db-panel': '#202823', '--db-editor': '#202823', '--db-overlay-panel': '#27312B',
+      '--db-nav': '#242E28', '--db-hover': '#2E3A32', '--db-tree-sel': '#34483D', '--db-selection': '#405D4C',
+      '--db-text': '#E0E8E2', '--db-muted': '#A7B6AC', '--db-placeholder': '#92A399',
+      '--db-line': '#354239', '--db-control-line': '#718A7A', '--db-accent': '#94B6A2', '--db-on-accent': '#18251D',
+      '--db-accent-hover': '#A3C2B0', '--db-accent-active': '#B2CCBD', '--db-tint': '#2C3B31',
+      '--db-ok': '#9BBAA4', '--db-warn': '#CDB687', '--db-error': '#D7A1A1', '--db-info': '#A1B6CB',
+      '--db-on-danger': '#281B1B', '--db-danger-hover': '#E4B3B3', '--db-state-mix': '12%',
+      '--db-disabled-text': '#91A096', '--db-disabled-bg': '#29332C', '--db-disabled-line': '#3F4C43',
+      '--db-shadow': '0 6px 22px #00000024', '--db-shadow-soft': '0 1px 3px #00000018', '--db-backdrop': '#080D0A66',
+      '--db-sql-keyword': '#B9ABCF', '--db-sql-string': '#A1C5AC', '--db-sql-number': '#D1B68F',
+      '--db-code-property': '#ADC0D3', '--db-code-comment': '#92A399', '--db-search-match': '#665B37',
+      '--db-diff-add': '#2C4434', '--db-diff-remove': '#493333', '--db-diff-add-text': '#B2D2BC', '--db-diff-remove-text': '#E0B1B1',
+    },
+  },
+}
+
+export function themeVariables(paletteId: string, scheme: ThemeScheme): ThemeTokens {
+  const theme = Object.hasOwn(workbenchThemes, paletteId) ? workbenchThemes[paletteId] : workbenchThemes['mist-green']
+  return { ...theme.shared, ...theme[scheme] }
+}
+
+/** Generated CSS supplies defaults for isolated previews and legacy db-dark fixtures. */
+export function defaultThemeCss(): string {
+  const css = (scheme: ThemeScheme) => Object.entries(themeVariables('mist-green', scheme)).map(([key, value]) => `${key}:${value}`).join(';')
+  return `/* Generated from theme-tokens.ts. */\n:where(.db-workbench,.db-search-select-menu,.cm-tooltip.cm-tooltip-autocomplete){${css('light')}}\n:where(.db-workbench.db-dark,.db-search-select-menu.db-dark,.cm-tooltip.cm-tooltip-autocomplete.db-dark,body[data-ds-dark-theme] .db-workbench,body[data-ds-dark-theme] .db-search-select-menu,body[data-ds-dark-theme] .cm-tooltip.cm-tooltip-autocomplete,html.dark .db-workbench,html[data-theme=dark] .db-workbench){${css('dark')}}\n`
+}

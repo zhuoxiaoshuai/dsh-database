@@ -1,4 +1,5 @@
 import { NacosError } from './http-client.mjs'
+import {resolveNacosConfigType} from '../../../shared/nacos-config-types.mjs'
 export const scope = input => {
   if (typeof input.namespaceId !== 'string') throw new NacosError('invalid', '请明确提供 Namespace ID（public 使用空字符串）。')
   for (const key of ['namespaceId','group','dataId','serviceName']) if (input[key] !== undefined && (typeof input[key] !== 'string' || input[key].length > 256 || /[\x00-\x1f]/.test(input[key]))) throw new NacosError('invalid', 'Nacos 资源范围无效。')
@@ -24,11 +25,11 @@ export class ConfigurationService {
       const data = await this.client.request('/v1/cs/configs', {query: {...query, show: 'all'}, signal, allowMissing:true})
       if (!data || !data.md5 || typeof data.content !== 'string') throw new NacosError('not-found', '配置不存在或缺少完整版本信息。')
       const {encryptedDataKey, ...item} = data
-      return {...item, encrypted: !!encryptedDataKey}
+      return {...item,type:resolveNacosConfigType(item.type,input.dataId), encrypted: !!encryptedDataKey}
     }
     if (action === 'nacos-history') {
       const data = await this.client.request(input.historyId ? '/v2/cs/history' : '/v2/cs/history/list', {query: {...target, ...(input.historyId ? {nid: input.historyId} : paging(input))}, signal})
-      if (input.historyId) { const {encryptedDataKey, ...item} = data; const extension=input.dataId.split('.').at(-1)?.toLowerCase();return {...item,type:item.type || (['json','yaml','yml','properties'].includes(extension)?extension:undefined), encrypted: !!encryptedDataKey} }
+      if (input.historyId) { const {encryptedDataKey, ...item} = data;return {...item,type:resolveNacosConfigType(item.type,input.dataId), encrypted: !!encryptedDataKey} }
       return {items: (data.pageItems || []).map(({content, encryptedDataKey, ...item}) => item), total: data.totalCount, pageNo: data.pageNumber}
     }
     if (action === 'nacos-listeners') return {listeners: await this.client.request('/v1/cs/configs/listener', {query, signal})}

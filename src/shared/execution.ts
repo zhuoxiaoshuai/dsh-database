@@ -176,6 +176,7 @@ export function inferExecutionType(operation: string, purpose?: string): Executi
 }
 
 export function isDisplayHistoryExecution(record: Pick<ExecutionRecord, 'type' | 'operation' | 'status'>): boolean {
+  if (record.operation === 'knowledge_sql_execute') return false
   const type = record.type || inferExecutionType(record.operation)
   if (record.status === 'awaiting_confirmation') return true
   return type === 'query' || type === 'write' || type === 'explain'
@@ -232,6 +233,7 @@ export function clipResultPreview(result?: Result): Result | undefined {
   if (Array.isArray(result.batch) && result.batch.length) {
     clipped.batch = result.batch.slice(0, 8).map(item => clipOneResultPreview(item))
   }
+  if ((result.steps?.length || 0) > 16 || (result.batch?.length || 0) > 8) clipped.truncated = true
   return clipped
 }
 

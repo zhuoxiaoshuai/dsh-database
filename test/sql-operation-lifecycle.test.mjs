@@ -123,6 +123,7 @@ test(`queued SQL ${kind} rejects ${change} without dispatch and retains its sing
   if (change === 'schema') f.service.updateSharedQuery('owner', f.connection.id, { schema: 'other' }, 'ai', f.service.getExecutionDocument('owner', f.connection.id).revision)
   if (change === 'generation') {
     await f.worker().terminate()
+    await lock.pending // The old maintenance lane must settle before accepting replacement.
     await f.service.open('owner', connectionInput(), false, f.connection.id)
   }
   if (change === 'cancel') abort.abort()

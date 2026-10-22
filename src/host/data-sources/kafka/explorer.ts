@@ -30,35 +30,37 @@ function decodeRef(ref: string): { kind: 'topic' | 'partition' | 'group' | 'grou
 
 export const kafkaExplorer: ExplorerProvider<'kafka'> = {
   id: 'kafka',
-  readonlyActions: ['kafka-topics', 'kafka-describe', 'kafka-groups', 'kafka-group'],
+  readonlyActions: ['kafka-topics', 'kafka-describe', 'kafka-groups', 'kafka-group', 'kafka-topic-groups'],
   async list(transport, input, signal) {
-    if (!transport.source) throw new Error('Kafka 对象读取通道不可用。')
     if (!input.parent) {
-      const page = await transport.source('kafka-topics', { cursor: input.cursor || '0', search: input.search || '' }, signal)
+      const page = await transport.request('kafka-topics', { cursor: input.cursor || '0', search: input.search || '', details: true }, signal)
       const topics = Array.isArray(page.topics) ? page.topics.filter((item): item is string => typeof item === 'string') : []
-      return { sourceId: 'kafka', nodes: topics.map(topic => ({ ref: topicRef(topic), title: topic, kind: 'topic', hasChildren: false })),
-        ...(typeof page.nextCursor === 'string' ? { nextCursor: page.nextCursor } : {}), complete: page.truncated !== true }
+      return { sourceId: 'kafka', nodes: topics.map(topic => ({ ref: topicRef(topic), title: topic, kind: 'topic', hasChildren: false, metadata: page.metadata?.[topic] })),
+        ...(typeof page.nextCursor === 'string' ? { nextCursor: page.nextCursor } : {}), complete: page.truncated !== true && page.complete !== false, warning: page.warning, collectedAt: page.collectedAt }
     }
     if (input.parent === GROUPS) {
-      const page = await transport.source('kafka-groups', { cursor: input.cursor || '0', search: input.search || '' }, signal)
+      const page = await transport.request('kafka-groups', { cursor: input.cursor || '0', search: input.search || '', details: true }, signal)
       const groups = Array.isArray(page.groups) ? page.groups.filter((item): item is string => typeof item === 'string') : []
-      return { sourceId: 'kafka', nodes: groups.map(groupId => ({ ref: groupRef(groupId), title: groupId, kind: 'group', hasChildren: true })),
-        ...(typeof page.nextCursor === 'string' ? { nextCursor: page.nextCursor } : {}), complete: page.truncated !== true }
+      return { sourceId: 'kafka', nodes: groups.map(groupId => ({ ref: groupRef(groupId), title: groupId, kind: 'group', hasChildren: true, metadata: page.metadata?.[groupId] })),
+        ...(typeof page.nextCursor === 'string' ? { nextCursor: page.nextCursor } : {}), complete: page.truncated !== true && page.complete !== false, warning: page.warning, collectedAt: page.collectedAt }
     }
     const target = decodeRef(input.parent)
     if (target.kind === 'topic' || target.kind === 'partition') throw new Error('Topic 没有子节点。')
     if (target.kind !== 'group' || !target.groupId) throw new Error('Kafka 对象引用无效。')
-    const page = await transport.source('kafka-group', { groupId: target.groupId, topics: true, cursor: input.cursor || '0' }, signal)
+    const page = await transport.request('kafka-group', { groupId: target.groupId, topics: true, cursor: input.cursor || '0' }, signal)
     const topics = Array.isArray(page.topics) ? page.topics.filter((item): item is string => typeof item === 'string') : []
     return { sourceId: 'kafka', nodes: topics.map(topic => ({ ref: groupTopicRef(target.groupId!, topic), title: topic, kind: 'group-topic', hasChildren: false, metadata: { groupId: target.groupId, topic } })),
-      ...(typeof page.nextCursor === 'string' ? { nextCursor: page.nextCursor } : {}), complete: page.truncated !== true }
+      ...(typeof page.nextCursor === 'string' ? { nextCursor: page.nextCursor } : {}), complete: page.truncated !== true && page.complete !== false, warning: page.warning, collectedAt: page.collectedAt }
   },
   async read(transport, input, signal) {
-    if (!transport.source) throw new Error('Kafka 对象读取通道不可用。')
+    if (input.ref.startsWith('topic-groups:')) return transport.request('kafka-topic-groups', {
+      topic: decodeComponent(input.ref.slice('topic-groups:'.length), 249), cursor: input.cursor || '0', refresh: input.refresh }, signal)
+    if (input.ref.startsWith('group-summary:')) return transport.request('kafka-group', {
+      groupId: decodeComponent(input.ref.slice('group-summary:'.length), 255), summary: true, refresh: input.refresh }, signal)
     const target = decodeRef(input.ref)
-    if (target.kind === 'group') return transport.source('kafka-group', { groupId: target.groupId }, signal)
-    if (target.kind === 'group-topic') return transport.source('kafka-group', { groupId: target.groupId, topic: target.topic }, signal)
-    const details = await transport.source('kafka-describe', { text: `DESCRIBE ${JSON.stringify(target.topic)}` }, signal)
+    if (target.kind === 'group') return transport.request('kafka-group', { groupId: target.groupId, refresh: input.refresh }, signal)
+    if (target.kind === 'group-topic') return transport.request('kafka-group', { groupId: target.groupId, topic: target.topic, refresh: input.refresh }, signal)
+    const details = await transport.request('kafka-describe', { text: `DESCRIBE ${JSON.stringify(target.topic)}`, refresh: input.refresh }, signal)
     return { ...details, selectedPartition: target.partition,
       queryText: target.partition === undefined ? '' : `PEEK ${JSON.stringify(target.topic)} PARTITION ${target.partition} FROM LATEST LIMIT 20` }
   },

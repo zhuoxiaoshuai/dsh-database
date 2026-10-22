@@ -45,7 +45,7 @@ createRoot(document.getElementById('app')).render(kind === 'object'
   ? <ObjectWorkspace {...props} cache={undefined} table="demo" isView={false} sub="data" onSub={() => {}} />
   : <SqlWorkspaceTab {...props} schemas={['app']} initialSql="SELECT id,value FROM demo" onSql={() => {}} onSavedExperience={() => {}} onSchemaChange={() => {}} />)
 ` }, bundle: true, format: 'esm', outdir, entryNames: 'fixture', assetNames: 'fixture' })
-await writeFile(resolve(outdir, 'index.html'), '<html><head><link rel="stylesheet" href="/fixture.css"><style>html,body,#app{height:100%;margin:0}</style></head><body><div id="app"></div><script type="module" src="/fixture.js"></script></body></html>')
+await writeFile(resolve(outdir, 'index.html'), '<html><head><link rel="stylesheet" href="/fixture.css"><style>html,body,#app{height:100%;margin:0}</style></head><body><div id="app" class="db-workbench"></div><script type="module" src="/fixture.js"></script></body></html>')
 const server = createServer(async (req, res) => {
   try { const path = new URL(req.url, 'http://fixture').pathname; const data = await readFile(resolve(outdir, '.' + (path === '/' ? '/index.html' : path))); res.writeHead(200, { 'Content-Type': path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html' }); res.end(data) }
   catch { res.writeHead(404); res.end() }
@@ -67,7 +67,7 @@ try {
         await page.getByLabel('编辑 value', { exact: true }).press('Enter')
       }
       await page.getByRole('button', { name: kind === 'object' ? '保存' : '保存修改', exact: true }).click()
-      await page.getByRole('dialog', { name: '确认提交' }).getByRole('button', { name: '确认', exact: true }).click()
+      await page.getByRole('dialog', { name: '确认提交' }).getByRole('button', { name: '提交修改', exact: true }).click()
       await page.getByLabel('未知写入核验').waitFor()
       assert.equal(await page.evaluate(() => window.writes), 2)
       await page.evaluate(() => { window.failRead = true })

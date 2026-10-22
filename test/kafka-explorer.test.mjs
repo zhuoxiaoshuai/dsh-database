@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { kafkaExplorer } from '../src/host/data-sources/kafka/explorer.ts'
 
 test('Kafka topics are leaves and partitions are not tree children', async () => {
-  const transport = { source: async (action) => {
+  const transport = { request: async (action) => {
     if (action !== 'kafka-topics') throw new Error(action)
     return { topics: ['orders/a:b'], truncated: false }
   } }
@@ -15,7 +15,7 @@ test('Kafka topics are leaves and partitions are not tree children', async () =>
 
 test('Kafka group tree unions topics without asking for end offsets', async () => {
   const calls = []
-  const transport = { source: async (action, input) => {
+  const transport = { request: async (action, input) => {
     calls.push(action)
     if (action === 'kafka-groups') return { groups: ['a/b:c'], truncated: false }
     if (action === 'kafka-group' && input.topics === true) return { topics: ['old', 'orders'] }

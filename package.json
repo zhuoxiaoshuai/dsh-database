@@ -1,6 +1,6 @@
 {
   "name": "dsh-database",
-  "version": "0.1.0-alpha.12.32",
+  "version": "0.1.0-alpha.12.86",
   "license": "MIT",
   "author": "liu",
   "description": "MySQL, Oracle, Redis, Kafka and Nacos inside DeepSeek Harness. Written entirely with AI.",
@@ -27,6 +27,9 @@
     "node": ">=24.0.0"
   },
   "main": "lib/index.js",
+  "bin": {
+    "dsh-database": "./lib/launch.js"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
@@ -35,11 +38,15 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/launch.js",
+    "lib/serve.js",
+    "lib/preview",
     "lib/connection-worker.mjs",
     "lib/redis-worker.mjs",
     "lib/kafka-worker.mjs",
     "lib/nacos-worker.mjs",
     "lib/connect-error.mjs",
+    "lib/connection-failure.mjs",
     "cordis.patch.yml",
     "README.md",
     "README.zh.md",
@@ -61,7 +68,8 @@
     "lib/dialects",
     "lib/data-sources",
     "lib/shared/connection-permission.mjs",
-    "lib/shared/limits.mjs"
+    "lib/shared/limits.mjs",
+    "dsh-database.cmd"
   ],
   "dsh": {
     "bundle": {
@@ -78,7 +86,7 @@
     }
   },
   "scripts": {
-    "prepack": "npm run build",
+    "prepack": "npm run pack:prepare",
     "build": "node scripts/build.mjs",
     "typecheck": "tsc -p tsconfig.host.json && tsc -p tsconfig.client.json",
     "test": "node --experimental-strip-types --test --test-concurrency=4 test/*.test.mjs",
@@ -101,35 +109,43 @@
     "test:fact-adoption": "node scripts/fact-adoption-ui-acceptance.mjs",
     "test:fact-sources": "node scripts/fact-adoption-source-acceptance.mjs",
     "test:workspace-races": "node scripts/workspace-race-ui-acceptance.mjs",
+    "test:tab-results-ui": "node scripts/tab-results-ui-acceptance.mjs",
     "test:kafka-tree": "node scripts/kafka-catalog-tree-acceptance.mjs",
     "test:kafka-readonly-ui": "node scripts/kafka-readonly-ui-acceptance.mjs",
+    "test:kafka-builder-ui": "node scripts/kafka-builder-ui-acceptance.mjs",
+    "test:kafka-builder-broker": "node --experimental-strip-types scripts/kafka-builder-broker-acceptance.mjs",
     "test:kafka-existing": "node scripts/kafka-readonly-existing-acceptance.mjs",
     "test:kafka": "node scripts/kafka-acceptance.mjs",
     "test:package-closure": "node --experimental-strip-types --test test/package-runtime-closure.test.mjs && node scripts/package-closure.mjs",
     "test:package": "node scripts/host-acceptance.mjs",
     "install:desktop": "node scripts/install-desktop.mjs",
+    "test:theme-ui": "node scripts/workbench-theme-ui-acceptance.mjs",
     "test:nacos-ui": "node scripts/nacos-ui-acceptance.mjs",
-    "test:nacos-live": "node --experimental-strip-types scripts/nacos-live-acceptance.mjs"
+    "test:nacos-live": "node --experimental-strip-types scripts/nacos-live-acceptance.mjs",
+    "test:plugin-ui": "node scripts/plugin-ui-acceptance.mjs",
+    "test:public-ui": "node scripts/public-components-ui-acceptance.mjs",
+    "test:connection-isolation-ui": "node --experimental-strip-types scripts/connection-isolation-ui-acceptance.mjs",
+    "test:knowledge-async-ui": "node --experimental-strip-types scripts/knowledge-async-ui-acceptance.mjs",
+    "test:knowledge-execution-ui": "node --experimental-strip-types scripts/knowledge-execution-ui-acceptance.mjs",
+    "test:knowledge-concurrency-ui": "node --experimental-strip-types scripts/knowledge-concurrency-ui-acceptance.mjs",
+    "pack:prepare": "npm run build",
+    "pack:prepare:full": "npm run check",
+    "pack:tgz": "npm pack",
+    "pack:standalone-runtime": "node scripts/pack-standalone-runtime.mjs",
+    "test:knowledge-owner-ui": "node --experimental-strip-types scripts/knowledge-execution-owner-ui-acceptance.mjs && node --experimental-strip-types scripts/knowledge-command-owner-ui-acceptance.mjs && node --experimental-strip-types scripts/knowledge-execution-adjacent-ui-acceptance.mjs && node --experimental-strip-types scripts/knowledge-terminal-retention-ui-acceptance.mjs",
+    "test:knowledge-root-causes": "node --experimental-strip-types scripts/knowledge-root-causes-acceptance.mjs"
   },
   "dependencies": {
-    "@codemirror/autocomplete": "6.20.3",
-    "@codemirror/commands": "6.11.0",
-    "@codemirror/lang-json": "6.0.2",
-    "@codemirror/lang-sql": "6.10.0",
-    "@codemirror/lang-yaml": "6.1.3",
-    "@codemirror/language": "6.12.4",
-    "@codemirror/merge": "6.12.2",
-    "@codemirror/state": "6.7.4",
-    "@codemirror/view": "6.43.11",
     "@griffithswaite/ts-plsql-parser": "1.1.1",
-    "@lezer/highlight": "1.2.3",
+    "@lezer/xml": "1.0.6",
     "antlr4": "4.13.0",
+    "fast-xml-parser": "5.11.2",
     "jsonc-parser": "3.3.1",
     "kafkajs": "2.2.4",
-    "lucide-react": "1.45.0",
     "mysql2": "3.24.4",
     "node-sql-parser": "5.4.0",
     "oracledb": "7.0.1",
+    "parse5": "8.0.1",
     "redis": "6.2.1",
     "sql-formatter": "15.8.2",
     "yaml": "2.9.1"
@@ -158,12 +174,25 @@
     "playwright": "1.63.0",
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "@codemirror/autocomplete": "6.20.3",
+    "@codemirror/commands": "6.11.0",
+    "@codemirror/lang-html": "6.4.12",
+    "@codemirror/lang-json": "6.0.2",
+    "@codemirror/lang-sql": "6.10.0",
+    "@codemirror/lang-xml": "6.1.0",
+    "@codemirror/lang-yaml": "6.1.3",
+    "@codemirror/language": "6.12.4",
+    "@codemirror/merge": "6.12.2",
+    "@codemirror/state": "6.7.4",
+    "@codemirror/view": "6.43.11",
+    "@lezer/highlight": "1.2.3",
+    "lucide-react": "1.45.0"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "4.0.2",
-    "@deepseek-ai/dsh-session": "0.1.2-rc.1 || 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2",
-    "@deepseek-ai/dsh-tools": "0.1.2-rc.1 || 0.1.7-rc.2 || 0.2.0-rc.1 || 0.2.0-rc.2",
+    "@deepseek-ai/dsh-session": ">=0.1.2-rc.1 <1.0.0",
+    "@deepseek-ai/dsh-tools": ">=0.1.2-rc.1 <1.0.0",
     "react": "18.3.1",
     "react-dom": "18.3.1"
   },

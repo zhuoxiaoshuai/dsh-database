@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { registerDatabase } from '../src/host/register.ts'
+import { registerAiTools } from '../src/host/ai-tools.ts'
 import { connectionInput, temporaryDirectory } from './helpers.mjs'
 import { format } from 'sql-formatter'
 
@@ -181,6 +182,8 @@ test('database tool schemas stay short and route once from status', t => {
   const status = tools.get('database_status')
   assert.match(status.description, /查库用 database_\*/)
   assert.match(tools.get('database_execute_sql').description, /action=read/)
+  assert.match(JSON.stringify(tools.get('database_execute_sql').parameters), /最近活动的 SQL/)
+  assert.match(tools.get('database_execute_sql').description, /不要带 action/)
   assert.doesNotMatch(status.description, /topic=all/)
   const resident = databaseTools.reduce((sum, tool) => sum + String(tool.description || '').length, 0)
   assert.ok(resident < 400, `resident descriptions are ${resident} chars`)
@@ -190,6 +193,28 @@ test('database tool schemas stay short and route once from status', t => {
       assert.doesNotMatch(tool.description, /Skill|Shell/)
     }
   }
+})
+
+test('database_status lists only live SQL connections and omits redis from next', async () => {
+  const tools = new Map()
+  const service = {
+    list: () => [
+      { id: 'sql1', dialect: 'mysql', generation: 'g1', live: true, name: 'sql', environment: 'sit', database: 'app', version: '', workbench: { sharedQuery: { controller: 'ai', revision: 1 } } },
+      { id: 'r1', dialect: 'redis', generation: 'g2', live: true, name: 'cache', environment: 'sit', database: '0', version: '' },
+    ],
+    restoreRemembered: async () => {},
+    storageDegraded: false,
+    templates: { list: () => [] },
+  }
+  registerAiTools({ tools: { register(tool) { tools.set(tool.name, tool) } } }, service, { storageDegraded: false }, id => id === 'owner')
+  const status = JSON.parse(await tools.get('database_status').execute({}, { agent: { session: { id: 'owner' } } }))
+  assert.deepEqual(status.connections.map(item => item.connectionId), ['sql1'])
+  assert.equal(status.note, undefined)
+  assert.equal(status.next.every(item => typeof item === 'object' && String(item.tool).startsWith('database_')), true)
+  assert.equal(status.next.some(item => item.args?.connectionId === 'r1'), false)
+  const catalogAt = status.next.findIndex(item => item.tool === 'database_catalog')
+  const readAt = status.next.findIndex(item => item.tool === 'database_execute_sql')
+  assert.ok(catalogAt >= 0 && readAt > catalogAt)
 })
 
 test('database_status loads a call guide only when topic is set', async t => {
@@ -204,6 +229,12 @@ test('database_status loads a call guide only when topic is set', async t => {
   assert.match(queryGuide.guide, /purpose=verify/)
   assert.match(queryGuide.guide, /EXPLAIN/)
   assert.ok(queryGuide.guide.length <= 500)
+  const templateGuide = JSON.parse(await exec(tools.get('database_status'), { topic: 'database_templates' }))
+  assert.match(templateGuide.guide, /libraries/)
+  assert.match(templateGuide.guide, /问人/)
+  assert.match(templateGuide.guide, /propose/)
+  assert.match(templateGuide.guide, /经验页审批/)
+  assert.ok(templateGuide.guide.length <= 500)
   assert.equal(queryGuide.connections, undefined)
   const aliased = JSON.parse(await exec(tools.get('database_status'), { topic: 'database_query_readonly' }))
   assert.equal(aliased.topic, 'database_execute_sql')
@@ -240,6 +271,9 @@ test('AI metadata and readonly query share execution ids and return cell values'
   assert.equal(status.connections[0].connectionId, connected.id)
   assert.ok(status.next.some(item => item.tool === 'database_catalog' && item.args.connectionId === connected.id && item.args.generation === connected.generation && item.args.kind === 'schemas'))
   assert.ok(status.next.some(item => item.tool === 'database_execute_sql' && item.args.action === 'read' && item.args.connectionId === connected.id))
+  const catalogAt = status.next.findIndex(item => item.tool === 'database_catalog')
+  const readAt = status.next.findIndex(item => item.tool === 'database_execute_sql' && item.args.action === 'read')
+  assert.ok(catalogAt >= 0 && readAt > catalogAt)
   assert.equal(status.next.some(item => item.tool === 'database_search_tables'), false)
   assert.equal(JSON.stringify(status).includes('super-secret'), false)
   const schemas = JSON.parse(await exec(tools.get('database_catalog'), { ...args, kind: 'schemas' }))
@@ -289,7 +323,8 @@ test('AI metadata and readonly query share execution ids and return cell values'
   await assert.rejects(exec(tools.get('database_execute_sql'), { ...args, sql: 'INSERT INTO records (id) VALUES (7); SELECT missing_column FROM records' }))
   const kept = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id FROM records WHERE id = 7' }))
   assert.equal(kept.rowCount, 1)
-  await assert.rejects(exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT * FROM records FOR UPDATE' }), /锁定/)
+  const locked = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT * FROM records FOR UPDATE' }))
+  assert.equal(locked.ok, true)
   await assert.rejects(exec(tools.get('database_execute_sql'), { ...args, sql: 'SHOW INDEX FROM records' }), /暂不执行 SHOW/)
   const explained = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'EXPLAIN SELECT id FROM records' }))
   assert.equal(explained.ok, true)
@@ -300,21 +335,107 @@ test('database_execute_sql action=read reads the AI Query editor', async t => {
   const { routes, tools } = fixture(t)
   const route = routes.get('/plugins/database/connections')
   await assert.rejects(exec(tools.get('database_execute_sql'), {}), /action=read/)
-  await assert.rejects(exec(tools.get('database_execute_sql'), { action: 'read' }), /请先连接/)
+  const unread = JSON.parse(await exec(tools.get('database_execute_sql'), { action: 'read' }))
+  assert.equal(unread.ok, false)
+  assert.match(unread.help, /database_status/)
+  assert.match(unread.error, /请先连接/)
   const connected = JSON.parse((await invoke(route, { method: 'POST', body: { action: 'connect', input } })).body)
   const args = { connectionId: connected.id, generation: connected.generation, schema: 'app' }
   const empty = JSON.parse(await exec(tools.get('database_execute_sql'), { action: 'read' }))
   assert.equal(empty.action, 'read')
-  assert.equal(empty.sql, '')
+  assert.equal(empty.empty, true)
+  assert.equal(empty.sql, undefined)
   assert.equal(empty.connectionId, connected.id)
   assert.equal(empty.ok, undefined)
+  assert.match(empty.help, /省略 action/)
   const ran = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, sql: 'SELECT id FROM records' }))
   assert.equal(ran.ok, true)
+  const mixed = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, action: 'read', sql: 'SELECT id FROM records' }))
+  assert.equal(mixed.ok, true)
+  const showTables = JSON.parse(await exec(tools.get('database_execute_sql'), { ...args, action: 'read', sql: 'SHOW TABLES' }))
+  assert.equal(showTables.ok, false)
+  assert.match(showTables.help, /database_catalog/)
+  const tables = JSON.parse(await exec(tools.get('database_catalog'), { kind: 'tables' }))
+  assert.ok(Array.isArray(tables.items))
   const seen = JSON.parse(await exec(tools.get('database_execute_sql'), { action: 'read' }))
   assert.equal(seen.action, 'read')
   assert.match(seen.sql, /SELECT id FROM records/)
   assert.equal(seen.ok, undefined)
   assert.equal(seen.rows, undefined)
+})
+
+test('database_execute_sql action=read heals handles and stays on SQL', async () => {
+  const tools = new Map()
+  const queries = new Map()
+  const connections = []
+  let lastActiveId
+  const reads = []
+  const service = {
+    list: () => connections,
+    snapshot: () => ({ lastActiveId, connections }),
+    getSharedQuery: (_session, id) => {
+      reads.push(id)
+      return queries.get(id) || { sql: '', schema: '', revision: 1, controller: 'ai' }
+    },
+  }
+  registerAiTools({ tools: { register(tool) { tools.set(tool.name, tool) } } }, service, { storageDegraded: false }, id => id === 'owner')
+  const execution = { agent: { session: { id: 'owner' } }, callId: 'c', rootCallId: 'r', signal: new AbortController().signal }
+  const read = args => tools.get('database_execute_sql').execute({ action: 'read', ...args }, execution).then(JSON.parse)
+
+  const none = await read({})
+  assert.equal(none.ok, false)
+  assert.match(none.help, /database_status/)
+  assert.deepEqual(none.connections, [])
+  assert.equal(reads.length, 0)
+
+  connections.push(
+    { id: 'sql1', dialect: 'mysql', generation: 'g1', live: true, name: 'one', database: 'app' },
+    { id: 'cache', dialect: 'redis', generation: 'gr', live: true, name: 'cache', database: '0' },
+  )
+  lastActiveId = 'cache'
+  queries.set('sql1', { sql: 'SELECT 1', schema: 'app', revision: 2, controller: 'ai' })
+  const only = await read({})
+  assert.equal(only.connectionId, 'sql1')
+  assert.equal(only.sql, 'SELECT 1')
+  assert.deepEqual(reads, ['sql1'])
+
+  const stale = await read({ connectionId: 'sql1', generation: 'old' })
+  assert.equal(stale.ok, false)
+  assert.equal(stale.connections.find(item => item.connectionId === 'sql1').generation, 'g1')
+  assert.match(stale.help, /database_status/)
+  assert.deepEqual(reads, ['sql1'])
+
+  queries.set('sql1', { sql: '   ', schema: '', revision: 1, controller: 'ai' })
+  const blank = await read({ connectionId: 'sql1', generation: 'g1' })
+  assert.equal(blank.empty, true)
+  assert.equal(blank.sql, undefined)
+  assert.equal(blank.schema, undefined)
+  assert.equal(blank.ok, undefined)
+  assert.match(blank.help, /省略 action/)
+
+  connections.push({ id: 'sql2', dialect: 'oracle', generation: 'g2', live: true, name: 'two', database: 'APP' })
+  queries.set('sql2', { sql: 'SELECT 2 FROM dual', schema: 'APP', revision: 1, controller: 'ai' })
+  lastActiveId = 'cache'
+  const mixed = await read({})
+  assert.equal(mixed.ok, false)
+  assert.deepEqual(mixed.connections.map(item => item.connectionId), ['sql1', 'sql2'])
+  assert.equal(reads.includes('cache'), false)
+  assert.equal(reads.at(-1), 'sql1')
+
+  lastActiveId = 'sql2'
+  const active = await read({})
+  assert.equal(active.connectionId, 'sql2')
+  assert.match(active.sql, /SELECT 2/)
+  assert.equal(reads.at(-1), 'sql2')
+
+  const foreign = await read({ connectionId: 'cache', generation: 'gr' })
+  assert.equal(foreign.ok, false)
+  assert.match(foreign.error, /SQL/)
+  assert.equal(foreign.connections.some(item => item.dialect === 'redis'), false)
+
+  const executeGuess = JSON.parse(await tools.get('database_execute_sql').execute({ sql: 'SELECT 1', schema: 'app' }, execution))
+  assert.equal(executeGuess.ok, false)
+  assert.deepEqual(executeGuess.connections.map(item => item.connectionId), ['sql1', 'sql2'])
 })
 
 test('AI cancel, conversation isolation, reconnect late results, and SIT writes', async t => {

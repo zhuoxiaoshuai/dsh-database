@@ -2,6 +2,17 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import {EventEmitter} from 'node:events'
 import {workerExchange} from '../src/host/worker-exchange.ts'
+
+test('worker transport ignores unrelated malformed messages and rejects invalid correlated headers', async () => {
+ const worker = new EventEmitter()
+ const outcome = workerExchange(worker, 'a', 100, undefined, finish => ({
+  message: reply => finish(undefined, reply.result), exit: () => finish(Error('exit')), timeout: () => finish(Error('timeout')),
+  send: () => { worker.emit('message', null); worker.emit('message', {requestId:'other', error:42}); worker.emit('message', {requestId:'a', cancelled:'false'}) },
+ }))
+ await assert.rejects(outcome, error => error.code === 'PROTOCOL_INVALID' && error.effect === 'unknown')
+ assert.equal(worker.listenerCount('message'), 0)
+ assert.equal(worker.listenerCount('error'), 0)
+})
 import {registerNavigationGuard,allowNavigation} from '../src/client/workspace/parts/navigation-guard.ts'
 test('worker exchange isolates request ids, keeps progress nonterminal and releases listeners',async()=>{
  const worker=new EventEmitter(),seen=[]

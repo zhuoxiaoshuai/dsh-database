@@ -5,7 +5,7 @@ import { withKafkaFixture } from './kafka-fixture.mjs'
 const exec = promisify(execFile)
 await withKafkaFixture(async fixture => {
   const environment = { ...process.env, DSH_KAFKA_BROKERS: fixture.brokers.join(',') }
-  for (const script of ['kafka-client-probe.mjs', 'kafka-host-probe.mjs']) {
+  for (const script of ['kafka-client-probe.mjs', 'kafka-host-probe.mjs', 'kafka-inspection-probe.mjs']) {
     const result = await exec(process.execPath, [`scripts/${script}`], { env: environment, windowsHide: true, timeout: 90000, maxBuffer: 1048576 })
     process.stdout.write(result.stdout)
     if (result.stderr) process.stderr.write(result.stderr)

@@ -12,8 +12,8 @@ const root=resolve('artifacts/nacos-live');await mkdir(root,{recursive:true});co
 const base=`http://127.0.0.1:${port}/nacos`, namespace='dsh-p0-'+Date.now(), password='dsh-test-password', secondNamespace='dsh-p0-other-'+Date.now(), group='G',dataId='app.yaml',checks=[]
 let token=''
 async function http(path,method='GET',params={}){const url=new URL(base+path);if(token)url.searchParams.set('accessToken',token);if(method==='GET'||method==='DELETE')for(const[k,v]of Object.entries(params))url.searchParams.set(k,v)
- const res=await fetch(url,{method,headers:{'content-type':'application/x-www-form-urlencoded'},body:['GET','DELETE'].includes(method)?undefined:new URLSearchParams(params)});const text=await res.text();if(!res.ok)throw Error('bootstrap HTTP '+res.status+' '+path);try{return JSON.parse(text)}catch{return text}}
-const logged=await http('/v1/auth/login','POST',{username:'nacos',password:'nacos'});token=logged.accessToken;assert.ok(token)
+ const res=await fetch(url,{method,headers:{'content-type':'application/x-www-form-urlencoded'},body:['GET','DELETE'].includes(method)?undefined:new URLSearchParams(params)});const text=await res.text();if(!res.ok)throw Object.assign(Error('bootstrap HTTP '+res.status+' '+path),{initializationRequired:res.status===500&&/^caused: User nacos not found;?\s*$/.test(text)});try{return JSON.parse(text)}catch{return text}}
+let logged;try{logged=await http('/v1/auth/login','POST',{username:'nacos',password:'nacos'})}catch(error){if(!error.initializationRequired)throw error;await http('/v1/auth/users/admin','POST',{password:'nacos'});logged=await http('/v1/auth/login','POST',{username:'nacos',password:'nacos'})}token=logged.accessToken;assert.ok(token)
 await http('/v1/console/namespaces','POST',{customNamespaceId:namespace,namespaceName:namespace,namespaceDesc:'DSH P0 isolated acceptance'})
 for(const[username,role,action]of [['dsh-reader','dsh-p0-read','r'],['dsh-writer','dsh-p0-write','rw']]){try{await http('/v1/auth/users','POST',{username,password})}catch{};await http('/v1/auth/roles','POST',{username,role});await http('/v1/auth/permissions','POST',{role,resource:namespace+':*:*',action})}
 await http('/v1/console/namespaces','POST',{customNamespaceId:secondNamespace,namespaceName:secondNamespace})
@@ -26,6 +26,21 @@ try{
  writer=await service.open('test',settings('dsh-writer'),false);reader=await service.open('test',settings('dsh-reader'),false)
  const namespaces=await request(writer,'nacos-namespaces',{});assert.ok(namespaces.items.some(i=>i.namespace===namespace));checks.push('authenticated namespaces')
  const initial={...target,kind:'create',type:'yaml',content:'password: keep-private\nport: 80\n'};const preview=await request(writer,'nacos-preview',initial);const created=await request(writer,'nacos-write',{...initial,previewToken:preview.previewToken});assert.equal(created.executionStatus,'succeeded');checks.push('human create')
+ for(const [type,content] of [['yaml','port: 80'],['json','{"port":80}'],['properties','port=80'],['xml','<config><property name="password" value="keep-format-private"/><port>80</port></config>'],['html','<input name="password" value="keep-format-private"><p>80</p>'],['text','port 80']]){
+   const scope={namespaceId:namespace,group,dataId:'format-sample.'+type},creation={...scope,kind:'create',type,content}
+   const prepared=await request(writer,'nacos-preview',creation);await request(writer,'nacos-write',{...creation,previewToken:prepared.previewToken})
+   const saved=await request(writer,'nacos-config',scope);assert.equal(saved.content,content);assert.equal(saved.type,type)
+   const markup=type==='xml'||type==='html',actor=markup?'ai':'user'
+   if(markup)assert.equal(JSON.stringify(await request(writer,'nacos-config',scope,'ai')).includes('keep-format-private'),false)
+   const update={...scope,kind:'update',type,expectedMd5:saved.md5,...(markup?{edits:[{oldText:'80',newText:'81'}]}:{content:content.replace('80','81')})}
+   const updatePreview=await request(writer,'nacos-preview',update,actor);assert.equal(JSON.stringify(updatePreview).includes('keep-format-private'),false)
+   await request(writer,'nacos-write',{...update,previewToken:updatePreview.previewToken},actor)
+   const changed=await request(writer,'nacos-config',scope);assert.equal(changed.content,content.replace('80','81'))
+   let history;for(let attempt=0;attempt<10;attempt++){history=await request(writer,'nacos-history',{...scope,pageNo:1,pageSize:50});if(history.items.length)break;await new Promise(ok=>setTimeout(ok,100))}
+   assert.ok(history.items.length);const detail=await request(writer,'nacos-history',{...scope,historyId:String(history.items[0].id)},'ai');assert.equal(JSON.stringify(detail).includes('keep-format-private'),false)
+   const deletion={...scope,kind:'delete',expectedMd5:changed.md5},deletePreview=await request(writer,'nacos-preview',deletion);await request(writer,'nacos-write',{...deletion,previewToken:deletePreview.previewToken})
+   checks.push(type+' real create/read/'+(markup?'SIT AI':'human')+' update/history/delete')
+ }
  const raw=await request(writer,'nacos-config',target),publicView=await request(writer,'nacos-config',target,'ai');assert.equal(raw.md5,createHash('md5').update(initial.content).digest('hex'));assert.ok(!JSON.stringify(publicView).includes('keep-private'));checks.push('full read and model redaction')
  const readOnly=await request(reader,'nacos-config',target);assert.equal(readOnly.content,initial.content)
  const deniedChange={...target,kind:'update',type:'yaml',content:'port: 82',expectedMd5:raw.md5},denied=await request(reader,'nacos-preview',deniedChange);await assert.rejects(request(reader,'nacos-write',{...deniedChange,previewToken:denied.previewToken}),e=>e.executionStatus==='failed'&&e.category==='permission');checks.push('two remote accounts enforce write permission')
@@ -48,6 +63,6 @@ try{
  const restore={...interrupted,content:changed.content,expectedMd5:verified.md5},restorePreview=await request(custom,'nacos-preview',restore);await request(custom,'nacos-write',{...restore,previewToken:restorePreview.previewToken});checks.push('real consumed write with lost proxy receipt stays unknown and is not replayed')
  for(const environment of ['uat','pvt']){const c=await service.open('test',settings('dsh-writer',environment),false);await assert.rejects(request(c,'nacos-preview',{...target,kind:'delete',expectedMd5:changed.md5},'ai'),/SIT/);const manual=await request(c,'nacos-preview',{...target,kind:'update',type:'yaml',expectedMd5:changed.md5,content:changed.content});assert.ok(manual.previewToken);await request(c,'nacos-write',{...target,kind:'update',type:'yaml',expectedMd5:changed.md5,content:changed.content,previewToken:manual.previewToken});checks.push(environment+' human preview and AI write refusal')}
  const deletion={...target,kind:'delete',expectedMd5:changed.md5},del=await request(writer,'nacos-preview',deletion);await request(writer,'nacos-write',{...deletion,previewToken:del.previewToken});await assert.rejects(request(writer,'nacos-config',target),e=>e.category==='not-found');checks.push('confirmed baseline delete')
- assert.ok(!JSON.stringify(executions.list('test')).includes('keep-private'));checks.push('operation history excludes config body')
+ assert.ok(!JSON.stringify(executions.list('test')).includes('keep-private'));assert.ok(!JSON.stringify(executions.list('test')).includes('keep-format-private'));checks.push('operation history excludes config body')
  const result={status:'PASS',version:'2.4.3',namespace,checks};await writeFile(join(directory,'result.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result))
 }finally{await service.dispose();if(proxy)await new Promise(ok=>proxy.close(ok));await executions.dispose?.();await http('/v1/ns/instance','DELETE',{namespaceId:namespace,groupName:group,serviceName:'app',ip:'127.0.0.1',port:'8080',ephemeral:'false'}).catch(()=>{});await http('/v1/console/namespaces','DELETE',{namespaceId:namespace}).catch(()=>{});await http('/v1/console/namespaces','DELETE',{namespaceId:secondNamespace}).catch(()=>{})}

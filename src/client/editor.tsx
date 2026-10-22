@@ -1,17 +1,17 @@
-import React, { useEffect, useRef } from 'react'
+import React, { useEffect, useImperativeHandle, useRef } from 'react'
 import { Compartment } from '@codemirror/state'
 import { EditorView, keymap, lineNumbers, drawSelection } from '@codemirror/view'
 import { defaultKeymap, history, historyKeymap, indentWithTab } from '@codemirror/commands'
 import { sql, MySQL, PLSQL } from '@codemirror/lang-sql'
-import { syntaxHighlighting, HighlightStyle } from '@codemirror/language'
-import { tags } from '@lezer/highlight'
+import { workbenchHighlighting, workbenchEditorTheme } from './workspace/parts/theme/editor-theme.ts'
 import { closeCompletion } from '@codemirror/autocomplete'
 import type { Connection, Dialect, SqlDialect } from '../shared/workbench.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { createEditorCompletionRefresh, createSqlCompletionSource, opensTableSlot } from './sql/completion/source.ts'
 import { createCompletionInteraction } from './completion/interaction.ts'
-import { hasUserTextChange, useEditorHost } from './workspace/source/editor-host.ts'
+import { hasUserTextChange, useEditorHost } from './workspace/parts/hooks/editor-host.ts'
 import { clientWorkspaceDescriptor } from '../shared/data-sources/registry.ts'
+import { captureSqlEditorFormat, sqlFormatEdit, type SqlEditorHandle } from './sql/editor-format.ts'
 
 function dialectSupport(dialect: Dialect) {
   const source = clientWorkspaceDescriptor(dialect)
@@ -32,6 +32,7 @@ export function SqlEditor(props: {
   onCursorChange?(offset: number): void
   onRun(selection?: string, mode?: 'current' | 'all'): void
   onSave?(): void
+  formatRef?: React.Ref<SqlEditorHandle>
 }) {
   const dialectConf = useRef(new Compartment())
   const refreshCompletions = useRef(createEditorCompletionRefresh())
@@ -39,13 +40,7 @@ export function SqlEditor(props: {
     const source = createSqlCompletionSource(() => current.current)
     const interaction = createCompletionInteraction(source, { onClose: editor => refreshCompletions.current.dismiss(editor), activateOnCompletion: completion => opensTableSlot(completion.label) })
     return { extensions: [
-      lineNumbers(), history(), drawSelection(), ...interaction.extensions, syntaxHighlighting(HighlightStyle.define([
-        { tag: tags.keyword, color: 'var(--db-sql-keyword)' },
-        { tag: [tags.string, tags.special(tags.string)], color: 'var(--db-sql-string)' },
-        { tag: [tags.number, tags.bool, tags.null], color: 'var(--db-sql-number)' },
-        { tag: tags.comment, color: 'var(--db-muted)', fontStyle: 'italic' },
-        { tag: [tags.name, tags.operator, tags.punctuation], color: 'var(--db-text)' },
-      ])),
+      lineNumbers(), history(), drawSelection(), ...interaction.extensions, workbenchHighlighting, workbenchEditorTheme,
       dialectConf.current.of(dialectSupport(current.current.dialect)),
       keymap.of([
         { key: 'Mod-Enter', run: editor => {
@@ -65,7 +60,7 @@ export function SqlEditor(props: {
       ]),
       EditorView.contentAttributes.of({ 'aria-label': 'SQL 编辑器', 'spellcheck': 'false' }),
       EditorView.updateListener.of(update => {
-        if (hasUserTextChange(update)) current.current.onChange(update.state.doc.toString())
+        if (hasUserTextChange({ transactions: update.transactions.filter(transaction => !transaction.annotation(sqlFormatEdit)) })) current.current.onChange(update.state.doc.toString())
         if (update.docChanged || update.selectionSet) {
           refreshCompletions.current.observe(update.view, current.current)
           const text = update.state.sliceDoc(update.state.selection.main.from, update.state.selection.main.to)
@@ -77,9 +72,9 @@ export function SqlEditor(props: {
       // tooltip 容器，theme 的 '&' 选择器会命中它导致 height:100% 撑高整页——编辑器本体样式必须
       // 写在 style.css 的 .db-editor>.cm-editor 下，不能出现在 theme '&' 键里。
       EditorView.theme({
-        '.cm-scroller': { fontFamily: 'var(--ds-font-family-code, var(--db-mono, Consolas, monospace))', lineHeight: '1.85', overflow: 'auto', overscrollBehavior: 'contain' },
-        '.cm-content': { padding: '18px 0' },
-        '.cm-gutters': { background: 'transparent', border: 'none', color: 'var(--db-muted)', padding: '0 8px 0 14px' },
+        '.cm-scroller': { overflow: 'auto' },
+        '.cm-content': { padding: '8px 0' },
+        '.cm-gutters': { padding: '0 8px' },
         '.cm-cursor': { borderLeftColor: 'var(--db-text)' },
         '.cm-selectionBackground, .cm-selectionLayer .cm-selectionBackground': { background: 'var(--db-selection) !important' },
         '&.cm-focused .cm-selectionBackground, &.cm-focused .cm-selectionLayer .cm-selectionBackground': { background: 'var(--db-selection) !important' },
@@ -87,6 +82,16 @@ export function SqlEditor(props: {
       }),
     ], dispose: interaction.dispose }
   })
+  useImperativeHandle(props.formatRef, () => ({ captureFormat() {
+    const instance = view.current
+    if (!instance) throw new Error('编辑器尚未就绪。')
+    const owner = { id: current.current.connection?.id, generation: current.current.connection?.generation }
+    const context = current.current.schema
+    const dialect = current.current.dialect
+    return captureSqlEditorFormat(instance, () => view.current === instance
+      && current.current.connection?.id === owner.id && current.current.connection?.generation === owner.generation
+      && current.current.schema === context && current.current.dialect === dialect)
+  } }), [])
   useEffect(() => {
     const instance = view.current
     if (!instance) return

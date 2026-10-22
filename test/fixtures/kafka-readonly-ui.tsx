@@ -27,11 +27,16 @@ const run = async (text: string) => {
   return { kind: 'group', groupId: 'billing', state: 'Empty', members: [] }
 }
 const bridge = {
-  mode: 'host', tables: () => [], catalog: async () => ({ items: [] }), executeText: (_connection: unknown, text: string) => run(text),
+  mode: 'host', tables: () => [], catalog: async () => ({ items: [] }), executeText: async (_connection: unknown, text: string) => ({ ...await run(text), executionStatus: 'succeeded', executionId: `fixture-${state.runs}` }),
   explorer: async (_connection: unknown, action: string, input: any) => {
     state.calls.push({ action, input })
-    if (action === 'read') return input.ref.startsWith('group:') ? { kind: 'group', groupId: 'billing', state: 'Empty', members: [] }
-      : { kind: 'describe', topic: 'orders', partitions: [{ partition: 0, leader: 1, low: '0', high: '3', replicas: [1] }] }
+    if (action === 'read') {
+      if (input.ref.startsWith('topic-groups:')) return {kind:'topic-groups',topic:'orders',associations:[{groupId:'billing',assigned:true,committed:true,complete:true}],complete:true,failed:0,scanned:1,collectedAt:new Date().toISOString()}
+      if (input.ref.startsWith('gtopic:')) return {kind:'group-topic',groupId:'billing',topic:'orders',state:'Stable',partitions:[{partition:0,earliest:'0',current:'1',end:'3',lag:'2',consumer:'billing-worker',consumerId:'billing-1',clientId:'billing-worker',host:'/10.10.1.11',status:'normal'}],collectedAt:new Date().toISOString()}
+      if (input.ref.startsWith('group-summary:')) return {kind:'group-summary',groupId:'billing',topics:[{topic:'orders',assignedPartitions:1,totalLag:'2',knownLag:'2',knownPartitions:1,partitionCount:1,complete:true,abnormalPartitions:1,uncommittedPartitions:0}],topicCount:1,totalLag:'2',knownLag:'2',knownPartitions:1,partitionCount:1,complete:true,abnormalPartitions:1,uncommittedPartitions:0,collectedAt:new Date().toISOString()}
+      return input.ref.startsWith('group:') ? { kind: 'group', groupId: 'billing', state: 'Empty', members: [] }
+        : { kind: 'describe', topic: 'orders', partitions: [{ partition: 0, leader: 1, low: '0', high: '3', replicas: [1], isr:[1], health:'正常' }] }
+    }
     if (input.parent === 'folder:groups') return { sourceId: 'kafka', nodes: [group], complete: true }
     if (input.parent === 'group:billing') {
       state.childCalls += 1
@@ -58,6 +63,6 @@ function Fixture() {
   return <><header style={{ height: 40 }}>
     <button onClick={() => setRoot('topics')}>Topic视图</button><button onClick={() => setRoot('groups')}>消费组视图</button>
     <button onClick={() => refresh(value => value + 1)}>刷新作用域</button><button onClick={() => { document = { ...document, text: '', revision: 1 }; setGeneration(value => value + 'x') }}>模拟重连</button>
-  </header><div className="db-workbench" style={{ height: 'calc(100vh - 40px)' }}><StandardSourceMount module={kafkaModule} context={{ host: bridge, connection, catalogRoot, refreshToken } as any} /></div></>
+  </header><div className="db-workbench" style={{ height: 'calc(100vh - 40px)' }}><StandardSourceMount module={kafkaModule} context={{ host: bridge, connection, catalogRoot, refreshToken, onCatalogRoot:setRoot } as any} /></div></>
 }
 createRoot(window.document.getElementById('app')!).render(<Fixture />)

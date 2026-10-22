@@ -2,8 +2,8 @@ import { useNacosBindings, NacosTree } from '../nacos/workspace.tsx'
 import React from 'react'
 import { nacosSource } from '../../shared/data-sources/nacos.ts'
 import { nacosConnectionForm } from '../workspace/connection/connection-form-nacos.tsx'
-import { previewJson } from '../workspace/parts/preview-json.tsx'
-import type { ClientSourceModule, HistoryDetailSource } from './types.ts'
+import { nacosHistory } from './nacos-history.tsx'
+import type { ClientSourceModule } from './types.ts'
 
 const nacosInfinity = (
   <>
@@ -26,13 +26,6 @@ const logo = {
   className: 'db-nacos-logo',
   artwork: nacosArtwork,
   compact: { viewBox: '1750 0 2100 1024', artwork: nacosInfinity },
-}
-
-const nacosHistory: HistoryDetailSource = {
-  id: 'nacos',
-  renderText: record => <section className="db-ai-record-section"><strong>Nacos</strong><p>{record.title || record.operation}</p></section>,
-  resultEnvelope: (record, payload) => ({ sourceId: 'nacos', kind: 'nacos', status: record.status, truncated: false, payload }),
-  renderResult: envelope => previewJson(envelope.payload),
 }
 
 export const nacosModule: ClientSourceModule = {

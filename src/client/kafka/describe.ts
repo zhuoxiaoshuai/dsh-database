@@ -1,10 +1,5 @@
-export type KafkaPartitionRow = {
-  partition: number
-  leader?: number | null
-  replicas?: number[]
-  low?: string
-  high?: string
-}
+export type { KafkaPartition as KafkaPartitionRow } from '../../shared/kafka-inspection.ts'
+import type { KafkaPartition as KafkaPartitionRow } from '../../shared/kafka-inspection.ts'
 
 export function kafkaPeekCommand(topic: string, partition: number): string {
   return `PEEK ${JSON.stringify(topic)} PARTITION ${partition} FROM LATEST LIMIT 20`
@@ -18,10 +13,30 @@ export function kafkaLeaderText(leader: number | null | undefined): string {
   return leader == null || leader < 0 ? '无' : String(leader)
 }
 
-export function kafkaHighWatermarkText(low?: string, high?: string): string {
-  const hi = high ?? ''
-  if (low !== undefined && high !== undefined && low !== '' && high !== '' && low === high) return `${hi} · 空`
-  return hi
+// End 与 Earliest 相等即视为空分区（无未消费的新消息）
+export function kafkaIsEmptyWatermark(low?: string, high?: string): boolean {
+  return low !== undefined && high !== undefined && low !== '' && high !== '' && low === high
+}
+
+// Topic 级指标：消息总量（End 合计）、空分区数、ISR 落后于副本数的分区数
+export function kafkaMessageTotals(partitions: readonly KafkaPartitionRow[]): { total: string; empty: number; isrBehind: number } {
+  let total = 0n
+  let counted = false
+  let empty = 0
+  let isrBehind = 0
+  for (const row of partitions) {
+    if (kafkaIsEmptyWatermark(row.low, row.high)) empty += 1
+    if (Array.isArray(row.replicas) && row.replicas.length > 0 && Array.isArray(row.isr) && row.isr.length < row.replicas.length) isrBehind += 1
+    if (row.high != null && row.high !== '') {
+      try {
+        total += BigInt(row.high)
+        counted = true
+      } catch {
+        // 非数字水位不参与累计
+      }
+    }
+  }
+  return { total: counted ? total.toString() : '-', empty, isrBehind }
 }
 
 export function kafkaReplicasText(replicas?: number[]): string {

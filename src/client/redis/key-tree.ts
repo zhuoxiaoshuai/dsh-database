@@ -1,3 +1,5 @@
+import { displayBytes } from '../../shared/redis-bytes.ts'
+
 export type KeyFolder = { label: string; path: string; key?: string; children: KeyFolder[] }
 type MutableFolder = { label: string; key?: string; kids: Map<string, MutableFolder> }
 
@@ -20,9 +22,10 @@ export function buildKeyTree(names: string[]): { folders: KeyFolder[]; leaves: s
     if (node) node.key = name
   }
   const freeze = (node: MutableFolder, prefix: string): KeyFolder => {
-    const path = prefix ? `${prefix}:${node.label}` : node.label
-    const children = [...node.kids.values()].map(child => freeze(child, path))
-    return { label: node.label, path, ...(node.key ? { key: node.key } : {}), children }
+    // 原值用于拼接上一级路径（字节层面切分），展示值再转义，避免二进制段造成路径碰撞。
+    const rawPath = prefix ? `${prefix}:${node.label}` : node.label
+    const children = [...node.kids.values()].map(child => freeze(child, rawPath))
+    return { label: displayBytes(node.label), path: displayBytes(rawPath), ...(node.key ? { key: node.key } : {}), children }
   }
   return { folders: [...root.values()].map(node => freeze(node, '')), leaves }
 }

@@ -1,3 +1,4 @@
+import {CopyButton} from '../workspace/parts/feedback/copy-button.tsx'
 import React from 'react'
 import type { ExecutionRecord } from '../../shared/execution.ts'
 import type { ExecutionResultEnvelope } from '../../shared/execution-result.ts'
@@ -11,7 +12,7 @@ const renderText = (record: ExecutionRecord, onUse?: (text: string, schema?: str
   const text = record.executedSql || record.sql || (typeof record.draft?.sql === 'string' ? record.draft.sql : '')
   return <section className="db-ai-record-section db-ai-record-sql">
     <div className="db-ai-record-sql-head"><strong>SQL</strong>{text.trim() && <button disabled={!onUse || record.status === 'unknown'} title={record.status === 'unknown' ? '结果未知，请先核验原操作；不能套用整批作为重试。' : undefined} type="button" className="db-primary db-ai-write-btn" onClick={() => onUse?.(text, record.schema)}>写入</button>}</div>
-    <button type="button" onClick={() => void navigator.clipboard.writeText(text)}>复制 SQL</button>
+    <CopyButton text={text}>复制 SQL</CopyButton>
     <pre className="db-cell-detail">{text || '无 SQL'}</pre>
   </section>
 }

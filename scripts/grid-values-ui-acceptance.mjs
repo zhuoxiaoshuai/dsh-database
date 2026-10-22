@@ -48,7 +48,7 @@ createRoot(document.getElementById('app')).render(kind === 'binary' ? <BinaryGri
   ? <ObjectWorkspace {...props} cache={undefined} table="demo" isView={false} sub="data" onSub={() => {}} />
   : <SqlWorkspaceTab {...props} schemas={['app']} initialSql="SELECT id,value FROM demo" onSql={() => {}} onSavedExperience={() => {}} onSchemaChange={() => {}} />)
 ` }, bundle: true, format: 'esm', outdir, entryNames: 'fixture', assetNames: 'fixture' })
-await writeFile(resolve(outdir, 'index.html'), '<html><head><link rel="stylesheet" href="/fixture.css"><style>html,body,#app{height:100%;margin:0}</style></head><body><div id="app"></div><script type="module" src="/fixture.js"></script></body></html>')
+await writeFile(resolve(outdir, 'index.html'), '<html><head><link rel="stylesheet" href="/fixture.css"><style>html,body,#app{height:100%;margin:0}</style></head><body><div id="app" class="db-workbench"></div><script type="module" src="/fixture.js"></script></body></html>')
 const server = createServer(async (req, res) => {
   try { const path = new URL(req.url, 'http://fixture').pathname; const data = await readFile(resolve(outdir, '.' + (path === '/' ? '/index.html' : path))); res.writeHead(200, { 'Content-Type': path.endsWith('.js') ? 'text/javascript' : path.endsWith('.css') ? 'text/css' : 'text/html' }); res.end(data) }
   catch { res.writeHead(404); res.end() }
@@ -69,6 +69,7 @@ try {
       assert.ok((await binary.getByLabel('编辑 json', { exact: true }).inputValue()).includes('9007199254740993'))
     await binary.locator('td[data-row="0"][data-col="1"]').click()
     await binary.getByLabel('编辑 text', { exact: true }).waitFor()
+    await binary.waitForFunction(() => document.querySelector('[aria-label="编辑 text"]')?.value === '[BLOB 4 bytes]')
     assert.equal(await binary.getByLabel('编辑 text', { exact: true }).inputValue(), '[BLOB 4 bytes]')
     await binary.locator('td[data-row="0"][data-col="3"]').click()
     await binary.locator('.db-cell-detail').getByText('0xff00', { exact: true }).waitFor()
@@ -104,7 +105,7 @@ try {
         }
       }
       await save.click()
-      await page.getByRole('dialog', { name: '确认提交' }).getByRole('button', { name: '确认', exact: true }).click()
+      await page.getByRole('dialog', { name: '确认提交' }).getByRole('button', { name: '提交修改', exact: true }).click()
       await page.waitForFunction(() => window.operations?.length === 1)
       const operation = await page.evaluate(() => window.operations[0])
       assert.equal(operation.kind, 'insert')

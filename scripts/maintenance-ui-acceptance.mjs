@@ -50,7 +50,7 @@ try {
   await input.press('Enter')
   await page.getByRole('button', { name: '保存', exact: true }).click()
   const confirm = page.getByRole('dialog', { name: '确认提交', exact: true })
-  await confirm.getByRole('button', { name: '确认', exact: true }).click()
+  await confirm.getByRole('button', { name: '提交修改', exact: true }).click()
   await confirm.waitFor({ state: 'hidden' })
   const dmlPreview = await page.evaluate(() => window.requests.find(r => r.kind === 'preview'))
   assert.equal(dmlPreview.operation.values.note, 'edited!', 'Grid save must carry the edited cell value')

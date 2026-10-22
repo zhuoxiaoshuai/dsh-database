@@ -114,6 +114,7 @@ export function schemaCatalogChildren(rows: readonly Record<string, unknown>[]):
   }
   return list.sort((a, b) => a.label.localeCompare(b.label))
 }
+export type { ConnectionLifecycle, ConnectionStart } from './connection-lifecycle.ts'
 export interface Connection {
   id: string
   generation?: string
@@ -123,6 +124,8 @@ export interface Connection {
   database: string
   version: string
   live?: boolean
+  desiredState?: 'online' | 'offline'
+  lifecycle?: import('./connection-lifecycle.ts').ConnectionLifecycle
   health?: 'connecting' | 'ready' | 'degraded' | 'offline'
   databases?: string[]
   settings?: SourceConnectionSettings
@@ -203,7 +206,10 @@ export interface WorkspaceBridge {
   tables(connection: Connection): Table[]
   execute(connection: Connection, sql: string, signal: AbortSignal): Promise<Result>
   executeManual?(connection: Connection, sql: string, signal: AbortSignal): Promise<Result>
-  testConnection?(input: SourceConnectionInput, replaceId?: string): Promise<ConnectionTest>
+  executeKnowledge?(connection: Connection, sql: string, options: { signal: AbortSignal; stopSignal: AbortSignal }): Promise<Result & { executionStatus?: string; executionId?: string }>
+  testConnection?(input: SourceConnectionInput, replaceId?: string, signal?: AbortSignal): Promise<ConnectionTest>
+  startConnection?(input: SourceConnectionInput, operationId: string, id?: string): Promise<import('./connection-lifecycle.ts').ConnectionStart>
+  cancelConnection?(id: string, operationId: string): Promise<void>
   connect?(input: SourceConnectionInput): Promise<Connection>
   listWorkspace?(): Promise<DatabaseWorkspaceSnapshot>
   listConnections?(): Promise<Connection[]>
@@ -234,6 +240,7 @@ export interface CatalogRequest {
   search?: string
   offset?: number
   refresh?: boolean
+  background?: boolean
 }
 export interface CatalogResult {
   items?: Record<string, unknown>[]

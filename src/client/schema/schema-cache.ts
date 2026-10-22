@@ -10,6 +10,8 @@ export type CachedTable = {
 
 export type CachedDetail = CatalogResult & { primaryKeys: string[] }
 
+type PrefetchJob = { key: string; connection: Connection; priority: 'high' | 'low'; work(signal: AbortSignal): Promise<void>; controller: AbortController }
+
 type LoadState<T> = { status: 'loading' | 'ready' | 'error'; value?: T; error?: string; epoch: number; promise?: Promise<void>; failedAt?: number }
 
 export type SchemaCacheOptions = {
@@ -50,8 +52,12 @@ export class SchemaCache {
   #emitCoalesceMs: number
   #schedule: (task: () => void) => void
   #active = 0
-  #highQueue: Array<() => void> = []
-  #lowQueue: Array<() => void> = []
+  #jobs: PrefetchJob[] = []
+  #running = new Set<PrefetchJob>()
+  #lastPrefetchConnection?: string
+  #retired = new Set<string>()
+  #currentGeneration = new Map<string, string>()
+  #requests = new Map<string, Set<AbortController>>()
   #prewarmed = new Set<string>()
   #emitTimer: ReturnType<typeof setTimeout> | undefined
   constructor(catalog: NonNullable<WorkspaceBridge['catalog']>, options: SchemaCacheOptions = {}) {
@@ -89,6 +95,10 @@ export class SchemaCache {
   #prune(connection: Connection): void {
     const prefix = `${connection.id}\0`
     const gen = this.#generationKey(connection)
+    if (this.#retired.has(gen)) throw Object.assign(new Error('连接已变化，已取消旧目录任务。'), { name: 'AbortError' })
+    const previous = this.#currentGeneration.get(connection.id)
+    if (previous && previous !== gen) this.#retireGeneration(previous)
+    this.#currentGeneration.set(connection.id, gen)
     for (const map of [this.#schemas, this.#summaries, this.#tables, this.#details] as const) {
       for (const key of [...map.keys()]) {
         if (key.startsWith(prefix) && key !== gen && !key.startsWith(gen + '\0')) map.delete(key)
@@ -128,7 +138,8 @@ export class SchemaCache {
   warmSchema(connection: Connection, schema: string): void {
     if (!schema) return
     this.#prune(connection)
-    void this.loadTables(connection, schema).catch(() => {})
+    if (this.tablesStatus(connection, schema)?.status === 'ready') return
+    this.#enqueue(connection, this.#tablesKey(connection, schema), signal => this.loadTables(connection, schema, {signal}).then(() => {}).catch(() => {}), 'high')
   }
   prefetchColumns(connection: Connection, schema: string, tables: string[]): void {
     if (!schema || !tables.length) return
@@ -141,7 +152,7 @@ export class SchemaCache {
       seen.add(name.toLowerCase())
       const current = this.#details.get(this.#detailKey(connection, schema, name))
       if (current?.status === 'ready' || current?.status === 'loading' || this.#inBackoff(current)) continue
-      this.#enqueue(() => this.loadTable(connection, schema, name, { batched: true }).then(() => {}).catch(() => {}), 'high')
+      this.#enqueue(connection, this.#detailKey(connection, schema, name), signal => this.loadTable(connection, schema, name, { batched: true, signal }).then(() => {}).catch(() => {}), 'high')
     }
   }
   prewarmSchema(connection: Connection, schema: string): void {
@@ -149,24 +160,34 @@ export class SchemaCache {
     const key = this.#tablesKey(connection, schema)
     if (this.#prewarmed.has(key)) return
     this.#prewarmed.add(key)
-    void this.loadTables(connection, schema)
+    const epoch = this.#prefetchEpoch
+    this.#enqueue(connection, 'prewarm:' + key, signal => this.loadTables(connection, schema, {signal})
       .then(() => {
         const ordered = [...this.tablesSnapshot(connection, schema) || []]
           .sort((a, b) => a.kind === b.kind ? 0 : a.kind === 'table' ? -1 : 1)
           .slice(0, this.#prewarmTableLimit)
           .map(item => item.name)
-        this.#schedule(() => this.#prewarmStep(connection, schema, ordered, 0))
+        this.#schedule(() => this.#prewarmStep(connection, schema, ordered, 0, epoch))
       })
-      .catch(() => { this.#prewarmed.delete(key) })
+      .catch(() => { this.#prewarmed.delete(key) }), 'low')
   }
-  #prewarmStep(connection: Connection, schema: string, ordered: string[], index: number): void {
+  #prefetchEpoch = 0
+  cancelPending(): void {
+    this.#prefetchEpoch++
+    this.#jobs = []; this.#prewarmed.clear()
+    for (const job of this.#running) job.controller.abort()
+    for (const requests of this.#requests.values()) for (const controller of requests) controller.abort()
+    if (this.#emitTimer) {clearTimeout(this.#emitTimer); this.#emitTimer = undefined}
+  }
+  #prewarmStep(connection: Connection, schema: string, ordered: string[], index: number, epoch: number): void {
+    if (epoch !== this.#prefetchEpoch || this.#retired.has(this.#generationKey(connection))) return
     const end = Math.min(index + this.#prefetchConcurrency, ordered.length)
     for (let i = index; i < end; i++) {
       const current = this.#details.get(this.#detailKey(connection, schema, ordered[i]))
       if (current?.status === 'ready' || current?.status === 'loading' || this.#inBackoff(current)) continue
-      this.#enqueue(() => this.loadTable(connection, schema, ordered[i], { batched: true }).then(() => {}).catch(() => {}), 'low')
+      this.#enqueue(connection, this.#detailKey(connection, schema, ordered[i]), signal => this.loadTable(connection, schema, ordered[i], { batched: true, signal }).then(() => {}).catch(() => {}), 'low')
     }
-    if (end < ordered.length) this.#schedule(() => this.#prewarmStep(connection, schema, ordered, end))
+    if (end < ordered.length) this.#schedule(() => this.#prewarmStep(connection, schema, ordered, end, epoch))
   }
   readiness(connection: Connection, schema: string): {
     tables: 'unknown' | 'loading' | 'ready' | 'error'
@@ -189,18 +210,35 @@ export class SchemaCache {
       prewarmComplete: state?.status === 'ready' && columnsReady >= columnsTotal,
     }
   }
-  #enqueue(work: () => Promise<void>, priority: 'high' | 'low' = 'high'): void {
-    const run = () => {
-      this.#active += 1
-      void work().finally(() => {
-        this.#active -= 1
-        const next = this.#highQueue.shift() || this.#lowQueue.shift()
-        if (next) next()
-      })
+  #enqueue(connection: Connection, key: string, work: (signal: AbortSignal) => Promise<void>, priority: 'high' | 'low'): void {
+    if (this.#retired.has(this.#generationKey(connection))) return
+    const queued = this.#jobs.find(job => job.key === key)
+    if (queued) { if (priority === 'high') queued.priority = 'high'; return }
+    if ([...this.#running].some(job => job.key === key)) return
+    this.#jobs.push({ key, connection, priority, work, controller: new AbortController() })
+    this.#drainPrefetch()
+  }
+  #drainPrefetch(): void {
+    while (this.#active < this.#prefetchConcurrency) {
+      const eligible = (job: PrefetchJob) => ![...this.#running].some(active => active.connection.id === job.connection.id)
+      let index = -1
+      for (const priority of ['high', 'low'] as const) {
+        index = this.#jobs.findIndex(job => job.priority === priority && job.connection.id !== this.#lastPrefetchConnection && eligible(job))
+        if (index < 0) index = this.#jobs.findIndex(job => job.priority === priority && eligible(job))
+        if (index >= 0) break
+      }
+      if (index < 0) return
+      const job = this.#jobs.splice(index, 1)[0]
+      this.#active++; this.#running.add(job); this.#lastPrefetchConnection = job.connection.id
+      void job.work(job.controller.signal).catch(() => {}).finally(() => { this.#active--; this.#running.delete(job); this.#drainPrefetch() })
     }
-    if (this.#active < this.#prefetchConcurrency) run()
-    else if (priority === 'high') this.#highQueue.push(run)
-    else this.#lowQueue.push(run)
+  }
+  #retireGeneration(key: string): void {
+    this.#retired.add(key)
+    this.#jobs = this.#jobs.filter(job => this.#generationKey(job.connection) !== key)
+    for (const job of this.#running) if (this.#generationKey(job.connection) === key) job.controller.abort()
+    for (const controller of this.#requests.get(key) || []) controller.abort()
+    this.#drainPrefetch()
   }
   #aborted(error: unknown, signal?: AbortSignal): boolean {
     return isAbortError(error, signal)
@@ -211,7 +249,19 @@ export class SchemaCache {
   }
   async #fetchCatalog(connection: Connection, input: Parameters<NonNullable<WorkspaceBridge['catalog']>>[1], signal?: AbortSignal): Promise<CatalogResult> {
     this.#throwIfAborted(signal)
-    return this.#catalog(connection, input, signal)
+    const key = this.#generationKey(connection)
+    if (this.#retired.has(key)) throw Object.assign(new Error('连接已变化。'), { name: 'AbortError' })
+    const controller = new AbortController()
+    let requests = this.#requests.get(key)
+    if (!requests) { requests = new Set(); this.#requests.set(key, requests) }
+    requests.add(controller)
+    const bound = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
+    try {
+      const background = [...this.#running].some(job => job.controller.signal === signal)
+      const result = await this.#catalog(connection, background ? {...input,background:true} : input, bound)
+      this.#throwIfAborted(bound)
+      return result
+    } finally { requests.delete(controller); if (!requests.size) this.#requests.delete(key) }
   }
   async #waitPeer<T>(map: Map<string, LoadState<T>>, key: string, signal: AbortSignal | undefined, fallback: string): Promise<T | undefined> {
     const current = map.get(key)
@@ -449,11 +499,13 @@ export class SchemaCache {
     }
   }
   invalidateConnection(connection: Connection): void {
-    const prefix = `${connection.id}\0`
+    const key = this.#generationKey(connection)
+    this.#retireGeneration(key)
+    const prefix = key + '\0'
     for (const map of [this.#schemas, this.#summaries, this.#tables, this.#details] as const) {
-      for (const key of [...map.keys()]) if (key.startsWith(prefix) || key === connection.id) map.delete(key)
+      for (const key of [...map.keys()]) if (key.startsWith(prefix) || key === this.#generationKey(connection)) map.delete(key)
     }
-    for (const key of [...this.#prewarmed]) if (key.startsWith(prefix) || key === connection.id) this.#prewarmed.delete(key)
+    for (const key of [...this.#prewarmed]) if (key.startsWith(prefix) || key === this.#generationKey(connection)) this.#prewarmed.delete(key)
     this.#emit()
   }
   invalidateSchema(connection: Connection, schema: string): void {

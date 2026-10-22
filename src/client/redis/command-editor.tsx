@@ -1,13 +1,14 @@
-import {textEditorExtensions} from '../workspace/source/text-editor-extensions.ts'
+import {textEditorExtensions} from '../workspace/parts/controls/text-editor-extensions.ts'
 import React, { useEffect, useRef } from 'react'
 import { EditorView } from '@codemirror/view'
 import { closeCompletion, completionStatus, startCompletion, type CompletionSource } from '@codemirror/autocomplete'
 import { createCompletionInteraction } from '../completion/interaction.ts'
-import { hasUserTextChange, useEditorHost } from '../workspace/source/editor-host.ts'
+import { hasUserTextChange, useEditorHost } from '../workspace/parts/hooks/editor-host.ts'
 import { createRedisCompletionSource, redisKeySlot, redisRemoteKeyCompletion } from './completion.ts'
 import type { RedisKeySuggestResult } from '../../shared/redis-result.ts'
 
 export function RedisCommandEditor(props: {
+  disabled?: boolean
   value: string
   onChange(value: string): void
   onCursorChange(pos: number): void

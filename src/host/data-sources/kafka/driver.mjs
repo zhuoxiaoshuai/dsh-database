@@ -8,6 +8,14 @@ import { createKafkaOperationScope, withKafkaReadScope } from './operation-scope
 
 const { Kafka, logLevel, AssignerProtocol, ConfigResourceTypes } = kafkaPackage
 
+async function readOptionalMetric(read, action) {
+  try { return await read(action) }
+  catch (error) {
+    if (error?.name === 'KafkaReadCancelled' || error?.name === 'KafkaReadDeadline' || kafkaFailureHealth(error)) throw error
+    return null
+  }
+}
+
 export async function openKafka(config) {
   const kafka = new Kafka({ ...kafkaWorkerConfig(config), logLevel: logLevel.ERROR })
   const admin = kafka.admin()
@@ -253,12 +261,20 @@ export async function describeKafkaTopic(runtime, topic, signal) {
   const metadata = await read(() => runtime.admin.fetchTopicMetadata({ topics: [topic] }))
   const found = metadata.topics.find(item => item.name === topic)
   if (!found) throw new Error('Topic 不存在或无权查看。')
-  const offsets = await read(() => runtime.admin.fetchTopicOffsets(topic))
+  let offsets = null
+  try { offsets = await read(() => runtime.admin.fetchTopicOffsets(topic)) }
+  catch (error) {
+    if (error?.name === 'KafkaReadCancelled' || error?.name === 'KafkaReadDeadline' || kafkaFailureHealth(error)) throw error
+  }
   return { kind: 'describe', topic, partitions: found.partitions.map(item => {
-    const range = offsets.find(offset => offset.partition === item.partitionId)
+    const range = offsets?.find(offset => offset.partition === item.partitionId)
+    const health = item.partitionErrorCode ? '分区错误' : item.leader < 0 ? '无 Leader'
+      : item.offlineReplicas?.length ? '副本离线' : !Array.isArray(item.isr) ? '未知'
+      : item.isr.length < item.replicas.length ? '副本未同步' : '正常'
     return { partition: item.partitionId, leader: item.leader, replicas: item.replicas,
+      isr: item.isr, offlineReplicas: item.offlineReplicas, errorCode: item.partitionErrorCode, health,
       low: String(range?.low ?? ''), high: String(range?.high ?? '') }
-  }), elapsedMs: 0 }
+  }), complete: offsets !== null, ...(offsets === null ? { warning: '分区 Offset 不可读，仍展示可用的元数据；Earliest / End 未知。' } : {}), collectedAt: new Date().toISOString(), elapsedMs: 0 }
   })
 }
 
@@ -356,16 +372,17 @@ function assignmentOf(buffer) {
     }
     return topics
   } catch {
-    return {}
+    return null
   }
 }
 
 function memberView(member) {
+  const assignment = assignmentOf(member.memberAssignment)
   return {
     memberId: String(member.memberId || ''),
     clientId: String(member.clientId || ''),
     clientHost: String(member.clientHost || ''),
-    assignment: assignmentOf(member.memberAssignment),
+    assignment: assignment || {}, assignmentKnown: assignment !== null,
   }
 }
 
@@ -384,9 +401,13 @@ async function readGroup(runtime, groupId, read) {
   const described = await read(() => runtime.admin.describeGroups([groupId]))
   const group = (described.groups || []).find(item => item.groupId === groupId)
   if (!group) throw new Error('消费组不存在或无权查看。')
+  if (group.errorCode) throw new Error(`消费组不可读（${group.errorCode}）。`)
+  const members = (group.members || []).map(memberView)
   return {
     kind: 'group', groupId, state: String(group.state || ''), protocol: String(group.protocol || ''),
-    protocolType: String(group.protocolType || ''), members: (group.members || []).map(memberView), elapsedMs: 0,
+    protocolType: String(group.protocolType || ''), members, complete: members.every(member => member.assignmentKnown),
+    collectedAt: new Date().toISOString(), elapsedMs: 0,
+    ...(members.some(member => !member.assignmentKnown) ? { warning: '部分成员分配信息无法解析，关联关系不完整。' } : {}),
   }
 }
 
@@ -398,10 +419,12 @@ export async function listKafkaGroupTopics(runtime, groupId, input = {}, signal)
   return withKafkaReadScope(signal, async read => {
   const described = await readGroup(runtime, groupId, read)
   // Empty topics is encoded as a null OffsetFetch list, so this returns committed topics without reading end offsets.
-  const committed = await read(() => runtime.admin.fetchOffsets({ groupId, topics: [] }))
+  const committed = await readOptionalMetric(read, () => runtime.admin.fetchOffsets({ groupId, topics: [] }))
   const assigned = described.members.flatMap(member => Object.keys(member.assignment))
   const committedNames = (committed || []).map(item => item.topic)
-  return kafkaNamePage(unionTopicNames(assigned, committedNames), input.cursor, 'topics', { kind: 'group-topics', groupId })
+  return kafkaNamePage(unionTopicNames(assigned, committedNames), input.cursor, 'topics', { kind: 'group-topics', groupId,
+    complete: described.complete && committed !== null,
+    warning: [described.warning, committed === null ? '历史提交位置不可读，仅展示已确认的分配 Topic。' : ''].filter(Boolean).join(' '), collectedAt: new Date().toISOString() })
   })
 }
 
@@ -409,11 +432,11 @@ export async function describeKafkaGroupTopic(runtime, groupId, topic, signal) {
   assertKafkaTopic(topic)
   return withKafkaReadScope(signal, async read => {
   const described = await readGroup(runtime, groupId, read)
-  const committed = await read(() => runtime.admin.fetchOffsets({ groupId, topics: [topic] }))
+  const committed = await readOptionalMetric(read, () => runtime.admin.fetchOffsets({ groupId, topics: [topic] }))
   let ends = null
   try {
     const ranges = await read(() => runtime.admin.fetchTopicOffsets(topic))
-    ends = (ranges || []).map(range => ({ partition: range.partition, high: range.high }))
+    ends = (ranges || []).map(range => ({ partition: range.partition, high: range.high, low: range.low }))
   } catch (error) {
     if (error?.name === 'KafkaReadCancelled' || error?.name === 'KafkaReadDeadline' || kafkaFailureHealth(error)) throw error
     ends = null
@@ -422,15 +445,19 @@ export async function describeKafkaGroupTopic(runtime, groupId, topic, signal) {
   const assignment = []
   for (const member of described.members) {
     const label = member.clientId || member.memberId
-    for (const partition of member.assignment[topic] || []) assignment.push({ partition, consumer: label })
+    for (const partition of member.assignment[topic] || []) assignment.push({ partition, consumer: label,
+      consumerId: member.memberId, clientId: member.clientId, host: member.clientHost })
   }
   return {
     kind: 'group-topic', groupId, topic, state: described.state,
     partitions: groupTopicRows({
-      committed: (topicOffsets?.partitions || []).map(item => ({ partition: item.partition, offset: item.offset })),
-      assignment, ends,
+      committed: (topicOffsets?.partitions || []).map(item => ({ partition: item.partition, offset: item.offset, unreadable: !!item.errorCode })),
+      assignment, ends, committedKnown: committed !== null,
     }),
-    elapsedMs: 0, ...(ends === null ? { warning: '无法读取分区末尾位置，末尾位置和积压量暂未知。' } : {}),
+    complete: described.complete && committed !== null && ends !== null && !(topicOffsets?.partitions || []).some(item => item.errorCode),
+    collectedAt: new Date().toISOString(), elapsedMs: 0,
+    ...((ends === null || committed === null || !described.complete) ? { warning: [described.warning, committed === null ? '提交位置不可读，仍展示可用的分配及末尾位置。' : '',
+      ends === null ? '无法读取分区末尾位置，末尾位置和积压量暂未知。' : ''].filter(Boolean).join(' ') } : {}),
   }
   })
 }

@@ -1,16 +1,16 @@
+import {ResourceError} from './workspace/parts/feedback/resource-error.tsx'
 import React, { createContext, useContext, useEffect, useState } from 'react'
-import { format } from 'sql-formatter'
 import { SqlReceipts } from './sql/sql-receipts.tsx'
 import { ReadonlyResultGrid, ResultExportButtons, resultSummary } from './results.tsx'
 import { SqlRunWorkspace } from './sql-run-workspace.tsx'
-import { QueryResultFrame } from './workspace/source/query-result-frame.tsx'
+import { QueryResultFrame } from './workspace/parts/layout/query-result-frame.tsx'
 import { TableStructurePane } from './table-structure-pane.tsx'
 import { SqlToolbarSchemaTable } from './sql-toolbar-schema-table.tsx'
 import { SqlToolbarTemplatePicker } from './sql-toolbar-template-picker.tsx'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import type { Connection, Result, SharedQuery, WorkspaceBridge } from '../shared/workbench.ts'
 import type { ExecutionDocumentController } from './workspace/source/use-execution-document.ts'
-import { dialectCapabilities } from '../shared/dialect-capabilities.ts'
+import type { SqlEditorFormatRequest } from './sql/editor-format.ts'
 import type { DisplayResult } from '../shared/execution.ts'
 import { stripLeadingComments, unwrapExplainSql, wrapExplainSql } from '../shared/sql-text.ts'
 import { resultTabLabel } from '../shared/sql-batch.ts'
@@ -43,7 +43,7 @@ type AiCollabContextValue = AiCollabProps & {
   explain: (runSelection?: string) => Promise<void>
   returnAi: () => Promise<void>
   onChange: (sql: string) => void
-  formatCurrentQuery: () => Promise<void>
+  formatCurrentQuery: (request: SqlEditorFormatRequest) => Promise<void>
   abortRun: () => void
   takeOver: () => Promise<void>
   controller: 'ai' | 'user'
@@ -89,8 +89,8 @@ function useAiCollabLogic(props: AiCollabProps): AiCollabContextValue {
     if (!/^(with\b[\s\S]*\bselect\b|select\b)/i.test(stripLeadingComments(unwrapExplainSql(text)))) { report('解释仅支持 SELECT 查询。', true); return }
     await perform(wrapExplainSql(connection.dialect, text))
   }
-  const formatCurrentQuery = async () => {
-    try { await collab.formatText(sql => format(sql, { language: dialectCapabilities(connection.dialect).formatterLanguage })); report('SQL 已格式化，控制权保持不变。') }
+  const formatCurrentQuery = async (request: SqlEditorFormatRequest) => {
+    try { await collab.formatText(request); report('已完成格式化。') }
     catch (error) { report(error instanceof Error ? error.message : '格式化失败。', true) }
   }
   const returnAi = async () => {
@@ -115,7 +115,7 @@ export function AiCollabEditorPane({ onSave }: { onSave?(): void }): React.React
     execute, explain, returnAi, takeOver, onChange, formatCurrentQuery, setSelection, abortRun, changeSchema, insertSql, retrySave, documentController, stale,
   } = useAiCollabContext()
   const activeSchema = query.schema || schema
-  const [resultOpen, setResultOpen] = useState(!!result || !!message)
+  const [resultOpen, setResultOpen] = useState(true)
   const [picked, setPicked] = useState('')
   const [showStructure, setShowStructure] = useState(false)
   const [resultTab, setResultTab] = useState('0')
@@ -140,7 +140,7 @@ export function AiCollabEditorPane({ onSave }: { onSave?(): void }): React.React
     onCancel={abortRun}
     onSave={onSave ? () => { if (query.sql.trim()) onSave() } : undefined}
     onClear={() => onChange('')}
-    onFormat={() => { void formatCurrentQuery() }}
+    onFormat={formatCurrentQuery}
     resultKey={display?.executionId}
     resultOpen={resultOpen}
     onResultOpenChange={setResultOpen}
@@ -175,7 +175,7 @@ export function AiCollabEditorPane({ onSave }: { onSave?(): void }): React.React
       onReturnAi: () => void returnAi(),
     }}
     resultFrame={<QueryResultFrame
-      secondaryHeader={<>{stale && display && <details className="db-result-snapshot"><summary>上次执行结果 · {display.identity?.context.schema || display.schema}</summary><pre>{display.executedSql}</pre></details>}{messageError && message && <p className="db-error" role="alert">{message}{documentController.saveFailed && <button type="button" onClick={retrySave}>重试保存</button>}</p>}</>}
+      secondaryHeader={<>{stale && display && <details className="db-result-snapshot"><summary>上次执行结果 · {display.identity?.context.schema || display.schema}</summary><pre>{display.executedSql}</pre></details>}{messageError && message && <ResourceError message={message} actions={documentController.saveFailed&&<button type="button" className="db-text-button" onClick={retrySave}>重试保存</button>}/>}</>}
       pane={shown ? pane : (message ? 'message' : 'result')}
       onPaneChange={shown ? setPane : undefined}
       resultTabs={batch ? batch.map((_, index) => ({ key: String(index), label: resultTabLabel(index, batch.length) })) : undefined}

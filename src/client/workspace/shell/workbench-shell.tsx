@@ -1,3 +1,6 @@
+import {WorkbenchTooltips} from '../parts/overlay/tooltip.tsx'
+import {DrawerBackdrop,DrawerClose} from '../parts/layout/drawer-chrome.tsx'
+import type {MenuAnchor} from '../parts/overlay/floating-surface.tsx'
 import {SqlConnectionTree} from '../../sql/connection-tree.tsx'
 import {refreshCatalogLayer} from '../../schema/refresh.ts'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
@@ -7,13 +10,15 @@ import { ConnectionTreeBranch } from './connection-tree-branch.tsx'
 import { PaneGutter, PANE_GUTTER } from './pane-gutter.tsx'
 import { workspaceSources } from '../../workspace-sources.tsx'
 import { clientModules } from '../../data-sources/registry.ts'
-import { useDragResize } from '../parts/use-drag-resize.ts'
+import { useDragResize } from '../parts/hooks/use-drag-resize.ts'
 import { coerceVisibleSchemas, preferredCatalogRoot, schemaCatalogChildren, type Connection, type ConnectionWorkbench, type PendingSchemaPick, type WorkspaceBridge } from '../../../shared/workbench.ts'
 import { connectionIdOf, errorCodeOf, isAbortError, shouldMarkConnectionOffline } from '../../../shared/connection-errors.ts'
 import { clientWorkspaceDescriptor } from '../../../shared/data-sources/registry.ts'
 import { dialectCapabilities } from '../../../shared/dialect-capabilities.ts'
 import { catalogFilterCopy, sqlCatalogFilterCopy } from './catalog-filter-copy.ts'
 import { VisibleCatalogDialog } from './visible-catalog-dialog.tsx'
+import { usePanelSize } from '../parts/hooks/use-panel-size.ts'
+import { useDrawerFocus } from '../parts/overlay/use-drawer-focus.ts'
 
 function catalogChildren(item: Connection) {
   const tree = clientModules.get(item.dialect).tree
@@ -21,13 +26,14 @@ function catalogChildren(item: Connection) {
 }
 
 export function WorkbenchShell({
-  bridge, conversationId, connection, connections, reconnecting, onPick, onAdd, onEdit, onCopy, onConnect, onDisconnect, onDelete, onUnavailable, onWorkbench,
+  bridge, conversationId, connection, connections, busyConnections, onPick, onAdd, onEdit, onCopy, onConnect, onCancelConnect, onDisconnect, onDelete, onUnavailable, onWorkbench,
 }: {
   bridge: WorkspaceBridge
   conversationId: string
   connection: Connection
   connections: Connection[]
-  reconnecting?: string
+  busyConnections?: Set<string>
+  onCancelConnect?(id: string): void
   onPick(id: string): void | boolean | Promise<void | boolean>
   onAdd(): void
   onEdit(id: string): void
@@ -39,6 +45,14 @@ export function WorkbenchShell({
   onWorkbench?(id: string, patch: ConnectionWorkbench): void
 }) {
   const [search, setSearch] = useState('')
+  const shellRef = useRef<HTMLElement>(null)
+  const sideRef = useRef<HTMLElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const {width: shellWidth} = usePanelSize(shellRef)
+  const narrow = shellWidth > 0 && shellWidth < 980
+  const [drawerOpen, setDrawerOpen] = useState(false)
+  const closeDrawer = () => setDrawerOpen(false)
+  useDrawerFocus(narrow && drawerOpen, sideRef, triggerRef, closeDrawer)
   const [collapsed, setCollapsed] = useState(false)
   const [sideWidth, setSideWidth] = useState(220)
   const [expandedIds, setExpandedIds] = useState<string[]>(() => connections.filter(item => item.live).map(item => item.id))
@@ -50,7 +64,7 @@ export function WorkbenchShell({
   const [filterDraft, setFilterDraft] = useState<string[]>([])
   const [filterSearch, setFilterSearch] = useState('')
   const [sourceRefresh, setSourceRefresh] = useState<Record<string, number>>({})
-  const [connectionMenu, setConnectionMenu] = useState<{ id: string; x: number; y: number }>()
+  const [connectionMenu, setConnectionMenu] = useState<MenuAnchor & {id:string}>()
   const liveSeen = useRef(new Set(connections.filter(item => item.live).map(item => item.id)))
   const onUnavailableRef = useRef(onUnavailable)
   onUnavailableRef.current = onUnavailable
@@ -111,7 +125,7 @@ export function WorkbenchShell({
     : sqlCatalogFilterCopy
   const filterCaseInsensitive = !!filterConnection && clientWorkspaceDescriptor(filterConnection.dialect).showsSchemaTree && dialectCapabilities(filterConnection.dialect).namespaceCaseInsensitive
   const startResize = useDragResize((start, next) => {
-    setSideWidth(Math.min(420, Math.max(160, sideWidth + (next.clientX - start.clientX))))
+    setSideWidth(Math.min(320, Math.max(180, sideWidth + (next.clientX - start.clientX))))
   })
   const useConnection = async (item: Connection, schemaName?: string, extra?: Pick<PendingSchemaPick, 'folder' | 'open'>) => {
     const selected = item.id === connection.id
@@ -120,19 +134,22 @@ export function WorkbenchShell({
     if (!selected) return
     else if (schemaName) actionsRef.current?.activateSchema(schemaName)
   }
-  return <section className="db-shell" aria-label="数据库工作台">
+  return <section ref={shellRef} className={`db-shell${narrow ? ' is-connection-compact' : ''}${drawerOpen ? ' is-connection-open' : ''}`} aria-label="数据库工作台">
+    <WorkbenchTooltips/>
     <div className="db-shell-body">
-      <aside className={`db-object-sidebar ${collapsed ? 'is-collapsed' : ''}`} style={collapsed ? { width: PANE_GUTTER } : { width: sideWidth }} aria-label="我的连接">
-        {!collapsed && <div className="db-sidebar-toolbar">
+      {narrow && drawerOpen && <DrawerBackdrop className="db-connection-backdrop" label="关闭连接导航" close={closeDrawer}/>}
+      <aside ref={sideRef} tabIndex={-1} className={`db-object-sidebar ${collapsed && !narrow ? 'is-collapsed' : ''}`} style={collapsed && !narrow ? { width: PANE_GUTTER } : { width: narrow ? 280 : Math.min(sideWidth, Math.max(180, shellWidth - 760)) }} aria-label="我的连接" aria-hidden={narrow && !drawerOpen ? true : undefined}>
+        {(!collapsed || narrow) && <div className="db-sidebar-toolbar">
+          {narrow && <DrawerClose className="db-connection-drawer-close" label="关闭连接导航" close={closeDrawer}/>}
           <div className="db-catalog-search"><Search size={15} /><input aria-label="搜索连接或对象" placeholder="搜索" value={search} onChange={e => setSearch(e.target.value)} />{search && <button className="db-icon-button" aria-label="清空搜索" onClick={() => setSearch('')}><X size={12} /></button>}</div>
         </div>}
-        {!collapsed && <div className="db-object-tree db-conn-tree" onMouseDown={event => { if (event.detail > 1) event.preventDefault() }}>
+        {(!collapsed || narrow) && <div className="db-object-tree db-conn-tree" onMouseDown={event => { if (event.detail > 1) event.preventDefault() }}>
           <strong>
             <FolderTree size={14} className="db-tree-icon" />我的连接
             <button type="button" className="db-icon-button" aria-label="新建连接" onClick={onAdd}><Plus size={14} /></button>
           </strong>
           {visibleConnections.map(item => {
-            const connecting = reconnecting === item.id
+            const connecting = item.lifecycle?.status === 'queued' || item.lifecycle?.status === 'running'
             const selected = item.id === connection.id
             const SourceTree = clientModules.get(item.dialect).tree?.render
             return <ConnectionTreeBranch
@@ -161,13 +178,14 @@ export function WorkbenchShell({
  /> : undefined}
               selected={selected}
               connecting={connecting}
-              actionBlocked={reconnecting === item.id ? '连接正在处理请求，暂时不能断开或删除。' : undefined}
-              treeBusy={selected && treeBusy}
+              actionBlocked={busyConnections?.has(item.id) ? '此连接正在处理请求。' : undefined}
+              treeBusy={!!item.live && (cache.schemasStatus(item)?.status === 'loading' || selected && treeBusy)}
               search={search}
               expanded={expandedIds.includes(item.id)}
-              overflow={connectionMenu?.id === item.id ? { x: connectionMenu.x, y: connectionMenu.y } : undefined}
+              overflow={connectionMenu?.id === item.id ? connectionMenu : undefined}
               onPick={() => { pendingRef.current = undefined; onPick(item.id) }}
               onConnect={() => onConnect?.(item.id)}
+              onCancelConnect={() => onCancelConnect?.(item.id)}
               onEdit={() => onEdit(item.id)}
               onCopy={() => onCopy?.(item.id)}
               onDisconnect={() => onDisconnect?.(item.id)}
@@ -190,7 +208,7 @@ export function WorkbenchShell({
                 pendingRef.current = undefined
                 setCatalogRoot(id,item.id)
               }}
-              onOpenOverflow={next => setConnectionMenu({ id: item.id, x: next.x, y: next.y })}
+              onOpenOverflow={next => setConnectionMenu({id:item.id,...next})}
               onCloseOverflow={() => setConnectionMenu(current => current?.id === item.id ? undefined : current)}
             />
           })}
@@ -204,6 +222,7 @@ export function WorkbenchShell({
         />
       </aside>
       <div className="db-shell-pane">
+        {narrow && <button ref={triggerRef} type="button" className="db-icon-button db-connection-trigger" aria-label="打开连接导航" title="连接" aria-expanded={drawerOpen} onClick={()=>setDrawerOpen(value=>!value)}><FolderTree size={16}/></button>}
         <React.Fragment key={`${conversationId}:${connection.id}`}>
         {workspaceSources.get(connection.dialect).render({
           conversationId, host, connection, connections, sql, refreshToken: sourceRefresh[connection.id] || 0, catalogRoot, onCatalogRoot:root=>setCatalogRoot(root), onPick, onWorkbench,

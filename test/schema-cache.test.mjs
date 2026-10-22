@@ -2,6 +2,45 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { SchemaCache } from '../src/client/schema/schema-cache.ts'
 
+test('closing a catalog owner prevents deferred prewarm steps from restarting', async () => {
+  const scheduled = [], calls = []
+  const cache = new SchemaCache(async (_connection,input) => {
+    calls.push(input.kind)
+    return input.kind === 'tables' ? {items:[{name:'a'}],more:false} : {columns:[]}
+  },{schedule:work => scheduled.push(work)})
+  const connection = {id:'a',generation:'g',dialect:'mysql'}
+  cache.prewarmSchema(connection,'app')
+  await new Promise(resolve => setImmediate(resolve))
+  cache.cancelPending()
+  scheduled.forEach(work => work())
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls,['tables'])
+})
+
+test('prefetch isolates connections and retires queued and running generations', async () => {
+  const calls = [], waiting = []
+  const catalog = async (connection, input, signal) => {
+    if (input.kind === 'tables') return {items:[{name:'a'},{name:'b'},{name:'c'}], more:false}
+    calls.push([connection.id, connection.generation, input.table])
+    await new Promise((resolve, reject) => {waiting.push({connection, resolve, signal}); signal.addEventListener('abort', () => reject(abortError()), {once:true})})
+    return {columns:[{name:'id'}]}
+  }
+  const cache = new SchemaCache(catalog, {prefetchConcurrency:4})
+  const a = {id:'a',generation:'old',dialect:'mysql'}, b = {id:'b',generation:'b1',dialect:'mysql'}
+  await Promise.all([cache.loadTables(a,'app'), cache.loadTables(b,'app')])
+  cache.prefetchColumns(a,'app',['a','b','c']); cache.prefetchColumns(b,'app',['a'])
+  await new Promise(resolve => setImmediate(resolve))
+  assert.deepEqual(calls.map(call => call[0]), ['a','b'])
+  const fresh = {...a,generation:'new'}
+  await cache.loadTables(fresh,'app')
+  assert.equal(waiting[0].signal.aborted, true)
+  cache.invalidateConnection(a)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(calls.filter(call => call[0] === 'a').length, 1)
+  assert.equal(cache.tablesSnapshot(fresh,'app').length, 3)
+  waiting[1].resolve()
+})
+
 function abortError() {
   return Object.assign(new Error('signal is aborted without reason'), { name: 'AbortError' })
 }

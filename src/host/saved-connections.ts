@@ -12,6 +12,7 @@ import { writeJsonFile } from './json-file.ts'
 export type StoredDatabaseConnection = {
   id: string
   settings: SourceConnectionSettings
+  desiredState?: 'online' | 'offline'
   protectedPassword?: string
   protectedCa?: string
   /** 连接树下一级 id。空或缺省表示全部。不进会话文件。 */
@@ -69,6 +70,7 @@ export class SavedDatabaseConnections {
       connections: rows.map(row => ({
         id: row.id,
         settings: row.settings,
+        ...(row.desiredState ? { desiredState: row.desiredState } : {}),
         ...(row.protectedPassword ? { protectedPassword: row.protectedPassword } : {}),
         ...(row.protectedCa ? { protectedCa: row.protectedCa } : {}),
         ...(row.visibleSchemas?.length ? { visibleSchemas: row.visibleSchemas } : {}),
@@ -185,6 +187,8 @@ export function publicConnection(row: StoredDatabaseConnection, live?: Connectio
     database: live?.database || ('database' in row.settings ? row.settings.database : ''),
     version: live?.version || '',
     live: !!live?.live,
+    desiredState: row.desiredState,
+    lifecycle: live?.lifecycle,
     health: live?.health || (live?.live ? 'ready' : 'offline'),
     generation: live?.generation,
     databases: live?.databases,
@@ -211,6 +215,7 @@ function sanitizeStoredConnection(value: Connection | StoredDatabaseConnection):
   return {
     id: value.id,
     settings,
+    ...(value.desiredState === 'online' || value.desiredState === 'offline' ? { desiredState: value.desiredState } : {}),
     ...(protectedPassword ? { protectedPassword } : {}),
     ...(protectedCa ? { protectedCa } : {}),
     ...(visibleSchemas.length ? { visibleSchemas } : {}),

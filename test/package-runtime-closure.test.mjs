@@ -30,6 +30,8 @@ test('isolated provider tree is copied and every relative runtime import is ship
   assert.match(build, /copyTree\('src\/host\/data-sources', 'lib\/data-sources'\)/)
   assert.ok(pkg.files.includes('lib/data-sources'))
   const copiedHost = new Set([...build.matchAll(/'([a-z][a-z-]+\.mjs)'/g)].map(match => match[1]))
+  const nacosBundleLoop=build.match(/for\(const file of \[([^\]]+)\]\)await build\(\{entryPoints:\['src\/host\/data-sources\/nacos\/'\+file\]/)
+  const bundledNacos=new Set([...(nacosBundleLoop?.[1]||'').matchAll(/'([^']+\.mjs)'/g)].map(match=>match[1]))
   const walk = dir => readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
     const path = resolve(dir, entry.name)
     return entry.isDirectory() ? walk(path) : entry.name.endsWith('.mjs') ? [path] : []
@@ -40,7 +42,12 @@ test('isolated provider tree is copied and every relative runtime import is ship
       const dependency = resolve(dirname(source), match[1])
       assert.ok(existsSync(dependency), `${source} imports missing ${match[1]}`)
       const modulePath = relative(resolve(root, 'src/host'), dependency).replaceAll('\\', '/')
+      if (source.replaceAll('\\','/').endsWith('/kafka/command.mjs')) {
+        assert.match(build, /entryPoints:\['src\/host\/data-sources\/kafka\/command.mjs'\],bundle:true/)
+        continue
+      }
       if (source.endsWith('nacos/http-client.mjs') || source.endsWith('nacos\\http-client.mjs')) { assert.match(build, /entryPoints:\['src\/host\/data-sources\/nacos\/http-client.mjs'\]/); continue }
+      if(bundledNacos.has(relative(resolve(root,'src/host/data-sources/nacos'),source).replaceAll('\\','/')))continue
       if (!modulePath.startsWith('data-sources/')) assert.ok(copiedHost.has(modulePath), `${modulePath} is not in the host copy list`)
     }
   }

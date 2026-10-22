@@ -3,7 +3,8 @@ import { Copy, Ellipsis, Pencil, Plug, Power, RefreshCw, Settings2, Trash2 } fro
 import { TreeBranch } from '../tree/tree-branch.tsx'
 import { TreeLoadingIcon, TreeTypeIcon } from '../tree/tree-loading-icon.tsx'
 import { visibleCatalogChildren, type Connection } from '../../../shared/workbench.ts'
-import { useDelayedClickDismiss } from '../parts/use-delayed-click-dismiss.ts'
+import {MenuSurface} from '../parts/overlay/menu.tsx'
+import type {MenuAnchor} from '../parts/overlay/floating-surface.tsx'
 import { DialectLogo } from './dialect-logo.tsx'
 import { clientWorkspaceDescriptor } from '../../../shared/data-sources/registry.ts'
 import { clientModules } from '../../data-sources/registry.ts'
@@ -13,7 +14,7 @@ import { catalogFilterCopy, sqlCatalogFilterCopy } from './catalog-filter-copy.t
 
 export function ConnectionTreeBranch({
   item, sourceTree, selected, connecting, actionBlocked, treeBusy, search, catalogRoot, expanded, overflow,
-  onPick, onConnect, onEdit, onCopy, onDisconnect, onDelete, onToggleExpanded, onRefresh, onFilter, onActivateRoot, onOpenOverflow, onCloseOverflow,
+  onPick, onConnect, onCancelConnect, onEdit, onCopy, onDisconnect, onDelete, onToggleExpanded, onRefresh, onFilter, onActivateRoot, onOpenOverflow, onCloseOverflow,
 }: {
   sourceTree?: React.ReactNode
   item: Connection
@@ -24,9 +25,10 @@ export function ConnectionTreeBranch({
   search: string
   catalogRoot: string
   expanded: boolean
-  overflow?: { x: number; y: number }
+  overflow?: MenuAnchor
   onPick(): void
   onConnect(): void
+  onCancelConnect?(): void
   onEdit(): void
   onCopy?(): void
   onDisconnect?(): void
@@ -35,18 +37,17 @@ export function ConnectionTreeBranch({
   onRefresh(): void
   onFilter(): void
   onActivateRoot(id: string): void
-  onOpenOverflow(next: { x: number; y: number }): void
+  onOpenOverflow(next: MenuAnchor): void
   onCloseOverflow(): void
 }): React.ReactElement {
   const showsSchemaTree = clientWorkspaceDescriptor(item.dialect).showsSchemaTree
   const tree = clientModules.get(item.dialect).tree
   const catalogRoots = tree?.nodes?.(item) ?? tree?.roots ?? []
   const open = (showsSchemaTree || !!tree?.render || catalogRoots.length > 0) && expanded && !!item.live
-  useDelayedClickDismiss(!!overflow, onCloseOverflow)
   const filterNoun = showsSchemaTree ? sqlCatalogFilterCopy.noun : (tree?.filterNoun || '项')
   const canFilterChildren = showsSchemaTree || catalogRoots.length > 0
   const visibleRoots = visibleCatalogChildren(catalogRoots, item.workbench?.visibleSchemas, { currentId: catalogRoot, search })
-  const blocked = connecting || !!actionBlocked
+  const blocked = !!actionBlocked
 
   return <div className={`db-tree-conn-row db-tree-conn-${item.dialect}`}>
     <TreeBranch
@@ -65,8 +66,7 @@ export function ConnectionTreeBranch({
       }}
       onContextMenu={event => {
         event.preventDefault()
-        onPick()
-        onOpenOverflow({ x: event.clientX, y: event.clientY })
+        onOpenOverflow({element:event.currentTarget as HTMLElement,...(event.clientX || event.clientY ? {x:event.clientX,y:event.clientY}:{})})
       }}
       row={<>
         {connecting
@@ -79,7 +79,9 @@ export function ConnectionTreeBranch({
           <span className="db-tree-dialect-name">{clientWorkspaceDescriptor(item.dialect).displayName}</span>
         </span>
         <span className="db-tree-label">{item.name}</span>
-        {connecting && <small>连接中</small>}
+        {connecting && <small>{item.lifecycle?.status === 'queued' ? '等待连接' : item.lifecycle?.kind === 'recover' ? '恢复中' : '连接中'}</small>}
+        {!connecting && item.lifecycle?.nextRetryAt && <small title={item.lifecycle.message}>等待恢复</small>}
+        {!connecting && !item.lifecycle?.nextRetryAt && item.lifecycle?.status === 'failed' && <small title={item.lifecycle.message}>连接失败</small>}
       </>}
     >
       {sourceTree}
@@ -87,18 +89,19 @@ export function ConnectionTreeBranch({
       {!showsSchemaTree && open && catalogRoots.length > 0 && !visibleRoots.length && <p className="db-muted db-tree-hint">{catalogFilterCopy(filterNoun).emptyTree}</p>}
     </TreeBranch>
     <div className="db-tree-conn-actions">
-      {item.live
-        ? <button type="button" className="db-icon-button" disabled={connecting || (selected && treeBusy)} aria-label={`刷新 ${item.name}`} title="刷新" onClick={() => { onPick(); onRefresh() }}><RefreshCw size={12} className={(connecting || (selected && treeBusy) || treeBusy) ? 'db-spin' : undefined} /></button>
-        : <button type="button" className="db-icon-button" disabled={connecting} aria-label={`连接 ${item.name}`} title="连接" onClick={() => { onPick(); onConnect() }}><Plug size={12} /></button>}
-      <button type="button" className="db-icon-button" aria-label={`更多 ${item.name} 操作`} title="更多" onClick={event => { event.stopPropagation(); onPick(); onOpenOverflow({ x: event.clientX, y: event.clientY }) }}><Ellipsis size={12} /></button>
+      {(connecting || !!item.lifecycle?.nextRetryAt) && <button type="button" className="db-icon-button" aria-label={`取消连接 ${item.name}`} title={item.lifecycle?.nextRetryAt ? '停止恢复' : '取消连接'} disabled={blocked} onClick={onCancelConnect}><Power size={14} /></button>}
+      {!connecting && (item.live
+        ? <button type="button" className="db-icon-button" disabled={connecting || (selected && treeBusy)} aria-label={`刷新 ${item.name}`} title="刷新" onClick={() => { onPick(); onRefresh() }}><RefreshCw size={14} className={(connecting || (selected && treeBusy) || treeBusy) ? 'db-spin' : undefined} /></button>
+        : <button type="button" className="db-icon-button" disabled={connecting} aria-label={`连接 ${item.name}`} title="连接" onClick={onConnect}><Plug size={14} /></button>)}
+      <button type="button" className="db-icon-button" aria-label={`更多 ${item.name} 操作`} title="更多" onClick={event => { event.stopPropagation(); onOpenOverflow({element:event.currentTarget}) }}><Ellipsis size={14} /></button>
     </div>
-    {overflow && <div className="db-dropdown db-context-menu" style={{ position: 'fixed', left: overflow.x, top: overflow.y }} role="menu" onClick={event => event.stopPropagation()}>
-      {!item.live && <button type="button" disabled={connecting} onClick={() => { onCloseOverflow(); onConnect() }}><Plug size={12} />连接</button>}
-      {canFilterChildren && <button type="button" onClick={() => { onCloseOverflow(); onFilter() }}><Settings2 size={12} />显示的{filterNoun}</button>}
-      <button type="button" onClick={() => { onCloseOverflow(); onEdit() }}><Pencil size={12} />编辑</button>
-      <button type="button" onClick={() => { onCloseOverflow(); onCopy?.() }}><Copy size={12} />复制连接</button>
-      {item.live && <button type="button" disabled={blocked} title={actionBlocked} onClick={() => { onCloseOverflow(); onDisconnect?.() }}><Power size={12} />断开</button>}
-      <button type="button" disabled={blocked} title={actionBlocked} onClick={() => { onCloseOverflow(); onDelete?.() }}><Trash2 size={12} />删除</button>
-    </div>}
+    {overflow && <MenuSurface anchor={overflow} close={onCloseOverflow} label={`${item.name} 操作`}>
+      {!item.live && <button type="button" role="menuitem" disabled={connecting} onClick={() => { onCloseOverflow(); onConnect() }}><Plug size={14} />连接</button>}
+      {canFilterChildren && <button type="button" role="menuitem" onClick={() => { onCloseOverflow(); onFilter() }}><Settings2 size={14} />显示的{filterNoun}</button>}
+      <button type="button" role="menuitem" disabled={connecting || blocked} onClick={() => { onCloseOverflow(); onEdit() }}><Pencil size={14} />编辑</button>
+      <button type="button" role="menuitem" onClick={() => { onCloseOverflow(); onCopy?.() }}><Copy size={14} />复制连接</button>
+      {(item.live || item.desiredState === 'online') && <button type="button" role="menuitem" disabled={blocked} title={actionBlocked} onClick={() => { onCloseOverflow(); onDisconnect?.() }}><Power size={14} />断开</button>}
+      <button type="button" role="menuitem" className="db-stop" disabled={blocked} title={actionBlocked} onClick={() => { onCloseOverflow(); onDelete?.() }}><Trash2 size={14} />删除</button>
+    </MenuSurface>}
   </div>
 }

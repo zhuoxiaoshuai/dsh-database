@@ -1,13 +1,19 @@
+import {Pagination} from '../workspace/parts/layout/pagination.tsx'
+import {useWorkbenchConfirm} from '../workspace/parts/overlay/confirm.tsx'
+import { RefreshCw } from 'lucide-react'
+import { ActionMenu, ResourceHelp } from '../workspace/parts/overlay/action-menu.tsx'
+import {diagnoseNacosConfigFormat, validateNacosConfigFormat} from '../../shared/nacos-config-format.mjs'
+import {NACOS_CONFIG_TYPES,resolveNacosConfigType,isSupportedNacosConfigType,nacosConfigValidationNote} from '../../shared/nacos-config-types.mjs'
 import {SearchTreeNode} from '../workspace/tree/search-tree.tsx'
 import {CatalogRootNode} from '../workspace/shell/catalog-root-node.tsx'
-import {DbTable} from '../workspace/source/db-table.tsx'
+import {DbTable} from '../workspace/parts/layout/db-table.tsx'
 import React, {useCallback, useEffect, useRef, useState} from 'react'
 import type {Connection, WorkspaceBridge} from '../../shared/workbench.ts'
 import type {WorkspaceSourceContext} from '../workspace-sources.tsx'
 import type {StandardSourceBindings} from '../data-sources/types.ts'
 import {createRequestScope} from '../workspace/parts/request-scope.ts'
-import {ResourceList} from '../workspace/parts/resource-list.tsx'
-import {DialogFrame} from '../workspace/parts/dialog-frame.tsx'
+import {ResourceError, ResourceList, ResourceHeading, ResourceMetadata} from '../workspace/parts/layout/resource-list.tsx'
+import {DialogFrame} from '../workspace/parts/overlay/dialog-frame.tsx'
 import {useNavigationGuard} from '../workspace/parts/navigation-guard.ts'
 import {ConfigEditor, ConfigDiff} from './config-editor.tsx'
 import {AiQueryFrame} from '../ai-executions.tsx'
@@ -35,9 +41,7 @@ function useRead(bridge: WorkspaceBridge, connection: Connection, operation: str
   },[bridge,identity,refresh,enabled])
   return {value,error,busy,reload:() => setRefresh(v => v+1)}
 }
-function Pager({page,onPage,total}: {page: number; onPage(page:number):void; total?:number}) {
-  return <span className="db-resource-pager"><button type="button" disabled={page===1} onClick={() => onPage(page-1)}>上一页</button><span>第 {page} 页{total !== undefined ? ` · 共 ${total} 条` : ''}</span><button type="button" disabled={total !== undefined && page*50>=total} onClick={() => onPage(page+1)}>下一页</button></span>
-}
+
 export function NacosTree({bridge,connection,onSelect,selectedId,refreshToken=0}: {bridge:WorkspaceBridge;connection:Connection;onSelect(id:string):void;selectedId?:string;refreshToken?:number}) {
   const read = useRead(bridge,connection,'nacos-namespaces',{refreshToken})
   const namespaces = read.value?.items || []
@@ -47,7 +51,7 @@ export function NacosTree({bridge,connection,onSelect,selectedId,refreshToken=0}
     {namespaces.length>200 && <p>仅展示前 200 个 Namespace；右侧可选择其他 Namespace。</p>}
   </div>
 }
-function Overview({bridge,connection,root,onScope,open}: {bridge:WorkspaceBridge;connection:Connection;root:string;onScope(root:string):void;open(page:Page):void}) {
+function Overview({bridge,connection,root,onScope,open,openConfig}: {bridge:WorkspaceBridge;connection:Connection;root:string;onScope(root:string):void;open(page:Page):void;openConfig(page:Page):void}) {
   let chosen:any = {}; try {chosen=JSON.parse(root)} catch {}
   const [namespaceSearch,setNamespaceSearch]=useState('')
   const namespaceId=chosen.namespaceId ?? connection.database ?? '',feature=chosen.feature || 'config'
@@ -62,68 +66,91 @@ function Overview({bridge,connection,root,onScope,open}: {bridge:WorkspaceBridge
   const read=useRead(bridge,connection,feature==='config'?'nacos-configs':'nacos-services',{namespaceId,group:query.group,...(feature==='config'?{dataId:query.search}:{serviceName:query.search}),pageNo:page,pageSize:50})
   const rows=read.value?.items || []
   const select = (row:any,kind:Page['kind']) => {
-    const target={namespaceId,group:row.group || row.groupName || 'DEFAULT_GROUP',dataId:row.dataId,serviceName:row.name || row.serviceName}
-    open({...target,kind,id:JSON.stringify([namespaceId,target.group,target.dataId || target.serviceName,kind])})
+    const group=row.group || row.groupName || 'DEFAULT_GROUP'
+    const target={namespaceId,group,dataId:row.dataId,serviceName:row.name || row.serviceName}
+    if (kind==='config'||kind==='history'||kind==='listeners') openConfig({...target,kind,id:JSON.stringify([namespaceId,group,target.dataId])})
+    else open({...target,kind,id:JSON.stringify([namespaceId,group,target.serviceName,'service'])})
   }
-  return <ResourceList title={feature==='config'?'配置管理':'服务发现'} loading={read.busy} error={read.error || namespaces.error} empty={!rows.length}
-    search={<><input aria-label="筛选 Namespace" placeholder="筛选 Namespace" value={namespaceSearch} onChange={e=>setNamespaceSearch(e.target.value)}/><select aria-label="Namespace" value={namespaceId} onChange={e=>{setNamespace(e.target.value);setPage(1)}}>{namespaceOptions.map((n:any)=><option key={n.namespace || ''} value={n.namespace || ''}>{n.namespaceShowName || n.namespace || 'public'}</option>)}</select>
+  const title=feature==='config'?'配置管理':'服务发现'
+  return <ResourceList className="db-resource-list db-nacos-overview" title={title} bodyClassName="db-resource-body" loading={read.busy} error={read.error || namespaces.error}
+    header={<><ResourceHeading title={title} actions={<><button className="db-icon-button" aria-label="刷新" title="刷新" onClick={read.reload}><RefreshCw size={14}/></button>{feature==='config'&&<button className="db-primary" onClick={()=>setAdding(true)}>新增配置</button>}<button className="db-text-button" onClick={()=>open({id:'activity',kind:'activity',namespaceId:'',group:''})}>操作记录</button></>}/><form className="db-resource-filters" onSubmit={e=>{e.preventDefault();setQuery({group,search});setPage(1);read.reload()}}><details className="db-namespace-filter"><summary>筛选 Namespace</summary><input aria-label="筛选 Namespace" placeholder="Namespace 名称" value={namespaceSearch} onChange={e=>setNamespaceSearch(e.target.value)}/></details><select aria-label="Namespace" value={namespaceId} onChange={e=>{setNamespace(e.target.value);setPage(1)}}>{namespaceOptions.map((n:any)=><option key={n.namespace || ''} value={n.namespace || ''}>{n.namespaceShowName || n.namespace || 'public'}</option>)}</select>
       <select aria-label="功能" value={feature} onChange={e=>{setFeature(e.target.value);setPage(1)}}><option value="config">配置管理</option><option value="naming">服务发现</option></select>
       <input aria-label="Group" placeholder="Group" value={group} onChange={e=>setGroup(e.target.value)}/><input aria-label="资源名称" placeholder={feature==='config'?'Data ID':'服务名'} value={search} onChange={e=>setSearch(e.target.value)}/>
-      <button onClick={()=>{setQuery({group,search});setPage(1)}}>搜索</button></>}
-    actions={<><button onClick={read.reload}>刷新</button>{feature==='config'&&<button onClick={()=>setAdding(true)}>新增配置</button>}<button onClick={()=>open({id:'activity',kind:'activity',namespaceId:'',group:''})}>操作记录</button></>}
-    paging={<Pager page={page} total={read.value?.total} onPage={setPage}/>}>
+      <button className="db-btn" type="submit">搜索</button></form></>}
+    paging={<Pagination pageSize={50} page={page} total={read.value?.total} onPage={setPage}/>}>
     <DbTable rows={rows} rowKey={(row:any,i)=>JSON.stringify([row.group,row.dataId,row.name,i])} loading={read.busy} columns={[
       {key:'name',title:feature==='config'?'Data ID':'服务名',render:(row:any)=>row.dataId || row.name || row.serviceName},
       {key:'group',title:'Group',render:(row:any)=>row.group || row.groupName},
-      {key:'actions',title:'操作',render:(row:any)=>feature==='config'?<><button onClick={()=>select(row,'config')}>编辑</button><button onClick={()=>select(row,'history')}>历史</button><button onClick={()=>select(row,'listeners')}>监听者</button></>:<button onClick={()=>select(row,'service')}>详情</button>}
+      {key:'actions',title:'操作',render:(row:any)=>feature==='config'?<><button className="db-text-button" onClick={()=>select(row,'config')}>编辑</button><button className="db-text-button" onClick={()=>select(row,'history')}>历史</button><button className="db-text-button" onClick={()=>select(row,'listeners')}>监听者</button></>:<button className="db-text-button" onClick={()=>select(row,'service')}>详情</button>}
     ]}/>
 
-    {adding&&<DialogFrame title="新增配置" close={()=>setAdding(false)} footer={<button disabled={!newId||!newGroup} onClick={()=>{open({id:JSON.stringify([namespaceId,newGroup,newId,'new']),kind:'config',namespaceId,group:newGroup,dataId:newId,create:true});setAdding(false)}}>创建草稿</button>}><label>Group<input value={newGroup} onChange={e=>setNewGroup(e.target.value)}/></label><label>Data ID<input value={newId} onChange={e=>setNewId(e.target.value)}/></label></DialogFrame>}
+    {adding&&<DialogFrame title="新增配置" close={()=>setAdding(false)} footer={<button className="db-primary" disabled={!newId||!newGroup} onClick={()=>{openConfig({id:JSON.stringify([namespaceId,newGroup,newId]),kind:'config',namespaceId,group:newGroup,dataId:newId,create:true});setAdding(false)}}>创建草稿</button>}><div className="db-resource-form"><label>Group<input value={newGroup} onChange={e=>setNewGroup(e.target.value)}/></label><label>Data ID<input value={newId} onChange={e=>setNewId(e.target.value)}/></label></div></DialogFrame>}
   </ResourceList>
 }
-function ConfigPage({bridge,connection,page,owner,onDirty}: {bridge:WorkspaceBridge;connection:Connection;page:Page;owner:string;onDirty(dirty:boolean):void}) {
+function ConfigPage({bridge,connection,page,owner,onDirty,onDeleted}: {bridge:WorkspaceBridge;connection:Connection;page:Page;owner:string;onDirty(dirty:boolean):void;onDeleted():void}) {
   const [baseline,setBaseline]=useState<any>(),[text,setText]=useState(''),[type,setType]=useState('yaml'),[error,setError]=useState(''),[busy,setBusy]=useState(false),[preview,setPreview]=useState<any>(),[unknown,setUnknown]=useState(false),[creating,setCreating]=useState(!!page.create),[deleted,setDeleted]=useState(false)
   const dirty=creating ? !!text : !!baseline && (text!==baseline.content || type!==(baseline.type || 'text'))
-  const current=useRef({dirty,text});current.current={dirty,text}
-  const scopeIdentity=`${connection.id}:${connection.generation}`
+  const [focusEditor,setFocusEditor]=useState(0)
+  const closePreview=()=>{setPreview(undefined);setFocusEditor(value=>value+1)}
+  const current=useRef({dirty,text,creating});current.current={dirty,text,creating}
+  const scopeIdentity=JSON.stringify([connection.id,connection.generation,connection.live])
   const activeScope=useRef(scopeIdentity);activeScope.current=scopeIdentity
   const requestScope=useRef(createRequestScope(scopeIdentity))
   const isCurrent=(ticket:Parameters<typeof requestScope.current.isCurrent>[0])=>activeScope.current===scopeIdentity&&requestScope.current.isCurrent(ticket)
-  const confirmLeave=useCallback(()=>window.confirm('配置有未保存更改，确定离开？'),[])
+  const {confirm,confirmation}=useWorkbenchConfirm()
+  const confirmLeave=useCallback(()=>confirm({title:'放弃配置修改',body:'配置有未保存更改，确定离开？',confirmLabel:'放弃修改'}),[confirm])
   useNavigationGuard(owner,JSON.stringify([connection.id,page.id]),dirty,confirmLeave)
   useEffect(()=>{onDirty(dirty)},[dirty,onDirty])
   const load=async (discard = false) => {
     const ticket=requestScope.current.latest('config');setBusy(true);setError('')
     try {const value=await api(bridge,connection,'nacos-config',page,ticket.signal);if (!isCurrent(ticket)) return
       if (current.current.dirty && !discard) {setError('当前有未保存更改，已保留草稿。请通过差异核对远端版本。');setPreview({before:value.content,after:current.current.text,conflict:true})}
-      else {setBaseline(value);setText(value.content);setType(value.type || 'text');setUnknown(false);setDeleted(false);setCreating(false)}
+      else {const configType=resolveNacosConfigType(value.type,page.dataId);setBaseline({...value,type:configType});setText(value.content);setType(configType);setUnknown(false);setDeleted(false);setCreating(false)}
     } catch(e) {if(isCurrent(ticket)) setError((e as Error).message)} finally {if(isCurrent(ticket))setBusy(false);requestScope.current.finish(ticket)}
   }
-  useEffect(()=>{requestScope.current.invalidate(`${connection.id}:${connection.generation}`);if(!page.create)void load();return()=>requestScope.current.invalidate('closed')},[connection.id,connection.generation])
+  useEffect(()=>{requestScope.current.invalidate(scopeIdentity);setPreview(undefined);setBusy(false);if(connection.live&&!current.current.creating)void load();return()=>requestScope.current.invalidate('closed')},[connection.id,connection.generation,connection.live])
   const prepare=async(kind:string)=>{
     const ticket=requestScope.current.latest('change');setBusy(true);setError('')
-    try {const change={...page,kind,content:text,type,expectedMd5:baseline?.md5};const value=await api(bridge,connection,'nacos-preview',change,ticket.signal);if(isCurrent(ticket))setPreview({...value,change})}
+    try {
+      const change={...page,kind,content:text,type,expectedMd5:baseline?.md5}
+      const issues=kind==='delete'?[]:diagnoseNacosConfigFormat(text,type)
+      if(issues.length){setPreview({kind,before:baseline?.content||'',after:text,type,issues,change,scopeIdentity});return}
+      const value=await api(bridge,connection,'nacos-preview',change,ticket.signal)
+      if(isCurrent(ticket))setPreview({...value,type,issues,change,scopeIdentity})
+    }
     catch(e){if(isCurrent(ticket))setError((e as Error).message)}
     finally{if(isCurrent(ticket))setBusy(false);requestScope.current.finish(ticket)}
   }
   const submit=async()=>{
+    if(!preview?.previewToken||preview.issues?.length||!connection.live||preview.scopeIdentity!==scopeIdentity)return
     const ticket=requestScope.current.latest('change');const change=preview;setBusy(true);setError('')
     try{
+      if(change.kind!=='delete')validateNacosConfigFormat(change.change.content,change.change.type)
       const result=await api(bridge,connection,'nacos-write',{...change.change,previewToken:change.previewToken},ticket.signal)
       if(!isCurrent(ticket))return
       if(result.executionStatus && result.executionStatus!=='succeeded'){setUnknown(true);throw new Error('配置结果未知，请读取核对，勿重试。')}
       setPreview(undefined)
-      if(change.kind==='delete'){setBaseline(undefined);setText('');setDeleted(true);setError('配置已删除。')}
+      if(change.kind==='delete'){setBaseline(undefined);setText('');setDeleted(true);onDeleted()}
       else{setCreating(false);current.current.dirty=false;await load(true)}
     }catch(e){if(isCurrent(ticket)){if((e as any).executionStatus==='unknown'||(e as any).effect==='unknown')setUnknown(true);setError((e as Error).message)}}
     finally{if(isCurrent(ticket))setBusy(false);requestScope.current.finish(ticket)}
   }
-  return <section className="db-nacos-config"><p>{page.namespaceId || 'public'} / {page.group} / {page.dataId} · MD5 {baseline?.md5 || '新配置'}</p>
-    <div className="db-catalog-toolbar"><select value={type} disabled={busy} onChange={e=>setType(e.target.value)}><option value="yaml">YAML</option><option value="json">JSON</option><option value="properties">Properties</option><option value="text">Text</option></select><button disabled={busy||!connection.live} onClick={()=>void load()}>刷新核对</button><button disabled={busy||unknown||deleted||!connection.live||(!creating&&!baseline)} onClick={()=>void prepare(creating?'create':'update')}>预览发布</button>{baseline&&<button disabled={busy||unknown||deleted||!connection.live} onClick={()=>void prepare('delete')}>预览删除</button>}</div>
-    {error&&<p className="db-error" role="alert">{error}</p>}{unknown&&<p>结果需核对，已禁止重新提交。确认远端内容后可丢弃草稿并重新读取。</p>}
-    {unknown&&<button onClick={()=>{void load(true)}}>丢弃草稿并读取</button>}
-    <ConfigEditor key={type} value={text} type={type} onChange={setText} readOnly={busy||unknown||deleted}/>
-    {preview&&<DialogFrame title={preview.conflict?'远端与草稿差异':'确认配置变更'} busy={busy} close={()=>setPreview(undefined)} footer={<><button disabled={busy} onClick={()=>setPreview(undefined)}>取消</button>{preview.conflict&&<button disabled={busy} onClick={()=>{setPreview(undefined);void load(true)}}>丢弃草稿并读取</button>}{!preview.conflict&&<button disabled={busy||unknown} onClick={()=>void submit()}>确认{preview.kind==='delete'?'删除':'发布'}</button>}</>}><p>{page.namespaceId || 'public'} / {page.group} / {page.dataId}</p><p>执行时仍由 Nacos 账号权限最终校验。新增和删除没有远端原子条件保证。</p><ConfigDiff before={preview.before} after={preview.after}/></DialogFrame>}
+  return <section className="db-nacos-config">
+    {confirmation}
+    <ResourceHeading title={page.dataId} summary={<span className={`db-resource-badge ${unknown||dirty?'is-warning':''}`}>{deleted?'已删除':unknown?'待核对':dirty?'未保存':creating?'新草稿':'已同步'}</span>}
+      actions={<><button className="db-primary" disabled={busy||unknown||deleted||!connection.live||(!creating&&!baseline)} onClick={()=>void prepare(creating?'create':'update')}>{busy?'处理中…':'预览发布'}</button>
+        <ActionMenu label="更多配置操作">{baseline&&<button role="menuitem" className="db-stop" disabled={busy||unknown||deleted||!connection.live} onClick={()=>void prepare('delete')}>预览删除</button>}<button role="menuitem" disabled={busy||!connection.live} onClick={()=>void load()}>刷新核对</button></ActionMenu></>}/>
+    <ResourceMetadata items={[{label:'Namespace',value:page.namespaceId || 'public'},{label:'Group',value:page.group}]}/>
+    <div className="db-resource-filters db-config-toolbar"><label className="db-resource-inline-field">格式<select aria-label="配置格式" value={type} disabled={busy} onChange={e=>setType(e.target.value)}>{!isSupportedNacosConfigType(type)&&<option value={type}>{type}（未校验）</option>}{NACOS_CONFIG_TYPES.map(item=><option key={item.type} value={item.type}>{item.label}</option>)}</select></label>
+      <button className="db-icon-button" aria-label="刷新核对" title="刷新核对" disabled={busy||!connection.live} onClick={()=>void load()}><RefreshCw size={14}/></button>
+      <details className="db-resource-inline-details"><summary>详情</summary><span className="db-mono">MD5：{baseline?.md5 || '尚未发布'}</span></details>
+    </div>
+    {nacosConfigValidationNote(type)&&<p className="db-info-note">{nacosConfigValidationNote(type)}</p>}
+
+    {error&&<ResourceError message={error}/>} {unknown&&<p className="db-info-note">结果需核对，已禁止重新提交。确认远端内容后可丢弃草稿并重新读取。</p>}
+    {unknown&&<button className="db-text-button" onClick={()=>{void load(true)}}>丢弃草稿并读取</button>}
+    <ConfigEditor value={text} type={type} onChange={setText} focusRequest={focusEditor} readOnly={busy||unknown||deleted}/>
+    {preview&&<DialogFrame title={preview.conflict?'远端与草稿差异':'确认配置变更'} busy={busy} size="wide" close={closePreview} footer={<><button className="db-text-button" disabled={busy} onClick={closePreview}>{preview.issues?.length?'返回修改':'取消'}</button>{preview.conflict&&<button className="db-text-button" disabled={busy} onClick={()=>{closePreview();void load(true)}}>丢弃草稿并读取</button>}{!preview.conflict&&<button className="db-primary" disabled={busy||unknown||!connection.live||preview.scopeIdentity!==scopeIdentity||!!preview.issues?.length||!preview.previewToken} onClick={()=>void submit()}>确认{preview.kind==='delete'?'删除':'发布'}</button>}</>}><p className="db-config-preview-target">{page.namespaceId || 'public'} / {page.group} / {page.dataId}</p>{!!preview.issues?.length&&<p className="db-info-note">草稿格式检查；尚未核对远端版本。</p>}<ConfigDiff before={preview.before} after={preview.after} type={preview.kind==='delete'?'text':preview.type||type} issues={preview.issues} autoFocus/></DialogFrame>}
   </section>
 }
 function DetailPage({bridge,connection,page}: {bridge:WorkspaceBridge;connection:Connection;page:Page}) {
@@ -134,21 +161,48 @@ function DetailPage({bridge,connection,page}: {bridge:WorkspaceBridge;connection
   const instances=useRead(bridge,connection,page.kind==='service'?'nacos-instances':'nacos-config',{...page,clusterName:cluster,pageNo,pageSize:50},(page.kind==='service'&&!!read.value&&(read.value.clusters?.length ? read.value.clusters.some((c:any)=>c.name===cluster) : true))||(page.kind==='history'&&showDiff))
   const value=read.value
   const listenerEntries=Object.entries(value?.listeners?.lisentersGroupkeyStatus || {}).slice(0,200).map(([client,status])=>({client,md5:typeof status==='string'?status:JSON.stringify(status)}))
-  return <ResourceList title={`${page.group}/${page.dataId||page.serviceName} · ${pageLabels[page.kind]}`} loading={read.busy} error={read.error || instances.error} actions={<button onClick={()=>{read.reload();instances.reload()}}>刷新</button>} paging={page.kind==='history'&&!historyId?<Pager page={pageNo} total={value?.total} onPage={setPage}/>:undefined}>
-    {page.kind==='history'&&<>{historyId?<><button onClick={()=>{setHistory('');setDiff(false)}}>返回历史列表</button><button onClick={()=>setDiff(v=>!v)}>与当前配置 Diff</button>{showDiff&&instances.value?<ConfigDiff before={value?.content||''} after={instances.value.content}/>:<ConfigEditor key={historyId} value={value?.content||''} type={value?.type||'text'} readOnly onChange={()=>{}}/>}</>:<DbTable rows={value?.items || []} rowKey={(row:any)=>String(row.id)} columns={[{key:'id',title:'版本',render:(row:any)=><button onClick={()=>setHistory(String(row.id))}>{row.id}</button>},{key:'lastModifiedTime',title:'修改时间'},{key:'srcUser',title:'操作者'},{key:'md5',title:'MD5'}]}/>}</>}
-    {page.kind==='listeners'&&<><p>监听状态是采样结果；空列表不代表配置未生效。</p><p>采样状态：{value?.listeners?.collectStatus ?? '未知'}</p><DbTable rows={listenerEntries} rowKey={row=>row.client} columns={[{key:'client',title:'客户端'},{key:'md5',title:'报告 MD5 / 状态'}]}/>{Object.keys(value?.listeners?.lisentersGroupkeyStatus || {}).length>200&&<p>仅展示前 200 个监听者；接口没有远端分页。</p>}</>}
-    {page.kind==='service'&&<><p>健康状态由注册中心报告，不等同于业务实际可用性。</p><p>服务：{page.serviceName} · Group：{page.group} · Namespace：{page.namespaceId || 'public'}</p><select aria-label="集群" value={cluster} onChange={e=>{setCluster(e.target.value);setPage(1)}}>{(value?.clusters?.map((c:any)=>c.name)||['DEFAULT']).map((name:string)=><option key={name}>{name}</option>)}</select>{instances.error&&<p role="alert">{instances.error}</p>}<DbTable rows={instances.value?.list || []} rowKey={(i:any)=>`${i.ip}:${i.port}:${i.clusterName}`} loading={instances.busy} columns={[{key:'ip',title:'IP'},{key:'port',title:'端口'},{key:'clusterName',title:'集群'},{key:'healthy',title:'健康'},{key:'enabled',title:'启用'},{key:'weight',title:'权重'},{key:'metadata',title:'Metadata',render:(i:any)=><pre>{JSON.stringify(i.metadata)}</pre>}]}/><Pager page={pageNo} total={instances.value?.count} onPage={setPage}/></>}
+  return <ResourceList title={`${page.group}/${page.dataId||page.serviceName} · ${pageLabels[page.kind]}`} bodyClassName="db-resource-body" header={<><ResourceHeading title={page.dataId||page.serviceName} summary={pageLabels[page.kind]} actions={<button className="db-text-button" onClick={()=>{read.reload();instances.reload()}}>刷新</button>}/><ResourceMetadata items={[{label:'Namespace',value:page.namespaceId || 'public'},{label:'Group',value:page.group}]}/></>} loading={read.busy} error={read.error || instances.error} paging={page.kind==='history'&&!historyId?<Pagination pageSize={50} page={pageNo} total={value?.total} onPage={setPage}/>:undefined}>
+    {page.kind==='history'&&<>{historyId?<><div className="db-resource-actions"><button className="db-text-button" onClick={()=>{setHistory('');setDiff(false)}}>返回历史列表</button><button className="db-text-button" onClick={()=>setDiff(v=>!v)}>与当前配置 Diff</button></div>{showDiff&&instances.value?<ConfigDiff before={value?.content||''} after={instances.value.content} type={value?.type||instances.value.type||'text'}/>:<ConfigEditor key={historyId} value={value?.content||''} type={value?.type||'text'} readOnly onChange={()=>{}}/>}</>:<DbTable rows={value?.items || []} rowKey={(row:any)=>String(row.id)} columns={[{key:'id',title:'版本',render:(row:any)=><button className="db-text-button" onClick={()=>setHistory(String(row.id))}>{row.id}</button>},{key:'lastModifiedTime',title:'修改时间'},{key:'srcUser',title:'操作者'},{key:'md5',title:'MD5'}]}/>}</>}
+    {page.kind==='listeners'&&<><div className="db-resource-actions"><span className="db-resource-summary">采样状态：{value?.listeners?.collectStatus ?? '未知'}</span><ResourceHelp label="监听采样说明">监听状态是采样结果；空列表不代表配置未生效。</ResourceHelp></div><DbTable rows={listenerEntries} rowKey={row=>row.client} columns={[{key:'client',title:'客户端'},{key:'md5',title:'报告 MD5 / 状态'}]}/>{Object.keys(value?.listeners?.lisentersGroupkeyStatus || {}).length>200&&<p>仅展示前 200 个监听者；接口没有远端分页。</p>}</>}
+    {page.kind==='service'&&<><div className="db-resource-actions"><ResourceHelp label="健康状态说明">健康状态由注册中心报告，不等同于业务实际可用性。</ResourceHelp><label className="db-resource-inline-field">集群<select aria-label="集群" value={cluster} onChange={e=>{setCluster(e.target.value);setPage(1)}}>{(value?.clusters?.map((c:any)=>c.name)||['DEFAULT']).map((name:string)=><option key={name}>{name}</option>)}</select></label></div><DbTable rows={instances.value?.list || []} rowKey={(i:any)=>`${i.ip}:${i.port}:${i.clusterName}`} loading={instances.busy} columns={[{key:'ip',title:'IP'},{key:'port',title:'端口'},{key:'clusterName',title:'集群'},{key:'healthy',title:'健康',render:(i:any)=><span className={`db-resource-badge ${i.healthy?'is-success':'is-warning'}`}>{i.healthy?'健康':'异常'}</span>},{key:'enabled',title:'启用',render:(i:any)=><span className="db-resource-badge">{i.enabled?'已启用':'已停用'}</span>},{key:'weight',title:'权重'},{key:'metadata',title:'Metadata',render:(i:any)=><pre>{JSON.stringify(i.metadata)}</pre>}]}/><footer className="db-resource-pagination"><Pagination pageSize={50} page={pageNo} total={instances.value?.count} onPage={setPage}/></footer></>}
   </ResourceList>
 }
+function ConfigResourcePage({bridge,connection,page,owner,onDirty,onDeleted,onKind}: {bridge:WorkspaceBridge;connection:Connection;page:Page;owner:string;onDirty(dirty:boolean):void;onDeleted():void;onKind(kind:'config'|'history'|'listeners'):void}) {
+  const [editorMounted,setEditorMounted]=useState(false)
+  const showEditor=editorMounted || page.kind==='config'
+  if (showEditor && !editorMounted) setEditorMounted(true)
+  const view=(kind:'config'|'history'|'listeners',label:string)=><button type="button" className={page.kind===kind?'is-active':''} aria-pressed={page.kind===kind} onClick={()=>onKind(kind)}>{label}</button>
+  return <div className="db-nacos-config-resource">
+    <div className="db-result-tabs" aria-label="配置视图">{view('config','编辑')}{view('history','历史')}{view('listeners','监听者')}</div>
+    {showEditor && <div hidden={page.kind!=='config'}><ConfigPage bridge={bridge} connection={connection} page={{...page,kind:'config'}} owner={owner} onDirty={onDirty} onDeleted={onDeleted}/></div>}
+    {page.kind==='history' && <DetailPage bridge={bridge} connection={connection} page={{...page,kind:'history'}}/>}
+    {page.kind==='listeners' && <DetailPage bridge={bridge} connection={connection} page={{...page,kind:'listeners'}}/>}
+  </div>
+}
 export function useNacosBindings({host:bridge,connection,navigation,catalogRoot,onCatalogRoot,conversationId}:WorkspaceSourceContext):StandardSourceBindings {
+  const {confirm,confirmation}=useWorkbenchConfirm()
   const [dirty,setDirty]=useState<Record<string,boolean>>({})
   const dirtyRef=useRef(dirty);dirtyRef.current=dirty
   const updateDirty=useCallback((id:string,value:boolean)=>setDirty(old=>old[id]===value?old:{...old,[id]:value}),[])
   const open=(page:Page)=>navigation!.open(page)
+  const openConfig=(page:Page)=>{
+    const id=JSON.stringify([page.namespaceId,page.group,page.dataId])
+    navigation!.setTabs(previous=>previous.some(tab=>tab.id===id)
+      ? previous.map(tab=>tab.id===id?{...(tab as Page),kind:page.kind,create:(tab as Page).create}:tab)
+      : [...previous,{...page,id}])
+    navigation!.setActive(id)
+  }
+  const showConfigView=(id:string,kind:'config'|'history'|'listeners')=>navigation!.setTabs(previous=>previous.map(tab=>tab.id===id?{...(tab as Page),kind}:tab))
   return {sourceName:'Nacos',pages:{initialItems:[{id:'home'}],initialActive:'home',fallback:'home',keepMounted:true,
-    beforeClose:item=>!dirtyRef.current[item.id]||window.confirm('配置有未保存更改，确定关闭？'),
+    taskActions:[{id:'config',label:'配置管理',onOpen:()=>{let root:any={};try{root=JSON.parse(catalogRoot||'{}')}catch{};onCatalogRoot?.(JSON.stringify({namespaceId:root.namespaceId||'',feature:'config'}));navigation!.setActive('home')}},{id:'service',label:'服务发现',onOpen:()=>{let root:any={};try{root=JSON.parse(catalogRoot||'{}')}catch{};onCatalogRoot?.(JSON.stringify({namespaceId:root.namespaceId||'',feature:'naming'}));navigation!.setActive('home')}},{id:'activity',label:'操作记录',onOpen:()=>open({id:'activity',kind:'activity',namespaceId:'',group:''})}],
+    beforeClose:item=>!dirtyRef.current[item.id]||confirm({title:'关闭配置',body:'配置有未保存更改，确定关闭？',confirmLabel:'放弃并关闭'}),
+    extra:confirmation,
     onClose:item=>setDirty(old=>{const next={...old};delete next[item.id];return next}),
-    describe:item=>{const page=item as Page;return {id:page.id,label:page.id==='home'?'总览':page.id==='activity'?'操作记录':`${page.dataId||page.serviceName} · ${pageLabels[page.kind]}`,closable:page.id!=='home',dirty:!!dirty[page.id]}},
-    content:item=>{const page=item as Page;return page.id==='home'?<Overview bridge={bridge} connection={connection} root={catalogRoot} onScope={root=>onCatalogRoot?.(root)} open={open}/>:page.kind==='activity'?<AiQueryFrame bridge={bridge} connection={connection}><p>配置变更与 AI 操作记录。正文不保存到执行历史。</p></AiQueryFrame>:page.kind==='config'?<ConfigPage bridge={bridge} connection={connection} page={page} owner={conversationId} onDirty={value=>updateDirty(page.id,value)}/>:<DetailPage bridge={bridge} connection={connection} page={page}/>}
+    describe:item=>{const page=item as Page;const label=page.id==='home'?'总览':page.id==='activity'?'操作记录':page.kind==='service'?`${page.serviceName} · ${pageLabels.service}`:page.dataId||page.serviceName;return {id:page.id,label,closable:page.id!=='home',dirty:!!dirty[page.id]}},
+    content:item=>{const page=item as Page
+      if(page.id==='home')return <Overview bridge={bridge} connection={connection} root={catalogRoot} onScope={root=>onCatalogRoot?.(root)} open={open} openConfig={openConfig}/>
+      if(page.kind==='activity')return <AiQueryFrame bridge={bridge} connection={connection}><p>配置变更与 AI 操作记录。正文不保存到执行历史。</p></AiQueryFrame>
+      if(page.kind==='service')return <DetailPage bridge={bridge} connection={connection} page={page}/>
+      return <ConfigResourcePage bridge={bridge} connection={connection} page={page} owner={conversationId} onDirty={value=>updateDirty(page.id,value)} onDeleted={()=>{dirtyRef.current={...dirtyRef.current,[page.id]:false};updateDirty(page.id,false);void navigation!.close(page.id)}} onKind={kind=>showConfigView(page.id,kind)}/>}
   }}
 }

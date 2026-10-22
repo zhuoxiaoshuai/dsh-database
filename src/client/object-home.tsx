@@ -1,3 +1,5 @@
+import {DrawerBackdrop,DrawerClose} from './workspace/parts/layout/drawer-chrome.tsx'
+import {EmptyState} from './workspace/parts/feedback/empty-state.tsx'
 import React, { useRef, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { isCatalogView } from '../shared/workbench.ts'
@@ -5,7 +7,10 @@ import type { Connection } from '../shared/workbench.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { FieldDetailPane } from './field-detail-pane.tsx'
 import type { TreeFocus } from './tree-focus.ts'
-import { useDragResize } from './workspace/parts/use-drag-resize.ts'
+import { useDragResize } from './workspace/parts/hooks/use-drag-resize.ts'
+import { usePanelSize } from './workspace/parts/hooks/use-panel-size.ts'
+import { useDrawerFocus } from './workspace/parts/overlay/use-drawer-focus.ts'
+import { ActionMenu } from './workspace/parts/overlay/action-menu.tsx'
 
 type ObjectKind = 'table' | 'view'
 
@@ -42,6 +47,11 @@ export function ObjectHome({
   const [query, setQuery] = useState('')
   const [detailWidth, setDetailWidth] = useState(260)
   const splitRef = useRef<HTMLDivElement>(null)
+  const detailRef = useRef<HTMLDivElement>(null), detailTrigger = useRef<HTMLButtonElement>(null)
+  const { width } = usePanelSize(splitRef)
+  const compact = width > 0 && width < 760
+  const [detailOpen, setDetailOpen] = useState(false)
+  useDrawerFocus(compact && detailOpen, detailRef, detailTrigger, () => setDetailOpen(false))
   const rows = objects.filter(item => folder === 'view' ? isCatalogView(item.kind) : !isCatalogView(item.kind))
     .filter(item => !query.trim() || String(item.name).toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()) || String(item.comment || '').toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()))
   const selected = rows.find(item => String(item.name) === highlight)
@@ -49,12 +59,12 @@ export function ObjectHome({
     const max = Math.min(520, Math.max(280, (splitRef.current?.clientWidth || 800) * 0.55))
     setDetailWidth(Math.min(max, Math.max(200, detailWidth + (start.clientX - next.clientX))))
   })
-  return <div className="db-object-home">
+  return <div className={`db-object-home${compact ? ' is-object-compact' : ''}${detailOpen ? ' is-detail-open' : ''}`}>
     <div className="db-catalog-tools">
       <strong>{schema || '未选择数据库'} · {folder === 'view' ? '视图' : '表'}</strong>
       <button className="db-primary" disabled={!selected} onClick={() => selected && onOpen(String(selected.name), folder)}>打开表</button>
-      <button onClick={() => onHint('请使用 Navicat 导入/导出')}>导入向导</button>
-      <button onClick={() => onHint('请使用 Navicat 导入/导出')}>导出向导</button>
+      {compact && <button ref={detailTrigger} type="button" className="db-text-button" aria-label="打开对象详情" aria-expanded={detailOpen} onClick={()=>setDetailOpen(true)}>详情</button>}
+      <ActionMenu label="更多对象操作"><button role="menuitem" type="button" onClick={() => onHint('请使用 Navicat 导入/导出')}>导入向导</button><button role="menuitem" type="button" onClick={() => onHint('请使用 Navicat 导入/导出')}>导出向导</button></ActionMenu>
       <div className="db-catalog-search"><Search size={15} /><input aria-label="搜索对象" placeholder="搜索" value={query} onChange={e => setQuery(e.target.value)} />{query && <button className="db-icon-button" aria-label="清空对象搜索" onClick={() => setQuery('')}><X size={12} /></button>}</div>
     </div>
     {busy && <p className="db-info-note" role="status">正在读取对象…</p>}
@@ -79,11 +89,13 @@ export function ObjectHome({
             </tr>
           })}
         </tbody></table>
-        {!busy && !rows.length && <p className="db-info-note">没有匹配的{folder === 'view' ? '视图' : '表'}。</p>}
+        {!busy && !rows.length && <EmptyState>没有匹配的{folder === 'view' ? '视图' : '表'}。</EmptyState>}
       </div>
       </div>
       <div className="db-object-home-resizer" role="separator" aria-orientation="vertical" aria-label="拖拽调整详情区宽度" onPointerDown={startDetailResize} />
-      <div className="db-object-home-detail" style={{ width: detailWidth, flexShrink: 0 }}>
+      {compact && detailOpen && <DrawerBackdrop label="关闭对象详情" close={()=>setDetailOpen(false)}/>}
+      <div ref={detailRef} tabIndex={-1} className="db-object-home-detail" aria-hidden={compact && !detailOpen ? true : undefined} style={{ width: compact ? 280 : detailWidth, flexShrink: 0 }}>
+        {compact && <DrawerClose label="关闭对象详情" close={()=>setDetailOpen(false)}/>}
         <FieldDetailPane connection={connection} cache={cache} schema={schema} treeFocus={treeFocus} tableRecord={selected as Record<string, unknown> | undefined} />
       </div>
     </div>

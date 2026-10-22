@@ -138,3 +138,26 @@ test('credential values protect their fields while independent nonsecret edits r
  assert.equal(protectedConfig('port=80\nport=81','properties').safe,false)
  assert.doesNotMatch(protectedConfig('authorization: Bearer abcdefgh\nport: 80','yaml').text,/abcdefgh/)
 })
+
+test('publish checks JSON, YAML and Properties before preview or write and skips text and delete', async () => {
+  const service = new NacosService()
+  let writes = 0
+  const missing = async action => { if (action === 'nacos-config') throw Object.assign(new Error('missing'), {category: 'not-found'}); writes++; return {saved: true} }
+  const samples = [['json', '{'], ['json', '{"a":1,"a":2}'], ['yaml', 'password: secret\n['], ['yml', 'password: secret\n['], ['properties', 'key=\\u12']]
+  for (const [type, content] of samples) {
+    for (const actor of ['user', 'ai']) {
+      const change = {...target, kind: 'create', type, content}
+      await assert.rejects(service.request('s', connection, 'nacos-preview', change, actor, missing, () => {}), error => /格式错误/.test(error.message) && !error.message.includes('secret'))
+      await assert.rejects(service.request('s', connection, 'nacos-write', {...change, previewToken: 'bad'}, actor, missing, () => {}), /格式错误/)
+    }
+  }
+  assert.equal(writes, 0)
+  const text = await service.request('s', connection, 'nacos-preview', {...target, kind: 'create', type: 'text', content: '{'}, 'user', missing, () => {})
+  assert.ok(text.previewToken)
+  const current = 'not json {'
+  const existing = async action => { if (action === 'nacos-config') return {content: current, md5: hash(current), type: 'json'}; writes++; return {saved: true} }
+  const deletion = {...target, kind: 'delete', type: 'json', content: '{', expectedMd5: hash(current)}
+  const preview = await service.request('s', connection, 'nacos-preview', deletion, 'user', existing, () => {})
+  assert.ok(preview.previewToken)
+  assert.equal(writes, 0)
+})

@@ -7,7 +7,7 @@ import type { PreparedTextOperation, StandardTextExecution } from './module-type
 
 export type SqlAuthorizedStatement = Awaited<ReturnType<typeof authorizeStatement>>
 /** SQL-only entry adaptation and Worker proof; other source operations cannot carry them. */
-export type SqlTextEntryOptions = { sourceKind: 'sql'; entry?: 'default' | 'query' | 'manual-query' | 'shared-query' | 'explain'; input?: Record<string, unknown> }
+export type SqlTextEntryOptions = { sourceKind: 'sql'; entry?: 'default' | 'query' | 'manual-query' | 'shared-query' | 'explain' | 'knowledge'; input?: Record<string, unknown> }
 export type SqlWorkerAuthorization = { kind: string; sql: string; tables: string[]; targets?: { schema: string; name: string }[] }
 export type SqlPreparedState = { sourceKind: 'sql'; entry: NonNullable<SqlTextEntryOptions['entry']>; authorized?: SqlWorkerAuthorization }
 
@@ -21,26 +21,28 @@ export function createSqlTextExecution(dialect: 'mysql' | 'oracle'): StandardTex
         || ('schema' in raw && typeof raw.schema !== 'string'))) throw new Error('SQL 执行目标无效。')
       return { schema: (raw as { schema?: string } | undefined)?.schema ?? binding.database }
     },
-    prepareText(text, context, options) {
+    prepareText(text, context, rawOptions) {
+      const options = rawOptions as SqlTextEntryOptions | undefined
       if (options && options.sourceKind !== 'sql') throw new Error('SQL 文本执行入口无效。')
       const entry = options?.entry ?? 'default'
-      if (!['default', 'query', 'manual-query', 'shared-query', 'explain'].includes(entry)) throw new Error('SQL 文本执行入口无效。')
-      const manual = entry === 'default' || entry === 'manual-query'
+      if (!['default', 'query', 'manual-query', 'shared-query', 'explain', 'knowledge'].includes(entry)) throw new Error('SQL 文本执行入口无效。')
+      const manual = entry === 'default' || entry === 'manual-query' || entry === 'knowledge'
       const input = options?.input ? { ...options.input } : { sql: text, schema: context.schema, limit: DEFAULT_QUERY_PAGE_SIZE }
       return { sourceKind: 'sql', entry, action: manual ? 'manual-query' : 'query', text: text as string, input,
-        recordPolicy: entry === 'shared-query' || entry === 'explain' ? 'external' : 'none',
+        recordPolicy: entry === 'knowledge' ? 'owned' : entry === 'shared-query' || entry === 'explain' ? 'external' : 'none',
         operation: entry === 'explain' ? 'database_explain_plan' : 'database_execute_sql', title: '执行当前 SQL',
         summarize: result => sqlCompletion(result as unknown as Result, result.affectedRows !== undefined ? 'write' : 'select').conclusion,
         classifyInterruption: classifySqlInterruption, completedResultIsDefinitive: true }
     },
-    async authorize(prepared, actor, binding, options) {
+    async authorize(prepared, actor, binding, rawOptions) {
+      const options = rawOptions as SqlTextEntryOptions | undefined
       if (options && options.sourceKind !== 'sql') throw new Error('SQL 执行授权无效。')
       prepared.queue = actor === 'ai' ? 'ai' : 'manual'
       prepared.input = { ...prepared.input, lane: actor === 'user' ? 'manual' : 'query' }
       const entry = options?.entry ?? 'default'
       if (prepared.sourceKind !== 'sql' || binding.dialect !== dialect || !['user', 'ai'].includes(actor) || prepared.entry !== entry
-        || prepared.action !== (entry === 'default' || entry === 'manual-query' ? 'manual-query' : 'query')) throw new Error('SQL 执行授权无效。')
-      if (['default', 'query', 'manual-query'].includes(entry) && actor !== 'user') throw new Error('此 SQL 入口仅允许人工调用。')
+        || prepared.action !== (entry === 'default' || entry === 'manual-query' || entry === 'knowledge' ? 'manual-query' : 'query')) throw new Error('SQL 执行授权无效。')
+      if (['default', 'query', 'manual-query', 'knowledge'].includes(entry) && actor !== 'user') throw new Error('此 SQL 入口仅允许人工调用。')
       const statement = await authorizeStatement(dialect, prepared.text, prepared.input.schema)
       prepared.text = statement.sql
       prepared.input = { ...prepared.input, sql: statement.sql }

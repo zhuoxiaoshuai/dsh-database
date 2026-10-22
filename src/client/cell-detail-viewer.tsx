@@ -1,7 +1,8 @@
+import {copyText} from './workspace/parts/feedback/clipboard.ts'
 import React, { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 import { formatPreview, isBinaryPlaceholder } from '../shared/cell-value.ts'
-import { useDragResize } from './workspace/parts/use-drag-resize.ts'
+import { useDragResize } from './workspace/parts/hooks/use-drag-resize.ts'
 import { formatValue } from './workspace/parts/formatted-cell-value.ts'
 
 export type CellDetailViewerHandle = { focusEditor(): void }
@@ -26,6 +27,7 @@ export const CellDetailViewer = forwardRef<CellDetailViewerHandle, {
   const [kind, setKind] = useState('json')
   const [search, setSearch] = useState('')
   const [wrap, setWrap] = useState(true)
+  const [copyFeedback,setCopyFeedback]=useState('')
   const empty = value === undefined
   const binary = binaryFlag ?? isBinaryPlaceholder(value ?? null)
   const isNull = value === null
@@ -40,7 +42,7 @@ export const CellDetailViewer = forwardRef<CellDetailViewerHandle, {
   }))
   const copy = async () => {
     const text = isNull ? 'NULL' : value === '' ? '' : (value ?? '')
-    try { await navigator.clipboard.writeText(text) } catch { /* ignore */ }
+    setCopyFeedback(await copyText(text)?'已复制':'复制失败，请选中文字复制')
   }
   const apply = () => {
     if (!canEdit) return
@@ -65,6 +67,7 @@ export const CellDetailViewer = forwardRef<CellDetailViewerHandle, {
   </button>
   return <div className="db-cell-detail-viewer" style={{ height: Math.min(height, maxHeight) }} aria-label="字段详情">
     <div className="db-cell-detail-resizer" role="separator" aria-orientation="horizontal" aria-label="调整字段详情高度" onPointerDown={event => { dragOrigin.current = height; onResizeStart?.(); onResize(event) }} />
+    {copyFeedback&&<span role="status" className="db-muted">{copyFeedback}</span>}
     <header className="db-cell-detail-head">
       <button type="button" className="db-cell-detail-toggle" aria-label="收起字段详情" onClick={() => onExpandedChange(false)}><ChevronDown size={14} /></button>
       <strong>{column || (empty ? '未选中单元格' : '单元格')}</strong>

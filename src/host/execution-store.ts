@@ -4,6 +4,7 @@ import { rename, rm, writeFile, mkdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { databaseWorkspaceRoot } from './dsh-home.ts'
 import type { Result } from '../shared/workbench.ts'
+import type { ExecutionResultEnvelope } from '../shared/execution-result.ts'
 import {
   canTransition, clipSql, clipResultPreview, clipNarrative, EXECUTION_REASON_MAX, EXECUTION_TITLE_MAX, inferExecutionType, isTerminalStatus, publicExecution, summarizeParams,
   type ExecutionEventKind, type ExecutionRecord, type ExecutionStatus, type ExecutionType, type WorkbenchEvent, type DocumentExecutionIdentity,
@@ -16,10 +17,12 @@ const FILE_BUDGET = 2 * 1024 * 1024
 export class ExecutionStore {
   #records = new Map<string, ExecutionRecord>()
   #results = new Map<string, Result>()
+  #nativeResults = new Map<string, ExecutionResultEnvelope>()
   #controllers = new Map<string, AbortController>()
-  #waiters = new Set<() => void>()
+  #waiters = new Map<() => void, string>()
   #clock = new Map<string, number>()
   #eventLog = new Map<string, { seq: number; event: WorkbenchEvent }[]>()
+  #liveOwners = new Set<string>()
   #path: string
   #closed = false
   readonly #persistMode: 'sync' | 'async'
@@ -87,7 +90,12 @@ export class ExecutionStore {
     historyVisible?: boolean
   }): ExecutionRecord {
     if (this.#closed) throw new Error('插件已释放。')
+    if (input.operation === 'knowledge_sql_execute' && [...this.#records.values()].some(record => record.conversationId === input.conversationId
+      && record.operation === input.operation && record.callId === input.callId && record.connectionId === input.connectionId && record.generation === input.generation)) {
+      throw new Error('此执行请求已经受理，请读取原执行回执。')
+    }
     const now = new Date().toISOString()
+    this.#liveOwners.add(input.conversationId)
     const record: ExecutionRecord = {
       executionId: randomUUID(),
       conversationId: input.conversationId,
@@ -135,7 +143,11 @@ export class ExecutionStore {
   }
 
   releaseAbort(executionId: string, controller: AbortController): void {
-    if (this.#controllers.get(executionId) === controller) this.#controllers.delete(executionId)
+    if (this.#controllers.get(executionId) === controller) {
+      this.#controllers.delete(executionId)
+      const record = this.#records.get(executionId)
+      if (record) this.#notifyConversation(record.conversationId)
+    }
   }
 
   list(conversationId: string): ExecutionRecord[] {
@@ -145,11 +157,20 @@ export class ExecutionStore {
       .map(row => publicExecution(row))
   }
 
-  get(conversationId: string, executionId: string, includeResult = false): (ExecutionRecord & { result?: Result; resultMissing?: boolean }) | undefined {
+  get(conversationId: string, executionId: string, includeResult = false): (ExecutionRecord & { result?: Result; resultEnvelope?: ExecutionResultEnvelope; resultMissing?: boolean; receiptPending: boolean }) | undefined {
     const record = this.#records.get(executionId)
     if (!record || record.conversationId !== conversationId) return undefined
     const result = includeResult ? this.#results.get(executionId) || record.resultPreview : undefined
-    return publicExecution({ ...record, resultPersisted: !!(result || record.resultPreview) }, result)
+    const resultEnvelope: ExecutionResultEnvelope | undefined = includeResult ? this.#nativeResults.get(executionId)
+      || (result && (record.dialect === 'mysql' || record.dialect === 'oracle') ? { sourceId: record.dialect, kind: 'grid', status: record.status,
+        elapsedMs: result.elapsedMs, truncated: result.truncated, payload: result } : undefined) : undefined
+    return { ...publicExecution({ ...record, resultPersisted: !!(result || record.resultPreview) }, result), receiptPending: this.#controllers.has(executionId), ...(resultEnvelope ? { resultEnvelope: structuredClone(resultEnvelope), resultMissing: false } : {}) }
+  }
+
+  knowledgeRequest(owner: string, requestId: string, connectionId: string, generation: string, schema: string): ReturnType<ExecutionStore['get']> {
+    const record = [...this.#records.values()].find(item => item.conversationId === owner && item.operation === 'knowledge_sql_execute'
+      && item.callId === requestId && item.connectionId === connectionId && item.generation === generation && item.schema === schema)
+    return record ? this.get(owner, record.executionId, true) : undefined
   }
 
   revision(conversationId: string): number {
@@ -161,29 +182,33 @@ export class ExecutionStore {
   }
 
   emitWorkbench(conversationId: string, event: WorkbenchEvent): void {
+    this.#liveOwners.add(conversationId)
     this.#notifyConversation(conversationId, event)
   }
 
-  latestDisplay(conversationId: string, connectionId: string): (ExecutionRecord & { result?: Result; resultMissing?: boolean }) | undefined {
+  latestDisplay(conversationId: string, connectionId: string): ReturnType<ExecutionStore['get']> {
     const match = this.list(conversationId).find(row => {
       const type = row.type || inferExecutionType(row.operation)
       return row.connectionId === connectionId
-        && (type === 'query' || type === 'write' || type === 'explain')
+        && row.operation !== 'knowledge_sql_execute'
+        && (type === 'query' || type === 'write' || type === 'explain' || this.#nativeResults.has(row.executionId))
         && isTerminalStatus(row.status)
-        && (row.resultPersisted || !!row.resultMeta)
+        && (row.resultPersisted || !!row.resultMeta || this.#nativeResults.has(row.executionId))
     })
     return match ? this.get(conversationId, match.executionId, true) : undefined
   }
 
   async wait(conversationId: string, revision: number, ms = 10000, signal?: AbortSignal): Promise<{ revision: number; items: ExecutionRecord[]; events: WorkbenchEvent[]; gap: boolean }> {
+    this.#liveOwners.add(conversationId)
     const current = this.clock(conversationId)
     if (current !== revision) return this.#page(conversationId, revision)
     await new Promise<void>(resolve => {
       let timer: ReturnType<typeof setTimeout>
       const finish = () => { clearTimeout(timer); signal?.removeEventListener('abort', finish); this.#waiters.delete(finish); resolve() }
       timer = setTimeout(finish, Math.min(Math.max(ms, 0), 10000))
-      this.#waiters.add(finish)
+      this.#waiters.set(finish, conversationId)
       signal?.addEventListener('abort', finish, { once: true })
+      if (signal?.aborted) finish()
     })
     return this.#page(conversationId, revision)
   }
@@ -231,19 +256,26 @@ export class ExecutionStore {
     this.#notifyConversation(record.conversationId)
   }
 
-  complete(executionId: string, status: ExecutionStatus, message?: string, result?: Result, conclusion?: string): void {
+  complete(executionId: string, status: ExecutionStatus, message?: string, result?: Result, conclusion?: string, envelope?: ExecutionResultEnvelope): void {
     const record = this.#records.get(executionId)
     if (!record) return
     if (isTerminalStatus(record.status)) {
       // Cancellation may settle before the Worker returns the already committed batch prefix.
       // Preserve that receipt without changing the unknown terminal fact.
-      const enriched = record.status === 'unknown' && result?.steps?.some(step => step.status === 'unknown')
+      const nativePartial = record.status === 'unknown' && status === 'unknown' && envelope?.status === 'unknown'
+        && envelope.sourceId === record.dialect && !this.#nativeResults.has(executionId)
+      const enriched = record.status === 'unknown' && (result?.steps?.some(step => step.status === 'unknown')
+        || record.operation === 'knowledge_sql_execute' && status === 'unknown' && !!result?.steps?.length) || nativePartial
       if (enriched) {
-        const preview = clipResultPreview(result)
+        const preview = result && clipResultPreview(result)
         if (preview) { this.#results.set(executionId, preview); record.resultPreview = preview; record.resultPersisted = true }
+        if (nativePartial) this.#cacheNativeResult(executionId, envelope)
       }
       this.event(executionId, 'late-result', enriched ? '迟到回执已补充，未知终态保持不变。' : '迟到结果已丢弃，未改写终态。')
       return
+    }
+    if (envelope && envelope.sourceId === record.dialect) {
+      this.#cacheNativeResult(executionId, { ...envelope, status })
     }
     if (result) {
       const preview = clipResultPreview(result)
@@ -258,6 +290,12 @@ export class ExecutionStore {
     if (nextConclusion) record.conclusion = nextConclusion
     this.event(executionId, 'result', message)
     this.transition(executionId, status, message)
+  }
+
+  #cacheNativeResult(executionId: string, envelope: ExecutionResultEnvelope): void {
+    const bounded = Buffer.byteLength(JSON.stringify(envelope), 'utf8') <= 65536
+      ? structuredClone(envelope) : { ...envelope, truncated: true, payload: { kind: 'truncated', message: '结果超过恢复缓存上限。' } }
+    this.#nativeResults.set(executionId, bounded)
   }
 
   cancel(conversationId: string, executionId: string, dispatched: boolean): ExecutionRecord | undefined {
@@ -306,6 +344,17 @@ export class ExecutionStore {
     }
   }
 
+  releaseConversation(conversationId: string): void {
+    this.#liveOwners.delete(conversationId)
+    this.cancelConversation(conversationId, '对话已删除。')
+    for (const [id, record] of this.#records) if (record.conversationId === conversationId) {
+      this.#results.delete(id); this.#nativeResults.delete(id)
+    }
+    for (const [finish, owner] of this.#waiters) if (owner === conversationId) finish()
+    this.#clock.delete(conversationId)
+    this.#eventLog.delete(conversationId)
+  }
+
   dispatched(executionId: string): boolean {
     const record = this.#records.get(executionId)
     return !!record?.events.some(event => event.kind === 'dispatched')
@@ -321,14 +370,17 @@ export class ExecutionStore {
     }
     this.#controllers.clear()
     this.#results.clear()
+    this.#nativeResults.clear()
+    this.#clock.clear(); this.#eventLog.clear(); this.#liveOwners.clear()
     this.#persist()
-    this.#waiters.forEach(fn => fn())
+    for (const fn of this.#waiters.keys()) fn()
     this.#waiters.clear()
     // 异步模式下等待最后一次落盘收敛，保证 dispose 后磁盘即最新
     await this.#flushChain
   }
 
   #notifyConversation(conversationId: string, event?: WorkbenchEvent): void {
+    if (!this.#liveOwners.has(conversationId)) return
     const next = this.clock(conversationId) + 1
     this.#clock.set(conversationId, next)
     if (event) {
@@ -352,7 +404,7 @@ export class ExecutionStore {
   }
 
   #notify(): void {
-    for (const fn of [...this.#waiters]) fn()
+    for (const fn of [...this.#waiters.keys()]) fn()
   }
 
   #bucketKey(row: ExecutionRecord): string {
@@ -406,7 +458,7 @@ export class ExecutionStore {
     for (const id of [...this.#records.keys()]) {
       if (keep.has(id)) continue
       this.#records.delete(id)
-      this.#results.delete(id)
+      this.#results.delete(id); this.#nativeResults.delete(id)
     }
   }
 
@@ -525,6 +577,7 @@ export class ExecutionStore {
       const [oldest] = ordered.splice(index, 1)
       this.#records.delete(oldest.executionId)
       this.#results.delete(oldest.executionId)
+      this.#nativeResults.delete(oldest.executionId)
       text = serialize()
     }
     if (Buffer.byteLength(text) > FILE_BUDGET) {

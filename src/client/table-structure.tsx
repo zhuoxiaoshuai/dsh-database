@@ -1,3 +1,4 @@
+import {ResourceError} from './workspace/parts/feedback/resource-error.tsx'
 import React, { useEffect, useState } from 'react'
 import type { CatalogResult, Connection, WorkspaceBridge } from '../shared/workbench.ts'
 
@@ -40,7 +41,7 @@ export function TableStructure({
       {onMaintain && detail && <button disabled={loading} onClick={() => onMaintain(detail)}>维护表结构</button>}
     </div>
     {loading && <p className="db-info-note" role="status">正在读取表结构…</p>}
-    {error && <p className="db-error" role="alert">{error}</p>}
+    {error && <ResourceError message={error}/>}
     {detail && <>
       <CatalogRows rows={(detail.columns || []).slice(0, 500)} />
       <CatalogSection title="索引" data={detail.indexes} />

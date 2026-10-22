@@ -33,6 +33,8 @@ for (const dialect of ['mysql', 'oracle']) {
 await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
   import React, { useRef, useState } from 'react'
   import { createRoot } from 'react-dom/client'
+  import { EditorView } from '@codemirror/view'
+  import { EditorState, EditorSelection, StateEffect } from '@codemirror/state'
   import { StandardSourceMount } from './src/client/workspace-sources.tsx'
   import { clientModules } from './src/client/data-sources/registry.ts'
   import {useSqlCatalogController} from './src/client/sql/catalog-controller.ts'
@@ -74,7 +76,7 @@ await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
       if (action === 'template-search') return { items: items.filter(item => !body.query || item.title.includes(body.query)) }
       if (action === 'template-get') return items.find(item => item.id === body.id)
       if (action === 'template-preview') return { draft: { features: { parseOk: true } }, similar: [{ id: 'template-a', title: '经验 A', version: 1, score: .6, reasons: ['fixture similarity'] }] }
-      if (action === 'template-publish') { publications.push(body); const item = { id: body.targetId || 'saved-template', title: body.title, summary: body.summary, tags: body.tags, dialect: sourceId, version: (body.expectedVersion || 0) + 1, originalSql: body.sql }; items = [...items.filter(old => old.id !== item.id), item]; return item }
+      if (action === 'template-publish') { publications.push(body); const item = { id: body.targetId || 'saved-template', title: body.title, summary: body.summary || '', tags: Array.isArray(body.tags) ? body.tags : [], dialect: sourceId, version: (body.expectedVersion || 0) + 1, originalSql: body.sql }; items = [...items.filter(old => old.id !== item.id), item]; return item }
       if (action === 'template-archive') { items = items.filter(item => item.id !== body.id); return { ok: true } }
       throw new Error('unexpected template action ' + action)
     },
@@ -91,13 +93,14 @@ await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
       if (action === 'execution-document-get') { ++reads; const snapshot = canonicalDocument; if (window.deferGet) { window.deferGet = false; await new Promise(resolve => { window.pendingGet = resolve }) }; return { document: snapshot } }
       if (action === 'execution-latest') return {}
       if (action === 'execution-document-update') {
+        let formatKind
         if (body.source === 'format') {
           formats.push(body)
           if (window.rejectFormat) { window.rejectFormat = false; throw new Error('fixture format rejected') }
           if (window.conflictFormat) { window.conflictFormat = false; canonicalDocument = { ...canonicalDocument, revision: canonicalDocument.revision + 1 } }
-          validateBrowserFormat(queryProjection(), { sql: body.text, schema: body.context.schema }, sourceId, body.revision)
+          formatKind = validateBrowserFormat(queryProjection(), { sql: body.text, schema: body.context.schema }, sourceId, body.revision, body.formatRange)
         } else if (window.deferSave) { window.deferSave = false; await new Promise((resolve, reject) => { (window.pendingSaves ||= []).push({ resolve, reject }) }) }
-        canonicalDocument = updateExecutionDocument(canonicalDocument, body.text, body.source === 'format' ? 'system' : 'user', body.revision, body.context)
+        canonicalDocument = updateExecutionDocument(canonicalDocument, body.text, body.source === 'format' && formatKind !== 'values' ? 'system' : 'user', body.revision, body.context)
         const snapshot = canonicalDocument
         if (body.source === 'format' && window.deferFormat) { window.deferFormat = false; await new Promise(resolve => { window.pendingFormat = resolve }) }
         return { document: snapshot }
@@ -117,6 +120,10 @@ await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
     remount = () => setEpoch(value => value + 1)
     const context = { conversationId: 'fixture', host: bridge, connection, connections: [connection], sql, refreshToken: 0, catalogRoot: '', onPick() {}, onSchema() {}, onTreeBusy() {}, onTreeFocus() {}, onWorkbench(id, patch) { patches.push(patch); if (originalConnection.current?.id === id) originalConnection.current = { ...originalConnection.current, workbench: { ...originalConnection.current.workbench, ...patch } }; setConnection(previous => previous.id === id ? { ...previous, workbench: { ...previous.workbench, ...patch } } : previous) } }
     const module = clientModules.get(sourceId)
+    const editorView = () => EditorView.findFromDOM(document.querySelector('.db-tab-body:not([hidden]) .cm-content'))
+    window.selectSql = (from, to, reverse = false) => editorView().dispatch({ selection: { anchor: reverse ? to : from, head: reverse ? from : to } })
+    window.sqlEditorState = () => { const view = editorView(); return { text: view.state.doc.toString(), anchor: view.state.selection.main.anchor, head: view.state.selection.main.head } }
+    window.multipleSqlSelections = () => { const view = editorView(); view.dispatch({ effects: StateEffect.appendConfig.of(EditorState.allowMultipleSelections.of(true)) }); view.dispatch({ selection: EditorSelection.create([EditorSelection.range(0, 4), EditorSelection.range(5, 9)]) }) }
     window.fixture = { addHistory: (id, text, target, status = 'succeeded') => history.push({ ...catalogRecord, executionId: id, title: id, operation: 'workbench_shared_query', type: 'write', connectionId: sourceId + '-fixture', generation: 'g1', schema: target, executedSql: text, status, events: [] }), calls, patches, publications, formats, remount: () => remount(), openObject: () => actionsRef.current.openObject(schema, 'demo', 'table'), inspect: () => ({ maxWaiters, documentCalls, sharedQuery: queryProjection(), reads, connectionId: connection.id, generation: connection.generation }), reconnect: () => setConnection(previous => ({ ...previous, generation: 'g2' })), switchConnection: () => { originalConnection.current = connection; setConnection(previous => ({ ...previous, id: sourceId + '-second', workbench: { schema, queryTabs: [{ id: 'sql:restored', name: '原查询', sql: 'SELECT 1' }], activeTabId: 'sql:restored' } })) }, restoreConnection: () => setConnection(originalConnection.current) }
     return <div className="db-workbench"><StandardSourceMount key={epoch} module={module} context={context} /></div>
   }
@@ -145,21 +152,67 @@ try {
         const body = page.locator('.db-tab-body:not([hidden])')
         const picker = body.getByLabel('选择表结构', { exact: true })
         await picker.click()
-        await page.getByRole('listbox').getByRole('button', { name: 'demo', exact: true }).click()
+        await page.getByRole('listbox').getByRole('option', { name: 'demo', exact: true }).click()
         await body.getByRole('button', { name: '关闭表结构', exact: true }).click()
         assert.equal(await body.locator('.db-structure-pane').count(), 0)
         assert.equal(await picker.inputValue(), 'demo', 'closing preserves the selected table')
         await picker.click()
-        await page.getByRole('listbox').getByRole('button', { name: 'demo', exact: true }).click()
+        await page.getByRole('listbox').getByRole('option', { name: 'demo', exact: true }).click()
         await page.setViewportSize({ width: 420, height: 800 })
+        if (await body.locator('.db-knowledge-library').count()) {
+          await page.waitForFunction(() => {
+            const panel = document.querySelector('.db-tab-body:not([hidden]) .is-knowledge-compact .db-template-list-pane')
+            return panel && getComputedStyle(panel).position === 'absolute'
+          })
+          const metadataBounds = await body.getByLabel('标题', { exact: true }).boundingBox()
+          assert.ok(metadataBounds && metadataBounds.width >= 150 && metadataBounds.x >= 0, 'collapsed knowledge list leaves usable metadata width')
+        }
         const bounds = await editor().boundingBox()
         assert.ok(bounds && bounds.width > 20 && bounds.x >= 0 && bounds.x + bounds.width <= 421, 'editor remains usable with structure on a narrow screen')
         await body.getByRole('button', { name: '关闭表结构', exact: true }).click()
         await page.setViewportSize({ width: 1200, height: 800 })
       }
+      const openTask = async name => { await page.getByRole('button', { name: '新建任务', exact: true }).click(); await page.getByRole('menuitem', { name, exact: true }).click() }
+      const format = async () => { await page.locator('.db-tab-body:not([hidden])').getByRole('button', { name: /^格式化(?:全文|选中)$/ }).first().click() }
+      const textState = () => page.evaluate(() => window.sqlEditorState())
+      const select = (from, to, reverse = false) => page.evaluate(([from, to, reverse]) => window.selectSql(from, to, reverse), [from, to, reverse])
+      const selectionFormat = async () => { await page.locator('.db-tab-body:not([hidden])').getByRole('button', { name: '格式化选中', exact: true }).click() }
+      const undo = async () => { await editor().focus(); await page.keyboard.press('Control+z') }
+      const redo = async () => { await editor().focus(); await page.keyboard.press('Control+y') }
       await checkStructureClose()
+      const duplicated = 'SELECT * FROM t WHERE code IN (A001 A002);\nSELECT * FROM t WHERE code IN (A001 A002);'
+      const valueFrom = duplicated.lastIndexOf('A001'), valueTo = valueFrom + 9
+      const converted = duplicated.slice(0, valueFrom) + "'A001', 'A002'" + duplicated.slice(valueTo)
+      await fillEditor(duplicated)
+      await select(valueFrom, valueTo, true)
+      await selectionFormat()
+      assert.deepEqual(await textState(), { text: converted, anchor: valueFrom + 14, head: valueFrom })
+      await undo()
+      assert.equal((await textState()).text, duplicated)
+      await redo()
+      assert.equal((await textState()).text, converted)
+      await fillEditor("SELECT 'A001 A002';")
+      await select(8, 17)
+      await selectionFormat()
+      await page.getByRole('alert').filter({ hasText: '选区不能截断' }).waitFor()
+      assert.equal((await textState()).text, "SELECT 'A001 A002';")
+      await fillEditor('SELECT 1;\n  \tSELECT 2;')
+      const white = (await textState()).text
+      const whiteFrom = white.indexOf('\n')
+      await select(whiteFrom, white.indexOf('SELECT 2'))
+      await selectionFormat()
+      assert.equal((await textState()).text, white)
+      await fillEditor('(001 002)')
+      await select(0, 9)
+      await selectionFormat()
+      assert.equal((await textState()).text, "('001', '002')")
+      await fillEditor('A001 A002')
+      await page.evaluate(() => window.multipleSqlSelections())
+      await selectionFormat()
+      await page.getByRole('alert').filter({ hasText: '一个连续选区' }).waitFor()
+      assert.equal((await textState()).text, 'A001 A002')
       await fillEditor('SELECT 100')
-      await page.getByLabel('新建查询', { exact: true }).click()
+      await openTask('新建查询')
       await fillEditor('SELECT 1; SELECT FAIL; SELECT 3;')
       await page.locator('.db-tab-body:not([hidden])').getByRole('button', { name: '运行', exact: true }).first().click()
       await page.getByRole('button', { name: '仅重试此条', exact: true }).waitFor()
@@ -178,7 +231,7 @@ try {
       await page.waitForFunction(() => window.fixture.calls.length === 4)
       const newQuery = await page.getByRole('tab', { name: /^SQL-/ }).innerText()
       await page.locator('.db-query-tab').filter({ has: page.getByRole('tab', { name: newQuery, exact: true }) }).getByLabel('关闭页签', { exact: true }).click()
-      await page.getByLabel('新建查询', { exact: true }).click()
+      await openTask('新建查询')
       await page.getByRole('tab', { name: newQuery, exact: true }).waitFor()
       assert.equal(await editor().innerText(), 'SELECT 1; SELECT FAIL; SELECT 3;')
       await page.getByRole('tab', { name: '原查询', exact: true }).click()
@@ -195,18 +248,84 @@ try {
       await page.getByRole('tab', { name: /app\.demo/i }).waitFor()
       await page.evaluate(() => window.fixture.openObject())
       assert.equal(await page.getByRole('tab', { name: /app\.demo/i }).count(), 1)
-      await page.getByRole('button', { name: 'AI Query', exact: true }).click()
+      await openTask('AI Query')
       // Catalog records were already excluded from the visible AI query history.
       // Feeding a real catalog record must not introduce a new history item or editor result.
       await page.waitForFunction(() => window.fixture.inspect().reads > 0)
       await checkStructureClose()
       assert.equal(await page.locator('.db-ai-item-main').filter({ hasText: '查找 app 中的表' }).count(), 0)
-      const formatButton = () => page.locator('.db-tab-body:not([hidden])').getByRole('button', { name: '格式化', exact: true }).first()
+      const formatButton = () => page.locator('.db-tab-body:not([hidden])').getByRole('button', { name: /^格式化(?:全文|选中)$/ }).first()
       const saveText = async text => {
         await fillEditor(text)
         await page.waitForFunction(text => window.fixture.inspect().sharedQuery.sql === text, text)
       }
       const runCount = await page.evaluate(() => window.fixture.calls.length)
+      // Selection conversion uses real offsets/history and is a human edit in the canonical document.
+      await saveText(duplicated)
+      await page.getByRole('button', { name: '归还 AI', exact: true }).click()
+      await page.waitForFunction(() => window.fixture.inspect().sharedQuery.controller === 'ai')
+      await select(valueFrom, valueTo, true)
+      const conversionRevision = (await page.evaluate(() => window.fixture.inspect())).sharedQuery.revision
+      await selectionFormat()
+      await page.waitForFunction(text => window.fixture.inspect().sharedQuery.sql === text, converted)
+      assert.deepEqual(await textState(), { text: converted, anchor: valueFrom + 14, head: valueFrom })
+      const conversionRequest = await page.evaluate(() => window.fixture.formats.at(-1))
+      assert.deepEqual(conversionRequest.formatRange, { from: valueFrom, to: valueTo })
+      assert.equal(conversionRequest.revision, conversionRevision)
+      assert.equal((await page.evaluate(() => window.fixture.inspect())).sharedQuery.controller, 'user')
+      await undo()
+      await page.waitForFunction(text => window.fixture.inspect().sharedQuery.sql === text, duplicated)
+      assert.equal((await textState()).text, duplicated)
+      await redo()
+      await page.waitForFunction(text => window.fixture.inspect().sharedQuery.sql === text, converted)
+      const partialSql = 'select id from records; SELECT 999;'
+      await saveText(partialSql)
+      await page.getByRole('button', { name: '归还 AI', exact: true }).click()
+      await page.waitForFunction(() => window.fixture.inspect().sharedQuery.controller === 'ai')
+      await select(0, partialSql.indexOf(';') + 1)
+      await selectionFormat()
+      await page.waitForFunction(() => window.fixture.inspect().sharedQuery.sql.startsWith('select' + String.fromCharCode(10)))
+      assert.ok((await textState()).text.endsWith(' SELECT 999;'))
+      assert.equal((await page.evaluate(() => window.fixture.inspect())).sharedQuery.controller, 'ai')
+      await undo()
+      await page.waitForFunction(text => window.fixture.inspect().sharedQuery.sql === text, partialSql)
+      assert.equal((await page.evaluate(() => window.fixture.inspect())).sharedQuery.controller, 'user', 'undo is a human edit')
+      // Whitespace selections do nothing even when a canonical save is still pending.
+      const whitespaceDraft = 'SELECT 111;   SELECT 222;'
+      await page.evaluate(() => { window.deferSave = true })
+      await fillEditor(whitespaceDraft)
+      await page.waitForFunction(() => window.pendingSaves?.length === 1)
+      const whiteFormatCount = await page.evaluate(() => window.fixture.formats.length)
+      await select(whitespaceDraft.indexOf('   '), whitespaceDraft.indexOf('   ') + 3)
+      await selectionFormat()
+      assert.equal((await textState()).text, whitespaceDraft)
+      assert.equal(await page.evaluate(() => window.fixture.formats.length), whiteFormatCount)
+      await page.evaluate(() => window.pendingSaves.shift().resolve())
+      await page.waitForFunction(text => window.fixture.inspect().sharedQuery.sql === text, whitespaceDraft)
+      // A pending save plus newer input prevents applying the captured replacement at all.
+      await page.evaluate(() => { window.deferSave = true })
+      await fillEditor(duplicated)
+      await page.waitForFunction(() => window.pendingSaves?.length === 1)
+      await select(valueFrom, valueTo)
+      const pendingFormats = await page.evaluate(() => window.fixture.formats.length)
+      await selectionFormat()
+      await fillEditor('SELECT 222')
+      await page.evaluate(() => window.pendingSaves.shift().resolve())
+      await page.waitForFunction(() => window.fixture.inspect().sharedQuery.sql === 'SELECT 222')
+      await page.getByRole('alert').filter({ hasText: /内容已变化|尚未保存/ }).waitFor()
+      assert.equal((await textState()).text, 'SELECT 222')
+      assert.equal(await page.evaluate(() => window.fixture.formats.length), pendingFormats)
+      // Host rejection retains the locally applied replacement until explicit save retry.
+      await saveText('(001 002)')
+      await select(0, 9)
+      await page.evaluate(() => { window.conflictFormat = true })
+      await selectionFormat()
+      await page.getByRole('alert').filter({ hasText: 'AI Query 已变化' }).waitFor()
+      assert.equal((await textState()).text, "('001', '002')")
+      assert.equal((await page.evaluate(() => window.fixture.inspect())).sharedQuery.sql, '(001 002)')
+      await page.getByRole('button', { name: '重试保存', exact: true }).click()
+      await page.waitForFunction(() => window.fixture.inspect().sharedQuery.sql === "('001', '002')")
+      assert.equal(await page.evaluate(() => window.fixture.calls.length), runCount)
       // History is a new edit on the same queue; the last selection survives a failed older save.
       await page.evaluate(() => { window.fixture.addHistory('history-A', 'SELECT 301', 'HISTORY'); window.fixture.addHistory('history-B', 'SELECT 302', undefined); window.fixture.addHistory('history-unknown', 'INSERT INTO demo VALUES (1)', 'HISTORY', 'unknown'); window.deferSave = true })
       await fillEditor('SELECT 300')
@@ -229,7 +348,7 @@ try {
       await page.getByRole('button', { name: '打开原目标核验', exact: true }).click()
       assert.equal((await editor().innerText()).trim(), '')
       assert.equal(await page.evaluate(() => window.fixture.calls.length), runCount, 'verification navigation never executes original SQL')
-      await page.getByRole('button', { name: 'AI Query', exact: true }).click()
+      await openTask('AI Query')
       await page.getByRole('button', { name: '关闭详情', exact: true }).click()
       await page.evaluate(() => { window.storageState = { executionHistory: { degraded: true, retrying: false }, workspace: { degraded: true } } })
       await page.getByRole('button', { name: '重试历史保存', exact: true }).click()
@@ -246,7 +365,7 @@ try {
       await page.evaluate(() => { window.failAiRun = true })
       await page.locator('.db-tab-body:not([hidden])').getByRole('button', { name: '运行', exact: true }).first().click()
       await page.getByText('fixture partial commit', { exact: false }).first().waitFor()
-      await page.locator('.db-tab-body:not([hidden])').getByRole('tab', { name: '结果', exact: true }).click()
+      await page.locator('.db-tab-body:not([hidden])').getByRole('tablist', { name: '结果视图', exact: true }).getByRole('tab', { name: '结果', exact: true }).click()
       assert.equal(await page.locator('.db-ai-collab .db-sql-step-item.is-ok').count(), 1)
       assert.equal(await page.locator('.db-ai-collab .db-sql-step-item.is-unknown').count(), 1)
       assert.equal(await page.locator('.db-ai-collab .db-sql-step-item.is-skipped').count(), 1)
@@ -255,13 +374,14 @@ try {
       await fillEditor('select 210 from records')
       await page.waitForFunction(() => window.pendingSaves?.length === 1)
       let beforeFormats = await page.evaluate(() => window.fixture.formats.length)
-      await formatButton().click()
-      await formatButton().click()
+      await format()
+      await format()
       assert.equal(await page.evaluate(() => window.fixture.formats.length), beforeFormats)
       await page.evaluate(() => window.pendingSaves.shift().resolve())
       await page.waitForFunction(n => window.fixture.formats.length === n + 1, beforeFormats)
       await page.waitForFunction(() => window.fixture.inspect().sharedQuery.sql.includes(String.fromCharCode(10)) && document.querySelector('.db-tab-body:not([hidden]) .cm-content')?.textContent.includes('from'))
       assert.equal((await page.evaluate(() => window.fixture.inspect())).sharedQuery.controller, 'user')
+      await saveText('select 210 from records')
       await page.evaluate(() => { window.missingControlReceipt = true })
       await page.getByRole('button', { name: '归还 AI', exact: true }).click()
       await page.getByText('控制回执缺失或不一致，请刷新后重试。', { exact: true }).waitFor()
@@ -270,13 +390,13 @@ try {
       await page.waitForFunction(() => window.fixture.inspect().sharedQuery.controller === 'ai')
       assert.equal(await page.getByText('控制回执缺失或不一致，请刷新后重试。', { exact: true }).count(), 0)
       beforeFormats = await page.evaluate(() => window.fixture.formats.length)
-      await formatButton().click()
+      await format()
       await page.waitForFunction(n => window.fixture.formats.length === n + 1, beforeFormats)
       assert.equal((await page.evaluate(() => window.fixture.inspect())).sharedQuery.controller, 'ai')
       // A delayed format receipt cannot replace newer input; the next save waits for it.
       await saveText('select 211 from records')
       await page.evaluate(() => { window.deferFormat = true })
-      await formatButton().click()
+      await format()
       await page.waitForFunction(() => !!window.pendingFormat)
       await fillEditor('SELECT 212')
       await page.evaluate(() => { window.pendingFormat(); window.pendingFormat = null })
@@ -287,7 +407,7 @@ try {
       await fillEditor('select 215 from records')
       await page.waitForFunction(() => window.pendingSaves?.length === 1)
       beforeFormats = await page.evaluate(() => window.fixture.formats.length)
-      await formatButton().click()
+      await format()
       await page.evaluate(() => window.pendingSaves.shift().reject(new Error('fixture save failure')))
       await page.getByRole('button', { name: '重试保存', exact: true }).click()
       await page.waitForFunction(() => window.fixture.inspect().sharedQuery.sql === 'select 215 from records')
@@ -295,12 +415,12 @@ try {
       assert.equal(await page.evaluate(() => window.fixture.formats.length), beforeFormats)
       // Text and target use the same revision and canonical document.
       await page.locator('.db-tab-body:not([hidden])').getByLabel('切换数据库', { exact: true }).click()
-      await page.getByRole('listbox').getByRole('button', { name: 'OTHER', exact: true }).click()
+      await page.getByRole('listbox').getByRole('option', { name: 'OTHER', exact: true }).click()
       await page.waitForFunction(() => window.fixture.inspect().sharedQuery.schema === 'OTHER')
       await saveText('SELECT 218')
       assert.equal((await page.evaluate(() => window.fixture.inspect())).sharedQuery.schema, 'OTHER')
       assert.equal(await page.evaluate(() => window.fixture.calls.length), runCount, 'formatting never executes SQL')
-      await page.getByRole('button', { name: 'AI Query', exact: true }).click()
+      await openTask('AI Query')
       await fillEditor('SELECT 200')
       await page.waitForFunction(() => window.fixture.inspect().sharedQuery.controller === 'user')
       await page.getByRole('button', { name: '归还 AI', exact: true }).click()
@@ -321,8 +441,12 @@ try {
       await page.evaluate(() => { window.pendingAiRun(); window.pendingAiRun = null })
       await page.waitForFunction(() => !document.querySelector('.db-tab-body:not([hidden]) button.db-primary')?.disabled)
       assert.equal(await page.getByText('late AI value', { exact: true }).count(), 0)
-      await page.getByRole('button', { name: '经验库', exact: true }).click()
+      await openTask('经验库')
       await page.locator('.db-tab-body:not([hidden]) .db-template-list-main').filter({ hasText: '经验 A' }).click()
+      const libraryBody = page.locator('.db-tab-body:not([hidden])')
+      await libraryBody.locator('.db-sql-run-workspace.is-result-open').waitFor()
+      await libraryBody.getByRole('tab', { name: '结果', exact: true }).waitFor()
+      await libraryBody.getByRole('tab', { name: '消息', exact: true }).waitFor()
       await checkStructureClose()
       await fillEditor('SELECT 11')
       await page.locator('.db-tab-body:not([hidden]) .db-template-list-main').filter({ hasText: '经验 B' }).click()
@@ -342,12 +466,27 @@ try {
       await page.waitForFunction(() => !document.querySelector('.db-tab-body:not([hidden]) button.db-primary')?.disabled)
       assert.equal(await editor().innerText(), 'SELECT 20')
       assert.equal(await page.getByText('late fixture failure', { exact: true }).count(), 0)
+      await page.locator('.db-query-tab', { has: page.getByRole('tab', { name: '经验库', exact: true }) }).getByRole('button', { name: '关闭页签', exact: true }).click()
+      await page.getByRole('tab', { name: '经验库', exact: true }).waitFor({ state: 'detached' })
+      await openTask('新建查询')
+      await fillEditor('SELECT 90')
+      await page.locator('.db-tab-body:not([hidden])').getByRole('button', { name: '更多查询操作', exact: true }).click()
+      await page.getByRole('menuitem', { name: '保存', exact: true }).click()
+      await page.getByRole('dialog', { name: '保存到经验库' }).getByRole('button', { name: '保存', exact: true }).click()
+      await page.waitForFunction(() => document.querySelector('[role="tab"][aria-selected="true"] .db-task-label')?.textContent === '经验库')
+      assert.equal(await page.locator('.db-tab-body:not([hidden]) .db-template-library').count(), 1)
+      const savedTitle = await page.evaluate(() => window.fixture.publications.at(-1).title)
+      await page.locator('.db-tab-body:not([hidden]) .db-template-list-row.is-active').filter({ hasText: savedTitle }).waitFor()
+      await page.waitForFunction(() => document.querySelector('.db-tab-body:not([hidden]) .cm-content')?.textContent?.includes('SELECT 90'))
+      assert.equal(await page.getByRole('tab', { name: '原查询', exact: true }).count(), 1)
       assert.equal((await page.evaluate(() => window.fixture.inspect())).documentCalls > 0, true)
       assert.equal((await page.evaluate(() => window.fixture.inspect())).maxWaiters, 1)
       for (const dark of [false, true]) for (const width of [420, 768, 1200]) {
         await page.setViewportSize({ width, height: 800 })
         await page.evaluate(dark => document.querySelector('.db-workbench').classList.toggle('db-dark', dark), dark)
         await page.getByRole('tab', { name: '原查询', exact: true }).click()
+        const editView = page.getByRole('tablist', { name: '编辑与结果', exact: true }).getByRole('tab', { name: '编辑', exact: true })
+        if (await editView.isVisible()) await editView.click()
         await editor().click()
         const bounds = await editor().boundingBox()
         assert.ok(bounds && bounds.width > 20 && bounds.x >= 0 && bounds.x + bounds.width <= width + 1)
@@ -357,7 +496,7 @@ try {
       await page.evaluate(() => window.fixture.remount())
       await page.getByRole('tab', { name: '原查询', exact: true }).click()
       assert.equal(await editor().innerText(), 'SELECT 100')
-      checks.push(`${source}: production standard mount, restored/dynamic tabs, close/reopen draft, batch failure/retry/continue, stop, object identity, AI control and late replies; verified history apply while pending/failing save, missing target fallback, unknown navigation/no replay, partial receipts and storage retry without execution; canonical document protocol, format preserving control, pending/failed saves, explicit retry, late format reply and atomic schema/text; SQL knowledge sessions/variant and late failure, single active subscription, widths/themes`)
+      checks.push(`${source}: production standard mount, restored/dynamic tabs, close/reopen draft, batch failure/retry/continue, stop, object identity, AI control and late replies; selection format/list conversion in both SQL pages, real duplicate offsets, reverse selection, undo/redo, whitespace/region/multiple-selection boundaries, pending-save conflict before apply and Host rejection retaining draft; verified history apply while pending/failing save, missing target fallback, unknown navigation/no replay, partial receipts and storage retry without execution; canonical document protocol, SQL format preserving control, list conversion and undo taking user control, pending/failed saves, explicit retry, late format reply and atomic schema/text; SQL knowledge sessions/variant and late failure, single active subscription, widths/themes`)
     } catch (error) {
       await page.screenshot({ path: join(run, `${source}-failed.png`) })
       await writeFile(join(run, 'failure.json'), JSON.stringify({ status: 'FAIL', source, message: error.message, pageErrors: errors, visible: await page.locator('body').innerText() }, null, 2))

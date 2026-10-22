@@ -6,6 +6,14 @@ const MAX_BYTES = 1024 * 1024
 const PAGE = 100
 const blobMapping = { [RESP_TYPES.BLOB_STRING]: Buffer }
 const text = value => Buffer.isBuffer(value) ? value.toString('utf8') : String(value ?? '')
+// Key 与成员名走字节通道：latin1 与字节 1:1，任意字节（含 Java 序列化前缀 AC ED 00 05）无损往返。
+// 注意：只有标识槽用 keyText；值仍用 text（UTF-8），否则中文值会变成乱码。
+const keyText = value => Buffer.isBuffer(value) ? value.toString('latin1') : String(value ?? '')
+const keyBytes = value => Buffer.from(value, 'latin1')
+const isBytes = value => {
+  for (let index = 0; index < value.length; index++) if (value.charCodeAt(index) > 0xff) return false
+  return true
+}
 const KEYLESS = new Set(['ACL', 'ASKING', 'AUTH', 'BGREWRITEAOF', 'BGSAVE', 'CLIENT', 'CLUSTER', 'COMMAND', 'CONFIG', 'DBSIZE', 'ECHO', 'FAILOVER', 'FLUSHALL', 'FLUSHDB', 'FUNCTION', 'HELLO', 'INFO', 'LASTSAVE', 'LATENCY', 'MODULE', 'MONITOR', 'PING', 'PSYNC', 'PUBSUB', 'READWRITE', 'READONLY', 'REPLICAOF', 'REPLCONF', 'RESET', 'ROLE', 'SAVE', 'SCAN', 'SCRIPT', 'SELECT', 'SENTINEL', 'SHUTDOWN', 'SLAVEOF', 'SLOWLOG', 'SWAPDB', 'SYNC', 'TIME', 'WAIT'])
 
 function redisModeOf(input) {
@@ -116,11 +124,20 @@ async function open(input) {
 }
 async function close(client) { try { await client?.destroy() } catch { /* already closed */ } }
 
-function argumentsFor(value) {
-  if (!Array.isArray(value) || !value.length || value.length > 256 || value.some(arg => typeof arg !== 'string') || Buffer.byteLength(value.join('\0')) > 65536) throw new Error('单次命令参数无效或超过 64 KiB。')
-  return value
+function argumentsFor(value, flags) {
+  if (!Array.isArray(value) || !value.length || value.length > 256) throw new Error('单次命令参数无效或超过 64 KiB。')
+  let total = 0
+  for (const arg of value) {
+    if (typeof arg === 'string') total += Buffer.byteLength(arg)
+    else if (Buffer.isBuffer(arg)) total += arg.length
+    else throw new Error('单次命令参数无效或超过 64 KiB。')
+    if (total > 65536) throw new Error('单次命令参数无效或超过 64 KiB。')
+  }
+  if (!flags) return value
+  // 命令台用 \xNN 写出的字节参数按 latin1 还原，其余参数保持文本（UTF-8）。
+  return value.map((arg, index) => flags[index] && typeof arg === 'string' ? Buffer.from(arg, 'latin1') : arg)
 }
-async function send(client, args) { return client.sendCommand(argumentsFor(args)) }
+async function send(client, args, flags) { return client.sendCommand(argumentsFor(args, flags)) }
 
 export function encodeReply(reply) {
   const budget = { left: MAX_BYTES, truncated: false }
@@ -172,13 +189,13 @@ async function scan(client, input) {
     const position = clusterCursor(input.cursor, masters.length)
     const node = await client.nodeClient(masters[position.index])
     const page = cursorReply(await send(node, ['SCAN', position.cursor, 'MATCH', match, 'COUNT', String(PAGE)]))
-    const names = page.values.map(text)
+    const names = page.values.map(keyText)
     const cursor = page.cursor !== '0' ? `${position.index}:${page.cursor}` : position.index + 1 < masters.length ? `${position.index + 1}:0` : '0'
     return { cursor, keys: [...new Set(names)], scanned: names.length, complete: cursor === '0' }
   }
   const cursor = typeof input.cursor === 'string' && /^\d{1,30}$/.test(input.cursor) ? input.cursor : '0'
   const page = cursorReply(await send(client, ['SCAN', cursor, 'MATCH', match, 'COUNT', String(PAGE)]))
-  const names = page.values.map(text)
+  const names = page.values.map(keyText)
   return { cursor: page.cursor, keys: [...new Set(names)], scanned: names.length, complete: page.cursor === '0' }
 }
 
@@ -191,6 +208,8 @@ export function redisLiteralScanPattern(prefix) {
 
 async function suggestKeys(client, input, signal) {
   const match = redisLiteralScanPattern(input.prefix)
+  // 前缀是用户文本，按 UTF-8 折成字节串后再与 SCAN 出的 latin1 Key 比较。
+  const prefixBytes = Buffer.from(input.prefix, 'utf8').toString('latin1')
   const keys = new Set()
   const cluster = isClusterClient(client)
   const targets = cluster ? client.masters : [null]
@@ -205,9 +224,8 @@ async function suggestKeys(client, input, signal) {
       pages += 1
       cursor = page.cursor
       for (const value of page.values) {
-        if (Buffer.isBuffer(value) && !Buffer.from(value.toString('utf8'), 'utf8').equals(value)) continue
-        const name = text(value)
-        if (name.startsWith(input.prefix) && Buffer.byteLength(name) <= 4096) keys.add(name)
+        const name = keyText(value)
+        if (name.startsWith(prefixBytes) && name.length <= 4096) keys.add(name)
         if (keys.size >= 30) break
       }
     } while (cursor !== '0' && pages < 5 && keys.size < 30)
@@ -227,13 +245,10 @@ const GEO_LON_MAX = 180
 function commandMissing(error) {
   return /unknown command/i.test(String(error instanceof Error ? error.message : error))
 }
+// 单元格一律走字节串：field/member 需要字节精确回写，值交给前端 displayBytes 呈现。
+// 不再输出 "(binary, N bytes)" —— 那是无法回写的假字符串，曾被当成真实字段名发回 Redis。
 function cellText(item) {
-  if (Buffer.isBuffer(item)) {
-    const decoded = item.toString('utf8')
-    if (!Buffer.from(decoded).equals(item)) return `(binary, ${item.length} bytes)`
-    return decoded
-  }
-  return text(item)
+  return keyText(item)
 }
 function looksLikeHyperLogLog(value) {
   const buf = Buffer.isBuffer(value) ? value : Buffer.from(String(value ?? ''))
@@ -282,8 +297,10 @@ function infoLines(reply) {
   return lines
 }
 function invalidEdit() { throw new Error('Key 编辑参数无效。') }
+// 字节串按字符数（即字节数）计，普通文本按 UTF-8 字节数计。
+function sizeOf(value) { return isBytes(value) ? value.length : Buffer.byteLength(value) }
 function bounded(value, max) {
-  if (typeof value !== 'string' || Buffer.byteLength(value) > max) invalidEdit()
+  if (typeof value !== 'string' || sizeOf(value) > max) invalidEdit()
   return value
 }
 async function optionalCommand(client, args) {
@@ -294,79 +311,90 @@ async function optionalCommand(client, args) {
   }
 }
 
+// 入口兜底：bytes 串原样使用；含 0xFF 以上码点说明是普通文本，按 UTF-8 折成字节串。
+function keyIdentity(value) {
+  if (typeof value !== 'string' || !value) return ''
+  return isBytes(value) ? value : Buffer.from(value, 'utf8').toString('latin1')
+}
 async function key(client, input) {
-  const name = input.key
-  if (typeof name !== 'string' || !name || Buffer.byteLength(name) > 4096) throw new Error('Key 无效。')
+  const name = keyIdentity(input.key)
+  if (!name || name.length > 4096) throw new Error('Key 无效。')
+  const target = keyBytes(name)
   const operation = input.operation || 'read'
-  if (operation === 'delete') return { result: encodeReply(await send(client, ['DEL', name])) }
-  if (operation === 'persist') return { result: encodeReply(await send(client, ['PERSIST', name])) }
+  if (operation === 'delete') return { result: encodeReply(await send(client, ['DEL', target])) }
+  if (operation === 'persist') return { result: encodeReply(await send(client, ['PERSIST', target])) }
   if (operation === 'expire') {
     if (!Number.isInteger(input.seconds) || input.seconds < 1 || input.seconds > 2147483647) throw new Error('TTL 秒数无效。')
-    return { result: encodeReply(await send(client, ['EXPIRE', name, String(input.seconds)])) }
+    return { result: encodeReply(await send(client, ['EXPIRE', target, String(input.seconds)])) }
   }
   if (operation !== 'read') return mutateKey(client, name, operation, input)
   return readKey(client, name, input)
 }
 async function mutateKey(client, name, operation, input) {
+  const target = keyBytes(name)
+  // 标识槽（成员名/字段名/rename 目标）转字节；内容槽（值/分数/经纬度）保持文本。
+  const member = value => typeof value === 'string' ? keyBytes(value) : value
   if (operation === 'rename') {
     const next = bounded(input.value, 4096)
-    if (!next.trim() || next === name) invalidEdit()
-    const reply = Number(text(await send(client, ['RENAMENX', name, next])))
+    if (!next || next === name) invalidEdit()
+    const reply = Number(text(await send(client, ['RENAMENX', target, member(next)])))
     if (reply === 0) throw new Error('目标 Key 已存在。')
     return { result: encodeReply(reply) }
   }
   if (operation === 'setbit') {
     if (!Number.isInteger(input.offset) || input.offset < 0 || input.offset > 4294967295 || (input.value !== '0' && input.value !== '1')) invalidEdit()
-    return { result: encodeReply(await send(client, ['SETBIT', name, String(input.offset), input.value])) }
+    return { result: encodeReply(await send(client, ['SETBIT', target, String(input.offset), input.value])) }
   }
   if (operation === 'xdel') {
     if (typeof input.id !== 'string' || !/^\d{1,20}-\d{1,10}$/.test(input.id)) invalidEdit()
-    return { result: encodeReply(await send(client, ['XDEL', name, input.id])) }
+    return { result: encodeReply(await send(client, ['XDEL', target, input.id])) }
   }
   if (operation === 'xadd') {
     const entries = Array.isArray(input.entries) ? input.entries : (typeof input.field === 'string' && typeof input.value === 'string' ? [input.field, input.value] : undefined)
-    if (!entries || entries.length < 2 || entries.length > 64 || entries.length % 2 || entries.some((item, index) => typeof item !== 'string' || (index % 2 === 0 && !item) || Buffer.byteLength(item) > 65536)) invalidEdit()
-    return { result: encodeReply(await send(client, ['XADD', name, '*', ...entries])) }
+    if (!entries || entries.length < 2 || entries.length > 64 || entries.length % 2 || entries.some((item, index) => typeof item !== 'string' || (index % 2 === 0 && !item) || sizeOf(item) > 65536)) invalidEdit()
+    // 字段名是标识槽，值保持文本。
+    return { result: encodeReply(await send(client, ['XADD', target, '*', ...entries.map((item, index) => index % 2 === 0 ? member(item) : item)])) }
   }
   if (operation === 'geoadd') {
-    const member = bounded(input.value, 4096)
-    if (!member || !Number.isFinite(Number(input.lon)) || !Number.isFinite(Number(input.lat))) invalidEdit()
-    const reply = await send(client, ['GEOADD', name, String(input.lon), String(input.lat), member])
-    if (typeof input.previous === 'string' && input.previous && input.previous !== member) await send(client, ['ZREM', name, bounded(input.previous, 4096)])
+    const spot = bounded(input.value, 4096)
+    if (!spot || !Number.isFinite(Number(input.lon)) || !Number.isFinite(Number(input.lat))) invalidEdit()
+    const reply = await send(client, ['GEOADD', target, String(input.lon), String(input.lat), member(spot)])
+    if (typeof input.previous === 'string' && input.previous && input.previous !== spot) await send(client, ['ZREM', target, member(bounded(input.previous, 4096))])
     return { result: encodeReply(reply) }
   }
   if (operation === 'tsadd') {
     const value = bounded(input.value, 65536)
     if (!/^\d{1,20}$/.test(String(input.timestamp ?? ''))) invalidEdit()
-    return { result: encodeReply(await send(client, ['TS.ADD', name, String(input.timestamp), value])) }
+    return { result: encodeReply(await send(client, ['TS.ADD', target, String(input.timestamp), value])) }
   }
   if (operation === 'hexpire') {
     const field = bounded(input.field, 4096)
     if (!field || !Number.isInteger(input.seconds) || input.seconds < 1 || input.seconds > 2147483647) invalidEdit()
-    return { result: encodeReply(await send(client, ['HEXPIRE', name, String(input.seconds), 'FIELDS', '1', field])) }
+    return { result: encodeReply(await send(client, ['HEXPIRE', target, String(input.seconds), 'FIELDS', '1', member(field)])) }
   }
   const field = input.field
   const value = input.value
-  if (typeof value !== 'string' || Buffer.byteLength(value) > 65536) throw new Error('值超过 64 KiB。')
+  if (typeof value !== 'string' || sizeOf(value) > 65536) throw new Error('值超过 64 KiB。')
   const command = {
-    set: ['SET', name, value], hset: ['HSET', name, field, value], hdel: ['HDEL', name, field],
-    lpush: ['LPUSH', name, value], lset: ['LSET', name, String(input.index), value], lrem: ['LREM', name, '1', value],
-    sadd: ['SADD', name, value], srem: ['SREM', name, value],
-    zadd: ['ZADD', name, String(input.score), value], zrem: ['ZREM', name, value],
-    pfadd: ['PFADD', name, value], bfadd: ['BF.ADD', name, value], bfexists: ['BF.EXISTS', name, value],
-    jsonset: ['JSON.SET', name, '$', value],
+    set: ['SET', target, value], hset: ['HSET', target, member(field), value], hdel: ['HDEL', target, member(field)],
+    lpush: ['LPUSH', target, value], lset: ['LSET', target, String(input.index), value], lrem: ['LREM', target, '1', member(value)],
+    sadd: ['SADD', target, member(value)], srem: ['SREM', target, member(value)],
+    zadd: ['ZADD', target, String(input.score), member(value)], zrem: ['ZREM', target, member(value)],
+    pfadd: ['PFADD', target, member(value)], bfadd: ['BF.ADD', target, member(value)], bfexists: ['BF.EXISTS', target, member(value)],
+    jsonset: ['JSON.SET', target, '$', value],
   }[operation]
-  if (!command || command.some(arg => typeof arg !== 'string') || (['hset', 'hdel', 'hexpire'].includes(operation) && (typeof field !== 'string' || !field || Buffer.byteLength(field) > 4096)) || (operation === 'lset' && (!Number.isInteger(input.index) || input.index < 0)) || (operation === 'zadd' && !Number.isFinite(input.score))) invalidEdit()
-  if (typeof input.previous === 'string' && input.previous && Buffer.byteLength(input.previous) > 4096) invalidEdit()
+  if (!command || command.some(arg => typeof arg !== 'string' && !Buffer.isBuffer(arg)) || (['hset', 'hdel', 'hexpire'].includes(operation) && (typeof field !== 'string' || !field || sizeOf(field) > 4096)) || (operation === 'lset' && (!Number.isInteger(input.index) || input.index < 0)) || (operation === 'zadd' && !Number.isFinite(input.score))) invalidEdit()
+  if (typeof input.previous === 'string' && input.previous && sizeOf(input.previous) > 4096) invalidEdit()
   const reply = await send(client, command)
-  if (operation === 'hset' && typeof input.previous === 'string' && input.previous && input.previous !== field) await send(client, ['HDEL', name, input.previous])
-  if ((operation === 'sadd' || operation === 'zadd') && typeof input.previous === 'string' && input.previous && input.previous !== value) await send(client, [operation === 'sadd' ? 'SREM' : 'ZREM', name, input.previous])
-  if (operation === 'hset' && Number.isInteger(input.seconds) && input.seconds >= 1 && input.seconds <= 2147483647) await send(client, ['HEXPIRE', name, String(input.seconds), 'FIELDS', '1', field])
+  if (operation === 'hset' && typeof input.previous === 'string' && input.previous && input.previous !== field) await send(client, ['HDEL', target, member(input.previous)])
+  if ((operation === 'sadd' || operation === 'zadd') && typeof input.previous === 'string' && input.previous && input.previous !== value) await send(client, [operation === 'sadd' ? 'SREM' : 'ZREM', target, member(input.previous)])
+  if (operation === 'hset' && Number.isInteger(input.seconds) && input.seconds >= 1 && input.seconds <= 2147483647) await send(client, ['HEXPIRE', target, String(input.seconds), 'FIELDS', '1', member(field)])
   return { result: encodeReply(reply) }
 }
 async function readKey(client, name, input) {
-  const type = text(await send(client, ['TYPE', name])).toLowerCase()
-  const ttl = Number(text(await send(client, ['TTL', name])))
+  const target = keyBytes(name)
+  const type = text(await send(client, ['TYPE', target])).toLowerCase()
+  const ttl = Number(text(await send(client, ['TTL', target])))
   const offset = Number.isInteger(input.offset) && input.offset >= 0 && input.offset <= (input.bits === true ? 4294967295 : 1000000) ? input.offset : 0
   const cursor = numericCursor(input)
   const base = { key: name, ttl, offset }
@@ -376,31 +404,32 @@ async function readKey(client, name, input) {
   if (type === 'hash' || type === 'set' || type === 'zset') return readMembers(client, name, type, base, cursor)
   if (type === 'stream') return readStream(client, name, base, streamCursor(input))
   const keyType = namedType(type)
-  if (keyType === 'json') return { ...base, keyType, value: encodeReply(await send(client, ['JSON.GET', name])), more: false }
+  if (keyType === 'json') return { ...base, keyType, value: encodeReply(await send(client, ['JSON.GET', target])), more: false }
   if (keyType === 'timeseries') return readSeries(client, name, base, cursor)
   if (keyType === 'bloom') {
-    const reply = await send(client, ['BF.INFO', name])
+    const reply = await send(client, ['BF.INFO', target])
     return { ...base, keyType, value: encodeReply(reply), card: { lines: infoLines(reply) }, more: false }
   }
   return { ...base, keyType: type, value: encodeReply(null), more: false }
 }
 async function readString(client, name, input, base, offset) {
+  const target = keyBytes(name)
   let encoding = ''
-  try { encoding = text(await send(client, ['OBJECT', 'ENCODING', name])).toLowerCase() } catch { encoding = '' }
+  try { encoding = text(await send(client, ['OBJECT', 'ENCODING', target])).toLowerCase() } catch { encoding = '' }
   if (input.bits === true && encoding !== 'hyperloglog') {
-    const head = await send(client, ['GETRANGE', name, '0', '15'])
+    const head = await send(client, ['GETRANGE', target, '0', '15'])
     const count = await hyperLogLogCount(client, name, encoding, head)
     if (count !== undefined) return hyperLogLogResult(base, count)
     return readBitmap(client, name, base, offset)
   }
-  const raw = await send(client, ['GET', name])
+  const raw = await send(client, ['GET', target])
   const count = await hyperLogLogCount(client, name, encoding, raw)
   if (count !== undefined) return hyperLogLogResult(base, count)
   return { ...base, keyType: 'string', value: encodeReply(raw), more: false }
 }
 async function hyperLogLogCount(client, name, encoding, raw) {
   if (encoding !== 'hyperloglog' && !looksLikeHyperLogLog(raw)) return undefined
-  try { return await send(client, ['PFCOUNT', name]) }
+  try { return await send(client, ['PFCOUNT', keyBytes(name)]) }
   catch (error) {
     if (encoding === 'hyperloglog') throw error
     return undefined
@@ -411,7 +440,7 @@ function hyperLogLogResult(base, count) {
   return { ...base, keyType: 'hyperloglog', value: encodeReply(count), card: { count: countText }, more: false }
 }
 async function readBitmap(client, name, base, offset) {
-  const total = Number(text(await send(client, ['STRLEN', name]))) * 8
+  const total = Number(text(await send(client, ['STRLEN', keyBytes(name)]))) * 8
   const count = Math.min(PAGE, Math.max(0, total - offset))
   const bits = count ? await readBits(client, name, offset, count) : []
   return {
@@ -423,7 +452,7 @@ async function readBits(client, name, start, count) {
   const bits = []
   for (let at = 0; at < count;) {
     const size = Math.min(80, count - at)
-    const args = ['BITFIELD', name]
+    const args = ['BITFIELD', keyBytes(name)]
     for (let index = 0; index < size; index += 1) args.push('GET', 'u1', String(start + at + index))
     const reply = await send(client, args)
     const values = Array.isArray(reply) ? reply : [reply]
@@ -433,9 +462,10 @@ async function readBits(client, name, start, count) {
   return bits
 }
 async function readList(client, name, base, offset) {
-  const reply = await send(client, ['LRANGE', name, String(offset), String(offset + PAGE - 1)])
+  const target = keyBytes(name)
+  const reply = await send(client, ['LRANGE', target, String(offset), String(offset + PAGE - 1)])
   const items = Array.isArray(reply) ? reply : []
-  const more = offset + PAGE < Number(text(await send(client, ['LLEN', name])))
+  const more = offset + PAGE < Number(text(await send(client, ['LLEN', target])))
   return {
     ...base, keyType: 'list', value: encodeReply(reply), more,
     rows: items.map((item, index) => ({ id: String(offset + index + 1), cells: { index: String(offset + index), value: cellText(item) } })),
@@ -443,7 +473,7 @@ async function readList(client, name, base, offset) {
 }
 async function readMembers(client, name, type, base, cursor) {
   const op = type === 'hash' ? 'HSCAN' : type === 'set' ? 'SSCAN' : 'ZSCAN'
-  const page = cursorReply(await send(client, [op, name, cursor, 'COUNT', String(PAGE)]))
+  const page = cursorReply(await send(client, [op, keyBytes(name), cursor, 'COUNT', String(PAGE)]))
   const more = page.cursor !== '0'
   if (type === 'set') {
     return {
@@ -469,7 +499,7 @@ async function readMembers(client, name, type, base, cursor) {
 async function hashTtls(client, name, fields) {
   if (!fields.length) return []
   try {
-    const reply = await send(client, ['HTTL', name, 'FIELDS', String(fields.length), ...fields])
+    const reply = await send(client, ['HTTL', keyBytes(name), 'FIELDS', String(fields.length), ...fields.map(keyBytes)])
     if (!Array.isArray(reply)) return fields.map(() => '-1')
     return fields.map((_, index) => reply[index] === undefined ? '-1' : text(reply[index]))
   } catch (error) {
@@ -479,15 +509,16 @@ async function hashTtls(client, name, fields) {
 }
 async function geoRows(client, name, pairs) {
   if (!pairs.length) return undefined
+  const target = keyBytes(name)
   const member = cellText(pairs[0][0])
-  if (!member || member.startsWith('(binary')) return undefined
+  if (!member) return undefined
   const score = Number(cellText(pairs[0][1]))
-  const probed = await optionalCommand(client, ['GEOPOS', name, member])
+  const probed = await optionalCommand(client, ['GEOPOS', target, keyBytes(member)])
   if (probed === undefined) return undefined
   const position = positionOf(probed)
   if (!position || !isGeoScore(score, position[0], position[1])) return undefined
-  const members = pairs.map(pair => cellText(pair[0]))
-  const located = await send(client, ['GEOPOS', name, ...members])
+  const members = pairs.map(pair => keyBytes(cellText(pair[0])))
+  const located = await send(client, ['GEOPOS', target, ...members])
   const positions = Array.isArray(located) ? located : []
   return pairs.map((pair, index) => {
     const spot = Array.isArray(positions[index]) ? positions[index] : []
@@ -496,7 +527,7 @@ async function geoRows(client, name, pairs) {
 }
 async function readStream(client, name, base, cursor) {
   const start = cursor ? `(${cursor}` : '-'
-  const reply = await send(client, ['XRANGE', name, start, '+', 'COUNT', String(PAGE)])
+  const reply = await send(client, ['XRANGE', keyBytes(name), start, '+', 'COUNT', String(PAGE)])
   const entries = Array.isArray(reply) ? reply : []
   const last = entries.at(-1)
   return {
@@ -516,7 +547,7 @@ function streamFields(pairs) {
 }
 async function readSeries(client, name, base, cursor) {
   const start = cursor === '0' ? '-' : `(${cursor}`
-  const reply = await send(client, ['TS.RANGE', name, start, '+', 'COUNT', String(PAGE)])
+  const reply = await send(client, ['TS.RANGE', keyBytes(name), start, '+', 'COUNT', String(PAGE)])
   const entries = Array.isArray(reply) ? reply : []
   const last = entries.at(-1)
   return {

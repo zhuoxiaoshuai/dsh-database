@@ -1,5 +1,5 @@
 import { getDataSource } from './data-sources/sql-registry.mjs'
-import { aliasesOf, guard, splitStatements as splitCommonStatements } from './data-sources/sql-policy-common.mjs'
+import { aliasesOf, guard, splitStatements as splitCommonStatements, unverifiedStatement } from './data-sources/sql-policy-common.mjs'
 
 export function splitStatements(sql, dialect) {
   return dialect ? getDataSource(dialect).policy.splitStatements(sql) : splitCommonStatements(sql)
@@ -55,7 +55,7 @@ export async function authorizeStatement(dialect, sql, schema) {
     if (innerSql) {
       const inner = await authorizeStatement(dialect, innerSql, schema)
       if (inner.kind === 'select') return { kind: 'explain', tables: inner.tables, references, aliases, sql: sql.trim().replace(/;\s*$/, ''), targetSql: innerSql }
-      throw new Error('暂只支持 EXPLAIN SELECT；未执行任何修改。')
+      return unverifiedStatement(sql)
     }
   }
   return policy.authorize(sql, schema)

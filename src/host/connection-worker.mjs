@@ -1,3 +1,4 @@
+import { connectionFailure } from './connection-failure.mjs'
 // Profile worker: credentials stay here. SessionManager owns Catalog / Query / Maintenance sessions.
 import { parentPort } from 'node:worker_threads'
 import { catalog } from './catalog.mjs'
@@ -71,11 +72,13 @@ parentPort.once('message', async ({ input, testOnly }) => {
       cancel: conn => dialect.cancel(conn),
       probe: async conn => {
         const probed = await dialect.probe(conn, credentials)
-        credentials.identity = probed.identity
         return probed
       },
-      createQueryPool: () => createDatabaseQueryPool(credentials),
-      onHealth: health => { if (ready) parentPort.postMessage({ health }) },
+      createQueryPool: () => createDatabaseQueryPool(credentials, {onStall: () => {
+        if (ready) parentPort.postMessage({health:'closed',category:'network'})
+        setImmediate(() => process.exit(1))
+      }}),
+      onHealth: (health, error) => { if (ready) parentPort.postMessage({ health, ...(error ? { category: connectionFailure(error) } : {}) }) },
       watchConnection: dialect.watchConnection,
     })
 
@@ -92,8 +95,7 @@ parentPort.once('message', async ({ input, testOnly }) => {
       () => sessions.acquireMaintenance(),
       () => sessions.releaseMaintenance(true),
     )
-    const stopProbe = credentials.dialect === 'mysql'
-      ? startIdleCatalogProbe(sessions, exclusive, () => !ready || inflight.size > 0) : () => {}
+    const stopProbe = startIdleCatalogProbe(sessions, exclusive, () => !ready || inflight.size > 0)
 
     parentPort.on('close', () => { ready = false; stopProbe(); void sessions.close() })
     parentPort.on('message', async message => {
@@ -157,6 +159,7 @@ parentPort.once('message', async ({ input, testOnly }) => {
           effect: error?.effect,
           phase: error?.phase,
           category: error?.category,
+          connectionCategory: connectionFailure(error),
           databaseCode: error?.databaseCode,
           steps: error?.steps,
           batch: error?.batch,
@@ -188,6 +191,6 @@ parentPort.once('message', async ({ input, testOnly }) => {
     })()
   } catch (error) {
     input.password = ''
-    parentPort.postMessage({ ok: false, ready: false, error: nativeErrorText(error, '连接失败，请检查连接配置与账号权限。') })
+    parentPort.postMessage({ ok: false, ready: false, category: connectionFailure(error), error: nativeErrorText(error, '连接失败，请检查连接配置与账号权限。') })
   }
 })

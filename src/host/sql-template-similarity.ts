@@ -1,13 +1,18 @@
 import type { NormalizedTemplate, TemplateFeatures } from './sql-template-normalizer.ts'
+import type { KnowledgeTidySnapshot } from '../shared/knowledge.ts'
+import { isWritableLineageHead } from './sql-template-lineage.ts'
 
 export type TemplateIndex = {
   id: string
   familyId: string
+  lineageId?: string
+  lineageAmbiguous?: boolean
   version: number
   title: string
   summary: string
   tags: string[]
   normalizedSql: string
+  originalSql?: string
   fingerprint: string
   features: TemplateFeatures
   unpublished?: boolean
@@ -19,6 +24,7 @@ export type TemplateIndex = {
 }
 
 export type SimilarityHit = {
+  expectedSnapshot?: KnowledgeTidySnapshot
   id: string
   familyId: string
   version: number
@@ -98,19 +104,17 @@ export function similarTemplates<T extends TemplateIndex>(draft: NormalizedTempl
       score: Number(score.toFixed(3)),
       reasons: reasons.slice(0, 4),
       unpublished: item.unpublished,
+      ...(typeof item.originalSql === 'string' ? { expectedSnapshot: { text: item.originalSql, title: item.title, summary: item.summary, tags: [...item.tags] } } : {}),
     })
   }
   return hits.sort((a, b) => b.score - a.score).slice(0, limit)
 }
 
 export function latestPublishedByFamily<T extends TemplateIndex>(templates: T[]): T[] {
-  const map = new Map<string, T>()
-  for (const item of templates) {
-    if (item.archived || item.unpublished) continue
-    const current = map.get(item.familyId)
-    if (!current || item.version > current.version || item.updatedAt.localeCompare(current.updatedAt) > 0) map.set(item.familyId, item)
-  }
-  return [...map.values()]
+  // Select from complete history: filtering archived heads first would resurrect ancestors.
+  return templates.filter(item => item.lineageAmbiguous
+    ? !item.archived && !item.unpublished
+    : isWritableLineageHead(templates, item))
 }
 
 export function searchTemplates<T extends TemplateIndex>(query: string, templates: T[], dialect?: string, connectionId?: string): T[] {

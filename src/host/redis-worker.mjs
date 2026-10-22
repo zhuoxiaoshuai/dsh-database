@@ -1,3 +1,4 @@
+import { connectionFailure } from './connection-failure.mjs'
 import { parentPort } from 'node:worker_threads'
 import { getRedisDataSource } from './data-sources/redis-registry.mjs'
 import { nativeErrorText } from './connect-error.mjs'
@@ -58,11 +59,16 @@ parentPort.once('message', async ({ input, testOnly }) => {
         throw error
       }
     }
-    client.on('end', () => { health = 'degraded'; parentPort.postMessage({ health }) })
+    const watchClient = current => current.on('end', () => { if (client !== current) return; health = 'degraded'; parentPort.postMessage({ health, category: 'network' }) })
+    watchClient(client)
+    let probing = false
     const heartbeat = setInterval(async () => {
-      if (health !== 'ready') return
+      if (health !== 'ready' || inflight.size || probing) return
+      probing = true
+      const deadline = setTimeout(() => { health = 'degraded'; parentPort.postMessage({health,category:'network'}); void provider.driver.close(client); setImmediate(() => process.exit(1)) }, 10_000)
       try { await provider.driver.probe(client, credentials) }
-      catch { health = 'degraded'; parentPort.postMessage({ health }) }
+      catch (error) { const category = connectionFailure(error); if (['network','authentication','configuration'].includes(category)) { health = 'degraded'; parentPort.postMessage({ health, category }) } }
+      finally {clearTimeout(deadline); probing = false}
     }, 30_000)
     heartbeat.unref()
     parentPort.on('close', () => { clearInterval(heartbeat); void provider.driver.close(client); void closeExtras() })
@@ -78,18 +84,19 @@ parentPort.once('message', async ({ input, testOnly }) => {
         let result
         if (message.action === 'revive' || message.action === 'reconnect') {
           const fresh = await provider.driver.revive(credentials)
-          const checked = await provider.driver.probe(fresh, credentials)
-          const listed = await provider.driver.databases(fresh, credentials)
+          let checked, listed
+          try { checked = await provider.driver.probe(fresh, credentials); listed = await provider.driver.databases(fresh, credentials); if (controller.signal.aborted) throw new Error('请求已取消。') }
+          catch (error) { await provider.driver.close(fresh); throw error }
           await closeExtras()
           await provider.driver.close(client)
           client = fresh; health = 'ready'
-          client.on('end', () => { health = 'degraded'; parentPort.postMessage({ health }) })
+          watchClient(client)
           result = { ...checked, databases: listed, health }
         } else if (message.action === 'redis-command') {
           isolated = await provider.driver.open(provider.driver.commandCredentials(credentials, message.input?.database))
           if (controller.signal.aborted) throw new Error('请求已取消。')
           const startedCommand = Date.now()
-          const reply = await provider.driver.execute(isolated, message.input.args)
+          const reply = await provider.driver.execute(isolated, message.input.args, message.input.bytes)
           result = { ...encodeReply(reply), elapsedMs: Date.now() - startedCommand }
         } else if (message.action === 'redis-scan') {
           if (health !== 'ready') throw new Error('Redis 连接已断开，请重连。')
@@ -104,9 +111,11 @@ parentPort.once('message', async ({ input, testOnly }) => {
         if (controller.signal.aborted) parentPort.postMessage({ requestId: message.requestId, cancelled: true, error: '执行结果未知，请核验。' })
         else parentPort.postMessage({ requestId: message.requestId, result, health })
       } catch (error) {
+        const category = connectionFailure(error)
+        if (['network','authentication','configuration'].includes(category)) health = 'degraded'
         const uncertain = message.action === 'redis-command' && /ECONN|Socket|closed|disconnect|timeout|timed out|Abort/i.test(String(error?.message || ''))
         if (message.action === 'redis-command' && error instanceof ErrorReply && !controller.signal.aborted) parentPort.postMessage({ requestId: message.requestId, result: { result: { type: 'error', value: safeError(error) }, failed: true, elapsedMs: 0 }, health })
-        else parentPort.postMessage({ requestId: message.requestId, error: uncertain ? 'Redis 命令连接中断，执行结果未知，请核验。' : safeError(error), cancelled: controller.signal.aborted, health })
+        else parentPort.postMessage({ requestId: message.requestId, error: uncertain ? 'Redis 命令连接中断，执行结果未知，请核验。' : safeError(error), cancelled: controller.signal.aborted, connectionCategory: category, health })
       } finally {
         controller.signal.removeEventListener('abort', abort)
         inflight.delete(message.requestId)
@@ -117,6 +126,6 @@ parentPort.once('message', async ({ input, testOnly }) => {
   } catch (error) {
     input.password = ''; input.caPem = ''
     await client?.destroy()
-    parentPort.postMessage({ ok: false, ready: false, error: nativeErrorText(error, '连接失败，请检查连接配置与账号权限。') })
+    parentPort.postMessage({ ok: false, ready: false, category: connectionFailure(error), error: nativeErrorText(error, '连接失败，请检查连接配置与账号权限。') })
   }
 })

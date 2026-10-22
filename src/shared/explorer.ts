@@ -13,7 +13,9 @@ export type ExplorerPage = {
   nodes: ExplorerNode[]
   nextCursor?: string
   complete: boolean
+  warning?: string
+  collectedAt?: string
 }
 
 export type ExplorerListInput = { parent?: string; cursor?: string; search?: string; refresh?: boolean; database?: string }
-export type ExplorerReadInput = { ref: string; cursor?: string; offset?: number; database?: string }
+export type ExplorerReadInput = { ref: string; cursor?: string; offset?: number; database?: string; refresh?: boolean }

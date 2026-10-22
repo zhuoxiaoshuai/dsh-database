@@ -10,7 +10,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { EventEmitter } from 'node:events'
-import { executeSql } from '../src/host/query.mjs'
+import { authorizeStatement } from '../src/host/query-policy.mjs'
 import { temporaryDirectory, connectionInput } from './helpers.mjs'
 
 async function serviceFixture(t, dialect = 'mysql') {
@@ -34,6 +34,24 @@ async function waitFor(check) {
   const until = Date.now() + 5000
   while (!check()) { assert.ok(Date.now() < until, 'fixture wait timed out'); await new Promise(resolve => setTimeout(resolve, 5)) }
 }
+
+test('file exports obey AI environment permissions and human write routing', async () => {
+  const execution = createSqlTextExecution('mysql'), options = { sourceKind: 'sql', entry: 'shared-query' }
+  for (const sql of ["SELECT * INTO OUTFILE '/tmp/x' FROM records", "SELECT * FROM records INTO DUMPFILE '/tmp/x'", "SELECT 1 /*!50000 INTO OUTFILE '/tmp/x' */"]) {
+    for (const environment of ['sit', 'uat', 'pvt']) {
+      const binding = { dialect: 'mysql', environment }
+      const ai = execution.prepareText(sql, { schema: 'app' }, options)
+      if (environment === 'sit') await execution.authorize(ai, 'ai', binding, options)
+      else await assert.rejects(execution.authorize(ai, 'ai', binding, options), /只读/)
+      assert.equal(ai.authorized.kind, 'write')
+      const human = execution.prepareText(sql, { schema: 'app' }, options)
+      await execution.authorize(human, 'user', binding, options)
+      assert.equal(human.authorized.kind, 'write')
+      assert.equal(human.input.lane, 'manual')
+      assert.equal(human.classifyInterruption(new Error('response lost'), { dispatched: true }), 'unknown')
+    }
+  }
+})
 
 test('standard text waits for asynchronous preparation and authorization before transport', async () => {
   const events = [], abort = new AbortController()
@@ -93,7 +111,10 @@ for (const dialect of ['mysql', 'oracle']) for (const environment of ['sit', 'ua
     assert.equal(prepared.authorized.kind, 'write'); assert.deepEqual(prepared.authorized.targets, [{ schema: 'app', name: dialect === 'oracle' ? 'RECORDS' : 'records' }])
   } else await assert.rejects(execution.authorize(prepared, 'ai', binding, options), /只读/)
   assert.equal(prepared.authorized.kind, 'write'); assert.equal(prepared.recordPolicy, 'external')
-  await assert.rejects(execution.authorize(execution.prepareText('DROP TABLE records', { schema: 'app' }, options), 'user', binding, options))
+  const dropped = execution.prepareText('DROP TABLE records', { schema: 'app' }, options)
+  await execution.authorize(dropped, 'user', binding, options)
+  assert.equal(dropped.authorized.kind, 'write')
+  assert.deepEqual(dropped.authorized.targets, [])
 })
 
 for (const dialect of ['mysql', 'oracle']) test(`${dialect} actual authenticated old/new queries preserve payloads and zero records`, async t => {
@@ -124,17 +145,8 @@ test('ordinary SQL and source-execute share human capacity without a second queu
   f.release(); await Promise.all(blocked)
 })
 
-for (const dialect of ['mysql', 'oracle']) test(`${dialect} real SQL executor checks the entire batch before any database execution`, async () => {
-  let executed = 0, released = 0
-  const db = dialect === 'mysql' ? {
-    stream: new EventEmitter(), query() { executed++; const query = new EventEmitter(); queueMicrotask(() => {
-      query.emit('fields', [{ name: 'id' }]); query.emit('result', [1]); query.emit('end')
-    }); return query },
-  } : { async execute() { executed++; let read = false; return { metaData: [{ name: 'ID' }], resultSet: {
-    async getRows() { if (read) return []; read = true; return [[1]] }, async close() {},
-  } } } }
-  const pool = { async acquire() { return { connection: db, async release() { released++ }, async discard() { throw new Error('unexpected discard') } } } }
-  await assert.rejects(executeSql({ sql: 'SELECT id FROM records; DROP TABLE records', schema: 'app' }, { dialect, environment: 'sit' }, undefined, pool))
-  assert.equal(executed, 0, 'authorization failure must prevent every batch statement')
-  assert.equal(released, 0)
+for (const dialect of ['mysql', 'oracle']) test(`${dialect} real SQL executor authorizes a mixed batch before execution`, async () => {
+  const authorized = await authorizeStatement(dialect, 'SELECT id FROM records; DROP TABLE records', 'app')
+  assert.equal(authorized.kind, 'write')
+  assert.deepEqual(authorized.targets, [])
 })

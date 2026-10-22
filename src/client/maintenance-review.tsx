@@ -1,3 +1,4 @@
+import {ResourceError} from './workspace/parts/feedback/resource-error.tsx'
 import React, { useEffect, useState } from 'react'
 import type { Connection, MaintenanceResult, WorkspaceBridge } from '../shared/workbench.ts'
 import type { DmlOp } from './execute-dml.ts'
@@ -43,7 +44,7 @@ export function MaintenanceReview({
   return <div className="db-review-strip">
     <strong>{operation.kind === 'insert' ? '新增' : operation.kind === 'delete' ? '删除' : '修改'} · {schema}.{table}</strong>
     {busy && !review && <p role="status">正在生成预览…</p>}
-    {error && <p className="db-error" role="alert">{error}</p>}
+    {error && <ResourceError message={error}/>}
     {review?.sql && <pre className="db-cell-detail">{review.sql}</pre>}
     {!!review?.params?.length && <pre className="db-cell-detail">参数：{JSON.stringify(review.params)}</pre>}
     <p className="db-muted">{connection.environment.toUpperCase()} · 预期影响 {review?.expectedRows ?? 1} 行{review?.expiresAt ? ` · 审批 ${new Date(review.expiresAt).toLocaleTimeString()} 前有效` : ''}</p>

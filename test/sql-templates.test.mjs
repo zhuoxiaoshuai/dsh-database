@@ -246,6 +246,19 @@ test('publishFromSql creates, merges near-duplicates, and requires connectionId'
   }), /connectionId/)
 })
 
+test('multi-statement SQL is parsed per statement and does not use the failure sentence as summary', async () => {
+  const batch = await normalizeSqlExperience('SELECT a; SELECT b', 'mysql')
+  assert.equal(batch.features.parseOk, true)
+  assert.doesNotMatch(batch.suggestedSummary, /未能完整解析/)
+  const partial = await normalizeSqlExperience('SELECT id FROM orders; NOT A QUERY', 'mysql')
+  assert.equal(partial.features.parseOk, false)
+  assert.ok(partial.features.tables.includes('orders'))
+  assert.equal(partial.suggestedSummary, '')
+  const single = await normalizeSqlExperience('SELECT id FROM orders', 'mysql')
+  assert.equal(single.features.parseOk, true)
+  assert.match(single.suggestedSummary, /orders/i)
+})
+
 test('create persists before AST parse and enriches in the background', async t => {
   const templates = store(t)
   const created = await templates.publish({
@@ -264,11 +277,30 @@ test('create persists before AST parse and enriches in the background', async t 
   assert.match(item.summary, /orders/i)
 })
 
+test('enrich replaces a stored parse-failure summary', async t => {
+  const { UNPARSED_TEMPLATE_SUMMARY } = await import('../src/shared/sql-text.ts')
+  const templates = store(t)
+  const created = await templates.publish({
+    sql: 'SELECT id FROM orders WHERE id = 1',
+    dialect: 'mysql',
+    connectionId: CONN_A,
+    action: 'create',
+    title: '查订单',
+    summary: UNPARSED_TEMPLATE_SUMMARY,
+  })
+  assert.equal(created.summary, UNPARSED_TEMPLATE_SUMMARY)
+  await templates.whenIdle()
+  const item = templates.get(created.id)
+  assert.equal(item.features.parseOk, true)
+  assert.doesNotMatch(item.summary, /未能完整解析/)
+  assert.match(item.summary, /orders/i)
+})
+
 test('archived templates disappear from search but remain in store', async t => {
   const templates = store(t)
   const created = await templates.publish({ sql: 'SELECT id FROM archive_me', dialect: 'mysql', connectionId: CONN_A, action: 'create', title: '待归档' })
   assert.ok(templates.searchSummaries('待归档', 'mysql', CONN_A).some(item => item.id === created.id))
-  templates.archive(created.id)
+  templates.archive(created.id, created.version, created.archiveGuard)
   assert.equal(templates.searchSummaries('待归档', 'mysql', CONN_A).length, 0)
   const row = templates.list().find(item => item.id === created.id)
   assert.ok(row?.archived)

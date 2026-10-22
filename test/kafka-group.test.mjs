@@ -23,7 +23,7 @@ test('group topic rows do not infer a consumer or turn a missing commit into zer
     assignment: [],
     ends: [{ partition: 0, high: '8' }],
   })
-  assert.deepEqual(missing, [{ partition: 0, current: null, end: '8', lag: null, consumer: null }])
+  assert.deepEqual(missing, [{ partition: 0, current: null, end: '8', lag: null, consumer: null, earliest: null, status: 'uncommitted', consumerId: null, clientId: null, host: null }])
   const atZero = groupTopicRows({
     committed: [{ partition: 0, offset: '0' }],
     assignment: [],
@@ -37,7 +37,7 @@ test('group topic rows do not infer a consumer or turn a missing commit into zer
     assignment: [{ partition: 1, consumer: 'app' }],
     ends: null,
   })
-  assert.deepEqual(endFailed, [{ partition: 1, current: '4', end: null, lag: null, consumer: 'app' }])
+  assert.deepEqual(endFailed, [{ partition: 1, current: '4', end: null, lag: null, consumer: 'app', earliest: null, status: 'unreadable', consumerId: null, clientId: null, host: null }])
   assert.deepEqual(unionTopicNames(['orders', 'pay'], ['orders', 'old']), ['old', 'orders', 'pay'])
   assert.deepEqual(visibleGroupIds(['dsh-peek-1', 'app', 'app', '']), ['app'])
 })

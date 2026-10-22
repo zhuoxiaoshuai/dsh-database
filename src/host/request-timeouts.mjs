@@ -34,9 +34,9 @@ export function hostDeadlineFor(action) {
 export function hostTimeoutMessage(action, ms = hostDeadlineFor(action)) {
   const seconds = Math.round(ms / 1000)
   if (action === 'maintenance') return '维护超时，结果未知；连接已关闭。请重新连接并核验实际状态，不要直接重试。'
-  if (action === 'catalog') return `读取元数据超过 ${seconds} 秒，已取消本次请求；共享连接仍可用。`
-  if (action === 'redis-key-suggest') return `Key 补全查询超过 ${seconds} 秒，已取消本次请求。`
-  return `查询超过 ${seconds} 秒，已超时；共享连接仍可用。`
+  if (action === 'catalog') return `读取元数据超过 ${seconds} 秒，已关闭对应连接以结束底层请求。`
+  if (action === 'redis-key-suggest') return `Key 补全查询超过 ${seconds} 秒，已关闭对应连接以结束底层请求。`
+  return `查询超过 ${seconds} 秒，已超时；已关闭对应连接以结束底层请求，写入结果须先核验。`
 }
 
 export function connectTimeoutMessage(testOnly) {

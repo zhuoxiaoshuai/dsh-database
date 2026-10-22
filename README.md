@@ -26,7 +26,7 @@ Names in the screenshots are test data.
 
 SQL, Redis and Kafka share query, AI Query, history and knowledge entry points. Nacos reuses the connection shell, tabs, editors, lists and operation records through resource pages. It has no SQL/command document or knowledge library.
 
-Nacos 2.4.3 supports configuration editing, history/Diff, listeners and service instances. Human writes require preview and confirmation in every environment; AI writes are SIT-only and preserve sensitive values. See the [Nacos guide](docs/datasource/nacos.en.md).
+Nacos 2.4.3 supports configuration editing, history/Diff, listeners and service instances. Human writes require preview and confirmation in every environment; AI writes are SIT-only and preserve sensitive values. Publishing checks YAML/JSON/Properties/XML/HTML and shows blocking inline errors in the themed diff; Text is explicitly unvalidated. XML/HTML SIT AI edits preserve protected source. See the [Nacos guide](docs/datasource/nacos.en.md).
 
 ## Install
 
@@ -60,15 +60,29 @@ dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/r
 
 It is the same plugin on a different profile. `--profile web` does not install into the desktop app.
 
-The download URL above targets the `alpha.12.15` release package. The source currently declares `alpha.12.32`; use the filename printed by `npm pack`, which builds automatically. Check acceptance evidence separately for the release package and local source.
+The download URL above targets the `alpha.12.15` release package. The source currently declares `alpha.12.47`; use the filename printed by `npm pack`, which builds automatically. Check acceptance evidence separately for the release package and local source.
 
 ## First use
 
 1. Install, restart the chosen profile, and open the **Database** tab in the conversation's right sidebar.
 2. Click **＋** beside **我的连接**, select a source, and enter its address, credentials and database/Service Name/DB or brokers. Choose SIT, UAT or PVT.
-3. Optionally click **测试连接** to check the settings, then **连接**. Testing alone does not add a saved connection.
+3. Optionally click **测试连接** to check the settings, then **连接**. The dialog closes after acceptance and connects in the background. Its row shows progress, cancellation and editable failures. Testing alone does not add a saved connection.
 4. Select a database/schema for SQL. Run `SELECT 1;` for MySQL, `SELECT 1 FROM DUAL;` for Oracle, `PING` for Redis, or `TOPICS` for Kafka in the query page.
 5. For AI collaboration, open **AI Query** and describe the connection, target and task in the conversation, such as “Read the current SQL and explain what it does.” Check the target and permissions before execution.
+
+In SQL queries and AI Query, **格式化全文** (format document) becomes **格式化选中** (format selection) when text is selected. Only the selection is replaced, with one-step undo/redo. Formatting selected `A001 A002`, a multiline ID list, or `(001 002)` automatically produces `'A001', 'A002'` or `('001', '002')` for an IN condition. Spaces, newlines, tabs and commas can be mixed; existing outer parentheses, order, duplicates and leading zeros are preserved.
+
+Automatic conversion requires at least two bare values made of Unicode letters/numbers or underscores, containing no dialect keywords, types or built-in function names, and at least one pair separated without a comma. Existing complete comma lists (such as `1, 2`), quotes, expressions and complex symbols receive SQL whitespace formatting. Formatting without a selection never constructs a value list. A standalone selection `a b` is treated as two values; UUIDs, dates and email addresses are not automatically converted. Whitespace selections do nothing; selections cutting a token, string or comment require reselection. In AI Query, SQL whitespace formatting retains control; string-list conversion and undo/redo take user control. Formatting never executes SQL.
+
+## Connection lifecycle and isolation
+
+Connection setup, catalog loading, failures and recovery are managed independently per connection. While A connects, B can connect, query or disconnect. Background completion preserves your selected workspace. Each connection accepts one lifecycle operation at a time; repeated operation IDs do not dispatch twice. Edits validate a candidate Worker before replacement, preserving the original configuration and login on failure or cancellation. Closing the form, changing conversations or losing an HTTP receipt does not undo an accepted background operation. Explicit cancellation, disconnect, deletion or plugin disposal terminates it.
+
+After a successful login, network recovery backs off at 0.5, 1, 2, 5, 15, 30 and 60 seconds, then continues every 60 seconds with ±20% jitter. Authentication, certificate and configuration errors stop recovery. A failed first login retains an offline profile for correction. Explicit disconnect or stopping recovery persists offline intent. AI status tools return immediately and only schedule recovery consistent with that intent. A lost Worker requires another login unless reusable credentials already exist. Passwords and custom CAs retain the existing encrypted saving options.
+
+Limits are 20 active or pending logical connections, six simultaneous setup/test tasks, and at most four background recovery tasks. Queries allow three per connection (two AI), and 16 globally (14 AI). Catalog preloading allows four tasks globally and one per connection, prioritizes foreground demand and rotates connections. Cancelled or timed-out native requests must finish or their Worker is recycled. Old generations invalidate queued catalog work and results. Recovery never replays unknown writes. Imported/copied profiles default to offline; older files without desired state retain the existing reusable-login compatibility rules.
+
+Controlled lifecycle regressions and real workbench component acceptance use simulated database Workers. Real database network interruption/recovery and installed Desktop acceptance are separate; unexecuted coverage remains `NOT_RUN`.
 
 ## AI collaboration and permissions
 
@@ -86,7 +100,7 @@ Typing in AI Query or clicking **接管** takes control of the document. AI cann
 
 **UAT/PVT do not prevent human SQL or human Redis writes.** Use a read-only database account or Redis ACL to prohibit writes. AI SQL results on SIT return unredacted cells to the model; ordinary human queries do not automatically send their results to it.
 
-Imported `dev`/`test` labels map to SIT, `staging` to UAT, `prod` to PVT, and unknown labels to UAT. Passwords stay in Host memory by default. On Windows, optional **记住密码** encrypts them using current-user DPAPI. See [SECURITY.md](SECURITY.md).
+Imported `dev`/`test` labels map to SIT, `staging` to UAT, `prod` to PVT, and unknown labels to UAT. Passwords remain in memory during the current login by default. On Windows, optional **记住密码** encrypts them using current-user DPAPI. See [SECURITY.md](SECURITY.md).
 
 An interrupted write or a lost acknowledgement may be reported as **unknown**: the change may already exist. Check the actual target before deciding what to do next. Unknown writes are never automatically replayed. Reconnecting invalidates old requests and execution targets.
 
@@ -154,7 +168,7 @@ Authentication supports none, TLS with CA, PLAIN and SCRAM-SHA-256/512. Kerberos
 
 ## AI tools
 
-`database_status` without a topic returns the live connections and the next call's `connectionId` and `generation`. A topic loads one usage section. A missing connection or a stale generation returns the current connection list. When that source has exactly one live connection, `connectionId` and `generation` can be omitted.
+`database_status` without a topic returns the live SQL connections and the next call's `connectionId` and `generation`. Redis, Kafka, and Nacos use their own `*_status` tools. A topic loads one usage section. A missing connection or a stale generation returns the current connection list. When that source has exactly one live connection, `connectionId` and `generation` can be omitted. `database_execute_sql` runs when `sql` is present, even if `action=read` is also set. `action=read` without `sql` reads the current statement of the last active SQL connection. An empty workbench returns `empty` instead of a blank `sql`. Use `database_catalog` for tables and columns, not `SHOW TABLES`.
 
 `kafka_scan` and `kafka_set_group_offsets` take `spec` as an object, `kafka_produce` takes `headers` as an object, and `kafka_produce_batch` takes `messages` as an array. `kafka_peek` `from` is `BEGINNING`, `LATEST`, or `OFFSET`.
 
@@ -163,13 +177,13 @@ Authentication supports none, TLS with CA, PLAIN and SCRAM-SHA-256/512. Kerberos
 
 | Tool | Notes |
 | --- | --- |
-| `database_status` | Live connections and the next call's arguments. A topic returns only that usage section |
+| `database_status` | Live SQL connections and the next call's arguments. A topic returns only that usage section |
 | `database_catalog` | `schemas` / `tables` / `table`. Do not query `information_schema` |
 | `database_execute_sql` | `action=read` returns the current AI Query text. With `sql`, it executes; read-only on UAT/PVT, writes allowed on SIT |
 | `database_templates` | Save and search text. Does not execute |
 | `database_read_collab` | Open query tabs |
 | `database_import_connections` | Register hosts. No password |
-| `redis_status` `redis_keys` `redis_value` | SCAN, type, TTL, value |
+| `redis_status` `redis_keys` `redis_value` | Live Redis connections; SCAN, type, TTL, value |
 | `redis_execute` | SIT only, one command |
 | `kafka_status` `kafka_topics` `kafka_describe` | Topics, partitions, watermarks |
 | `kafka_peek` | Peek one partition. `from` is `BEGINNING`, `LATEST`, or `OFFSET`. Refused after editor takeover |
@@ -251,3 +265,6 @@ These are dated records. This README update did not rerun database, Desktop or m
 ## License
 
 [MIT](LICENSE)
+
+
+Packaging uses the shared installer workflow. See [packaging and standalone verification](docs/packaging.md). It packages without installing by default; installation requires `-Install`.

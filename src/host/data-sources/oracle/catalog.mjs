@@ -1,5 +1,6 @@
 import { resolvePrimaryKeys } from '../../primary-keys.mjs'
 import { DRIVER_TIMEOUTS } from '../../request-timeouts.mjs'
+import { nativeErrorText } from '../../connect-error.mjs'
 import { boundedName, catalogOptions, checkCatalogAbort, normalizeConstraints, normalizeIndexes, numberish } from '../catalog-common.mjs'
 
 export function statement(input) {
@@ -31,7 +32,7 @@ export async function read(connection, input, signal) {
       const result = await connection.execute(text, params, { outFormat: oracle.OUT_FORMAT_OBJECT, maxRows: 501, fetchTypeHandler: meta => [oracle.DB_TYPE_NUMBER, oracle.DB_TYPE_DATE, oracle.DB_TYPE_TIMESTAMP, oracle.DB_TYPE_TIMESTAMP_TZ, oracle.DB_TYPE_TIMESTAMP_LTZ].includes(meta.dbType) ? { type: oracle.STRING } : undefined })
       return result.rows.map(row => Object.fromEntries(Object.entries(row).map(([key, value]) => [key.toLowerCase(), value])))
     }
-    const optional = async (text, params) => { try { return { status: 'actual', values: await query(text, params) } } catch { return { status: 'unavailable', reason: '当前账号无权读取，或该版本不支持此项字典信息。' } } }
+    const optional = async (text, params) => { try { return { status: 'actual', values: await query(text, params) } } catch (error) { return { status: 'unavailable', reason: nativeErrorText(error, '当前账号无权读取，或该版本不支持此项字典信息。') } } }
     if (input.kind === 'schemas') {
       const rows = await query(request.sql, request.params)
       return { items: rows.slice(0, 100), more: rows.length > 100, collectedAt, estimated: true, sql: request.sql, params: request.params, source: 'ALL_OBJECTS · 当前账号可见 Schema 及表/视图数量' }

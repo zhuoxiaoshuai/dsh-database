@@ -16,8 +16,6 @@ export type SqlStep = {
   writeReceipt?: 'succeeded' | 'unknown'
 }
 
-const UNSUPPORTED = 'SQL 页支持查询与增删改（SELECT / INSERT / UPDATE / DELETE）。DDL 暂未开放。'
-
 export function isBlankStatement(sql: string): boolean {
   return !stripLeadingComments(sql).trim()
 }
@@ -118,11 +116,6 @@ export async function runSqlBatch(input: {
   const emit = () => input.onChange?.(steps.map(step => ({ ...step })))
   if (!selected.length) return steps
   if (selected.some(step => (step.writeReceipt || ['unknown', 'ok'].includes(step.status)) && ['insert', 'update', 'delete'].includes(step.kind))) throw new Error('不能重复提交已成功或结果未知的写入；请核验后重新编辑。')
-  const unsupported = selected.findIndex(step => step.kind === 'other')
-  if (unsupported >= 0) {
-    for (let offset = 0; offset < selected.length; offset++) steps[start + offset] = { ...selected[offset], status: offset === unsupported ? 'failed' : 'skipped', error: offset === unsupported ? UNSUPPORTED : undefined }
-    emit(); return steps
-  }
   if (input.signal.aborted) {
     for (let i = start; i <= last; i++) steps[i] = { ...steps[i], status: 'cancelled', error: '未派发，已取消。' }
     emit(); return steps

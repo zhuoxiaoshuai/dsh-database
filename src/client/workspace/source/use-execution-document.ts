@@ -5,6 +5,8 @@ import type { WorkbenchEvent } from '../../../shared/execution.ts'
 import { matchesResultOwner, type ResultIdentity } from '../../../shared/query-sync.ts'
 import { useExecutionItems } from '../../ai-query-bus.ts'
 import { createRequestScope } from '../parts/request-scope.ts'
+import { prepareSqlFormat, type SqlFormatRange } from '../../../shared/sql-format.ts'
+import type { SqlEditorFormatRequest } from '../../sql/editor-format.ts'
 
 type State = {
   confirmed?: ExecutionDocument; draft: ExecutionDocument; version: number; acknowledged: number; pending: number
@@ -88,7 +90,7 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
       if (scope.current.isCurrent(ticket)) throw error
     } finally { scope.current.finish(ticket) }
   }
-  const saveDraft = (text: string, takeControl = true, target = current.current.draft.context, source = 'user') => {
+  const saveDraft = (text: string, takeControl = true, target = current.current.draft.context, source = 'user', format?: { revision: number; text: string; range?: SqlFormatRange }) => {
     const context = { ...target }
     commit({ type: 'edit', text, context, takeControl })
     const version = current.current.version, owner = identity
@@ -103,9 +105,12 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
           if (!scope.current.isCurrent(ticket)) return
           if (fresh.document) commit({ type: 'snapshot', document: fresh.document, preserveDraft: true })
         }
-        const revision = current.current.confirmed?.revision
+        const revision = format?.revision ?? current.current.confirmed?.revision
         if (revision === undefined) throw new Error('尚未读取权威文档，请刷新后重试。')
-        const response = await bridge.executions('execution-document-update', { id: connection.id, generation: connection.generation, text, context, revision, source }, ticket.signal) as { document?: ExecutionDocument }
+        if (format && (revision !== current.current.confirmed?.revision || format.text !== current.current.confirmed?.text
+          || !sameContext(context, current.current.confirmed.context))) throw new Error('内容已变化，请重新格式化；本地草稿已保留。')
+        const response = await bridge.executions('execution-document-update', { id: connection.id, generation: connection.generation, text, context, revision, source,
+          ...(format?.range ? { formatRange: format.range } : {}) }, ticket.signal) as { document?: ExecutionDocument }
         if (!scope.current.isCurrent(ticket)) return
         if (!response.document || response.document.text !== text || !sameContext(response.document.context, context)) throw new Error('保存回执与草稿不一致，请刷新后重试。')
         commit({ type: 'snapshot', document: response.document, acknowledged: version })
@@ -218,13 +223,17 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
     if (page.gap) { void load().catch(caught => commit({ type: 'read-failed', error: caught instanceof Error ? caught.message : '文档恢复失败。' })); return }
     for (const event of page.events || []) applyEvent(event)
   }, () => { void load().catch(() => {}) })
-  const formatText = (formatter: (text: string) => string): Promise<ExecutionDocument> => {
+  const formatText = (request: SqlEditorFormatRequest): Promise<ExecutionDocument> => {
     if (formatting.current) return formatting.current
-    const owner = identity, version = current.current.version
+    const owner = identity, version = current.current.version, snapshot = current.current.draft
     const task = (async () => {
       const saved = await flush()
-      if (identityRef.current !== owner || version !== current.current.version) throw new Error('内容已变化，请重新格式化；本地草稿已保留。')
-      saveDraft(formatter(saved.text), false, saved.context, 'format')
+      if (identityRef.current !== owner || version !== current.current.version || request.text !== saved.text
+        || snapshot.text !== saved.text || !sameContext(snapshot.context, saved.context)) throw new Error('内容已变化，请重新格式化；本地草稿已保留。')
+      const result = prepareSqlFormat(saved.text, connection.dialect, request.range)
+      if (result.text === saved.text) return saved
+      request.apply(result)
+      saveDraft(result.text, result.kind === 'values', saved.context, 'format', { revision: saved.revision, text: saved.text, range: request.range })
       return flush()
     })()
     formatting.current = task

@@ -100,7 +100,7 @@ test('source lifecycle marker without payload is not a successful execution resp
 test('legacy shared-query-explain uses the same untrusted HTTP receipt boundary', async () => {
   const nativeFetch = globalThis.fetch
   globalThis.fetch = async () => new Response(JSON.stringify({ error: 'proxy failed' }), { status: 502 })
-  try { await assert.rejects(bridge().executions('shared-query-explain', { id: 'c', generation: 'g', revision: 1 }), error => error.effect === 'unknown' && error.requestPhase === 'response' && error.trustedReceipt === false) }
+  try { await assert.rejects(bridge().executions('shared-query-explain', { id: 'c', generation: 'g', revision: 1 }), error => error.message === 'proxy failed' && error.effect === 'unknown' && error.requestPhase === 'response' && error.trustedReceipt === false) }
   finally { globalThis.fetch = nativeFetch }
 })
 

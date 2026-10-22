@@ -1,6 +1,9 @@
+import {useFloatingSurface} from './workspace/parts/overlay/floating-surface.tsx'
+import {listboxKeyDown} from './workspace/parts/controls/listbox.ts'
 import React, { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { overlayMenuClass } from './workspace/parts/overlay-menu.ts'
+import { useWorkbenchTheme } from './workspace/parts/theme/use-workbench-theme.ts'
 import type { WorkspaceBridge } from '../shared/workbench.ts'
 
 type TemplateItem = { id: string; title: string; summary: string; originalSql?: string }
@@ -20,10 +23,10 @@ export function SqlToolbarTemplatePicker({
 }) {
   const box = useRef<HTMLDivElement>(null)
   const menu = useRef<HTMLDivElement>(null)
+  const theme = useWorkbenchTheme(box.current)
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [items, setItems] = useState<TemplateItem[]>([])
-  const [pos, setPos] = useState<{ top: number; left: number; width: number }>()
   const seq = useRef(0)
 
   const load = async (text: string) => {
@@ -45,38 +48,7 @@ export function SqlToolbarTemplatePicker({
     return () => window.clearTimeout(timer)
   }, [query, open, bridge, connectionId, dialect])
 
-  useEffect(() => {
-    if (!open) return
-    const place = () => {
-      const rect = box.current?.getBoundingClientRect()
-      if (!rect) return
-      const width = Math.min(320, Math.max(rect.width, 200))
-      setPos({ top: rect.bottom + 4, left: rect.left, width })
-    }
-    place()
-    const close = (event: PointerEvent) => {
-      const target = event.target as Node
-      if (box.current?.contains(target) || menu.current?.contains(target)) return
-      setOpen(false)
-      setQuery('')
-    }
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { setOpen(false); setQuery('') }
-    }
-    const timer = window.setTimeout(() => {
-      window.addEventListener('pointerdown', close)
-      window.addEventListener('keydown', onKey)
-      window.addEventListener('resize', place)
-      window.addEventListener('scroll', place, true)
-    }, 0)
-    return () => {
-      window.clearTimeout(timer)
-      window.removeEventListener('pointerdown', close)
-      window.removeEventListener('keydown', onKey)
-      window.removeEventListener('resize', place)
-      window.removeEventListener('scroll', place, true)
-    }
-  }, [open])
+  const {position:pos}=useFloatingSurface({open,anchor:box,surface:menu,width:320,close:()=>{setOpen(false);setQuery('')}})
 
   const pick = async (item: TemplateItem) => {
     setOpen(false)
@@ -88,15 +60,18 @@ export function SqlToolbarTemplatePicker({
     } catch { /* ignore */ }
   }
 
-  const list = open && pos ? createPortal(
+  const list = open ? createPortal(
     <div
       ref={menu}
       className={overlayMenuClass(box.current, 'db-template-picker-menu')}
+      {...theme.attributes}
       role="listbox"
-      style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width, zIndex: 80 }}
+      data-db-parent-dialog={box.current?.closest('[data-db-dialog-id]')?.getAttribute('data-db-dialog-id')}
+      style={{...theme.style,position:'fixed',...pos,zIndex:80}}
+      onKeyDown={event=>listboxKeyDown(event,menu.current,()=>setOpen(false))}
     >
       {items.slice(0, 20).map(item => (
-        <button key={item.id} type="button" className="db-template-picker-option" onClick={() => void pick(item)}>
+        <button key={item.id} type="button" role="option" aria-selected={false} tabIndex={-1} className="db-template-picker-option" onClick={() => void pick(item)}>
           <strong>{item.title}</strong>
           {item.summary ? <small>{item.summary}</small> : null}
         </button>
@@ -115,7 +90,7 @@ export function SqlToolbarTemplatePicker({
       value={query}
       onChange={e => { setQuery(e.target.value); setOpen(true) }}
       onFocus={() => setOpen(true)}
-      onKeyDown={e => { if (e.key === 'Escape') { e.currentTarget.blur(); setOpen(false); setQuery('') } }}
+      onKeyDown={event=>listboxKeyDown(event,menu.current,()=>{setOpen(false);setQuery('')})}
     />
     {list}
   </div>

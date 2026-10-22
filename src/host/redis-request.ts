@@ -25,6 +25,7 @@ export function redisPreparedInput(action: RedisAction, input: RedisInput, datab
   const scope = database === undefined || database === '' ? {} : { database: assertRedisDatabaseId(database) }
   if (action === 'redis-scan') return { cursor: input.cursor, match: input.match, ...scope }
   if (action === 'redis-key-suggest') return { prefix: input.prefix, ...scope }
+  // key 是 latin1 字节串，这里原样透传：驱动层负责还原字节，二次解析会把 \\x41 变成 A。
   const { command: _command, args: _args, ...rest } = input
   return { ...rest, ...scope }
 }

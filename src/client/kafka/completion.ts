@@ -1,6 +1,7 @@
 import type { CompletionSource } from '@codemirror/autocomplete'
 
 const HELP = [
+  { label: 'TOPIC_GROUPS', detail: '查找 Topic 关联消费组', help: '按当前分配和历史提交关联，按需分页；结果不完整时不能断言没有关联。示例：TOPIC_GROUPS "orders" CURSOR 100' },
   { label: 'TOPICS', detail: '搜索、分页列出账号可见的 Topic', help: 'SEARCH 按名称片段匹配，CURSOR 使用上一页返回的位置。列表变化可能重复或遗漏。示例：TOPICS SEARCH "orders" CURSOR 100' },
   { label: 'DESCRIBE', detail: '查看 Topic 分区、水位与副本', help: 'Topic 使用 JSON 双引号；点击分区可创建有界读取草稿。示例：DESCRIBE "orders"' },
   { label: 'PEEK', detail: '有界读取单个分区消息', help: '指定 Topic、分区、起点和数量；不提交消费位置。示例：PEEK "orders" PARTITION 0 FROM LATEST LIMIT 20' },
@@ -55,8 +56,9 @@ export function kafkaCompletionSlot(text: string, pos: number): { from: number; 
   const command = tokens[0]?.text.toUpperCase() || ''
   const previous = tokens.slice(0, index).map(item => item.text.toUpperCase())
   let names: 'topics' | 'groups' | undefined, keywords: string[] = []
-  if (index === 0) keywords = ['TOPICS', 'DESCRIBE', 'PEEK', 'GROUPS', 'GROUP', 'PRODUCE', 'PRODUCE_BATCH', 'TOMBSTONE', 'CREATE_TOPIC', 'SET_GROUP_OFFSETS', 'TOPIC_CONFIG', 'TIME_OFFSETS', 'SCAN']
-  else if (['DESCRIBE', 'PEEK', 'TOPIC_CONFIG'].includes(command) && index === 1) names = 'topics'
+  if (index === 0) keywords = ['TOPICS', 'TOPIC_GROUPS', 'DESCRIBE', 'PEEK', 'GROUPS', 'GROUP', 'PRODUCE', 'PRODUCE_BATCH', 'TOMBSTONE', 'CREATE_TOPIC', 'SET_GROUP_OFFSETS', 'TOPIC_CONFIG', 'TIME_OFFSETS', 'SCAN']
+  else if (['DESCRIBE', 'PEEK', 'TOPIC_CONFIG', 'TOPIC_GROUPS'].includes(command) && index === 1) names = 'topics'
+  else if (command === 'TOPIC_GROUPS' && index === 2) keywords = ['CURSOR']
   else if (command === 'GROUP' && index === 1) names = 'groups'
   else if (command === 'GROUP' && index === 2) keywords = ['TOPIC', 'TOPICS']
   else if (command === 'GROUP' && previous[2] === 'TOPIC' && index === 3) names = 'topics'

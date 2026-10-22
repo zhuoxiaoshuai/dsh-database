@@ -209,7 +209,7 @@ function redisMock(reply) {
   const calls = []
   const client = { async sendCommand(args) {
     const command = String(args[0]).toUpperCase()
-    calls.push([command, args.map(item => Buffer.isBuffer(item) ? item.toString('utf8') : String(item))])
+    calls.push([command, args])
     const result = reply(command, args)
     if (result instanceof Error) throw result
     return result
@@ -353,7 +353,56 @@ test('key writes rename, setbit and reject empty stream entries', async () => {
   assert.equal((await driver.key(renamed.client, { key: 'a', operation: 'rename', value: 'b' })).result.result.value, '1')
   const bit = redisMock(command => command === 'SETBIT' ? 0 : new Error(command))
   await driver.key(bit.client, { key: 'b', operation: 'setbit', offset: 3, value: '1' })
-  assert.deepEqual(bit.calls[0][1], ['SETBIT', 'b', '3', '1'])
+  assert.deepEqual(bit.calls[0][1].map(item => Buffer.isBuffer(item) ? item.toString('latin1') : item), ['SETBIT', 'b', '3', '1'])
   const stream = redisMock(() => new Error('should not send'))
   await assert.rejects(driver.key(stream.client, { key: 's', operation: 'xadd', entries: ['', 'v'] }), /参数无效/)
+})
+
+test('binary and Chinese keys keep exact bytes through scan, read and rename', async () => {
+  const driver = getRedisDataSource('redis').driver
+  const binary = Buffer.from([0xac, 0xed, 0x00, 0x05, 0x6a, 0x61, 0x76, 0x61])
+  const chinese = Buffer.from('中文订单', 'utf8')
+
+  const scan = redisMock(command => command === 'SCAN' ? ['0', [binary, chinese]] : new Error(command))
+  const page = await driver.scan(scan.client, {})
+  assert.deepEqual(page.keys, [binary.toString('latin1'), chinese.toString('latin1')])
+
+  const stringReply = command => {
+    if (command === 'TYPE') return 'string'
+    if (command === 'TTL') return -1
+    if (command === 'OBJECT') return 'raw'
+    if (command === 'GET') return 'v'
+    return new Error(command)
+  }
+  const read = redisMock(stringReply)
+  const detail = await driver.key(read.client, { key: page.keys[0], operation: 'read' })
+  assert.equal(detail.keyType, 'string')
+  const type = read.calls.find(call => call[0] === 'TYPE')
+  assert.ok(Buffer.isBuffer(type[1][1]))
+  assert.deepEqual(type[1][1], binary)
+
+  // 中文 Key 走同一通道，不能被 latin1 截断
+  const cnRead = redisMock(stringReply)
+  await driver.key(cnRead.client, { key: page.keys[1], operation: 'read' })
+  assert.deepEqual(cnRead.calls.find(call => call[0] === 'TYPE')[1][1], chinese)
+
+  const rename = redisMock(command => command === 'RENAMENX' ? 1 : new Error(command))
+  await driver.key(rename.client, { key: page.keys[0], operation: 'rename', value: page.keys[1] })
+  assert.deepEqual(rename.calls[0][1].slice(1), [binary, chinese])
+})
+
+test('binary hash fields round-trip and HTTL receives the real field bytes', async () => {
+  const driver = getRedisDataSource('redis').driver
+  const field = Buffer.from([0x00, 0xff, 0x61])
+  const client = redisMock(command => {
+    if (command === 'TYPE') return 'hash'
+    if (command === 'TTL') return -1
+    if (command === 'HSCAN') return ['0', [field, Buffer.from('值')]]
+    if (command === 'HTTL') return [10]
+    return new Error(command)
+  })
+  const detail = await driver.key(client.client, { key: 'h', operation: 'read' })
+  assert.equal(detail.rows[0].cells.field, field.toString('latin1'))
+  assert.equal(detail.rows[0].cells.ttl, '10')
+  assert.deepEqual(client.calls.find(call => call[0] === 'HTTL')[1][4], field)
 })

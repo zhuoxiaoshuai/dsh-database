@@ -1,20 +1,34 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ConnectionService } from '../../connection-service.ts'
+import type { NacosAiPort } from '../../ai-service-ports.ts'
 import type { ExecutionStore } from '../../execution-store.ts'
 import { toolOwner, type ToolExecution } from '../../ai-tool-context.ts'
+import { resolveAiConnection } from '../../ai-connection-resolve.ts'
+import {nacosConfigTypeValues} from '../../../shared/nacos-config-types.mjs'
 const output = {schema: {type: 'string' as const}, render: (_: unknown, value: string) => [{type: 'text' as const, text: value}]}
 const string = (description = '') => ({type: 'string' as const, required: true, description})
-export function registerNacosAiTools(ctx: {tools: {register(tool: unknown): void}}, service: ConnectionService, _executions: ExecutionStore, validOwner: (id: string) => boolean) {
-  ctx.tools.register(defineTool({name: 'nacos_status', description: '查看当前对话 Nacos 连接、generation 和环境。', parameters: {}, output,
+const handle = {
+  connectionId: { type: 'string' as const, description: '来自 nacos_status.connections。唯一已登录连接可省略。' },
+  generation: { type: 'string' as const, description: '来自 nacos_status.connections。省略则用当前 generation。' },
+}
+export function registerNacosAiTools(ctx: {tools: {register(tool: unknown): void}}, service: NacosAiPort, _executions: ExecutionStore, validOwner: (id: string) => boolean) {
+  ctx.tools.register(defineTool({name: 'nacos_status', description: '先调本工具取 connectionId。配置中心用 nacos_*。', parameters: {}, output,
     async execute(_: unknown, execution: ToolExecution) {
       const owner = toolOwner(execution, validOwner); await service.restoreRemembered(owner)
-      return JSON.stringify({connections: service.list(owner).filter(c => c.dialect === 'nacos').map(c => ({connectionId:c.id,generation:c.generation,name:c.name,environment:c.environment,live:c.live,health:c.health}))})
+      const connections = service.list(owner).filter(c => c.dialect === 'nacos').map(c => ({connectionId:c.id,generation:c.generation,name:c.name,environment:c.environment,live:c.live,health:c.health}))
+      return JSON.stringify({
+        connections,
+        help: '先用返回的 connectionId 和 generation 调 nacos_namespaces。唯一已登录连接可省略这两个参数。',
+        next: connections.filter(item => item.live).map(item => ({
+          tool: 'nacos_namespaces',
+          args: { connectionId: item.connectionId, generation: item.generation },
+        })),
+      })
     }}))
-  const selection = {connectionId: string('来自 nacos_status。'), generation: string('必须使用当前连接代次。')}
+  const selection = { ...handle }
   const target = {...selection, namespaceId: string('使用 Namespace ID，public 明确传空字符串。')}
   const config = {...target, group: string(), dataId: string()}
   const page = {pageNo: {type:'integer' as const}, pageSize: {type:'integer' as const, description:'默认50，最大100。'}}
-  const changes: any = {...config, kind:{type:'string',enum:['create','update','delete'],required:true}, expectedMd5:{type:'string',description:'修改和删除必须提供读取时的 MD5。'}, type:{type:'string',enum:['yaml','json','properties','text']}, content:{type:'string',description:'仅用于新增，禁止提供敏感凭据。'},
+  const changes: any = {...config, kind:{type:'string',enum:['create','update','delete'],required:true}, expectedMd5:{type:'string',description:'修改和删除必须提供读取时的 MD5。'}, type:{type:'string',enum:nacosConfigTypeValues}, content:{type:'string',description:'仅用于新增，禁止提供敏感凭据或不透明脚本、模板内容。'},
     edits:{type:'array',items:{type:'object',additionalProperties:false,properties:{oldText:{type:'string',required:true},newText:{type:'string',required:true}}},description:'修改只支持非敏感原文的唯一精确匹配替换。'}}
   const entries: [string,string,string,any][] = [
     ['nacos_namespaces','nacos-namespaces','查询连接的 Namespace 列表。',selection],
@@ -31,9 +45,16 @@ export function registerNacosAiTools(ctx: {tools: {register(tool: unknown): void
   for (const [name,operation,description,parameters] of entries) ctx.tools.register(defineTool({name,description,parameters,output,
     async execute(args: Record<string,unknown>, execution: ToolExecution) {
       const owner = toolOwner(execution, validOwner)
-      if (typeof args.connectionId !== 'string' || typeof args.generation !== 'string') throw new Error('请明确提供连接和 generation。')
+      const resolved = resolveAiConnection({
+        connections: service.list(owner),
+        family: 'nacos',
+        connectionId: args.connectionId,
+        generation: args.generation,
+      })
+      if (!resolved.ok) return JSON.stringify(resolved)
+      const connection = resolved.connection
       const actual = operation
       const input = name === 'nacos_delete_config' ? {...args,kind:'delete'} : name === 'nacos_service_detail' ? {...args,includeInstances:true} : args
-      return JSON.stringify(await service.nacosRequest(owner,args.connectionId,args.generation,actual,input,'ai',execution.signal,execution.callId,execution.rootCallId))
+      return JSON.stringify(await service.nacosRequest(owner,connection.id,connection.generation,actual,input,'ai',execution.signal,execution.callId,execution.rootCallId))
     }}))
 }

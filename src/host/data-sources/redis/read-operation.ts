@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { nativeErrorText } from '../../connect-error.mjs'
 import { redisExecution } from './execution.ts'
+import { parseBytes } from '../../../shared/redis-bytes.ts'
 import type { Connection } from '../../../shared/workbench.ts'
 import type { OperationStatus } from '../../operation-runtime.ts'
 
@@ -13,12 +14,14 @@ export function prepareRedisReadOperation(operation: RedisReadTool, input: Recor
   const context = redisExecution.normalizeContext(rawContext, binding)
   if (operation === 'redis_value' && typeof input.key !== 'string') throw new Error('请提供 Redis Key。')
   const commandName = operation === 'redis_keys' ? 'SCAN' : 'READ'
-  const target = operation === 'redis_value' ? createHash('sha256').update(input.key as string).digest('hex').slice(0, 12) : ''
+  // 模型给的是展示串（可能带 \xNN），先归一化成字节串，摘要和下游命令都用它。
+  const key = operation === 'redis_value' ? parseBytes(input.key as string) : ''
+  const target = key ? createHash('sha256').update(key).digest('hex').slice(0, 12) : ''
   return {
     action: operation === 'redis_keys' ? 'redis-scan' as const : 'redis-key' as const,
     input: operation === 'redis_keys'
       ? { cursor: input.cursor || '0', match: input.match || '*', database: context.database }
-      : { operation: 'read', key: input.key, cursor: input.cursor || '0', offset: input.offset || 0, database: context.database },
+      : { operation: 'read', key, cursor: input.cursor || '0', offset: input.offset || 0, database: context.database },
     context,
     title: `Redis ${commandName}${target ? ` · Key ${target}` : ''}`,
     summarize: (result: Record<string, unknown>) => result.failed === true ? `${commandName} 返回 Redis 错误。` : `${commandName} 完成。`,

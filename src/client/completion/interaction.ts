@@ -1,7 +1,9 @@
 import { Prec, type Extension } from '@codemirror/state'
-import { EditorView, keymap, tooltips } from '@codemirror/view'
+import { EditorView, ViewPlugin, keymap, tooltips } from '@codemirror/view'
 import { acceptCompletion, autocompletion, closeCompletion, completionStatus, moveCompletionSelection, startCompletion, type Completion, type CompletionSource } from '@codemirror/autocomplete'
-import { isHostDark } from '../workspace/parts/host-theme.ts'
+import { resolveWorkbenchTheme, subscribeWorkbenchTheme } from '../workspace/parts/theme/workbench-theme.ts'
+
+let themeSequence = 0
 
 function guardCompletionKey(run: (view: EditorView) => boolean) {
   return (view: EditorView) => {
@@ -21,9 +23,20 @@ export function createCompletionInteraction(source: CompletionSource | readonly 
     tooltipPointer = target instanceof Element && !!target.closest('.cm-tooltip-autocomplete')
   }
   document.addEventListener('mousedown', onPointer, true)
+  const themeClass = `db-completion-theme-${++themeSequence}`
 
   return {
     extensions: [
+      ViewPlugin.define(view => {
+        const style = view.dom.ownerDocument.createElement('style')
+        const sync = () => {
+          const theme = resolveWorkbenchTheme(view.dom.ownerDocument, view.dom)
+          style.textContent = `.cm-tooltip.cm-tooltip-autocomplete.${themeClass}{${Object.entries(theme.variables).map(([name,value]) => `${name}:${value}`).join(';')};color-scheme:${theme.scheme}}`
+        }
+        sync(); view.dom.ownerDocument.head.appendChild(style)
+        const stop = subscribeWorkbenchTheme(sync)
+        return { destroy() { stop(); style.remove() } }
+      }),
       tooltips({ parent: document.body }),
       autocompletion({
         override: typeof source === 'function' ? [source] : source,
@@ -32,7 +45,7 @@ export function createCompletionInteraction(source: CompletionSource | readonly 
         closeOnBlur: false,
         interactionDelay: 0,
         activateOnCompletion: options.activateOnCompletion,
-        tooltipClass: () => isHostDark() ? 'db-dark' : '',
+        tooltipClass: () => themeClass,
       }),
       Prec.highest(keymap.of([
         { key: 'Ctrl-Shift-Space', run: view => completionStatus(view.state) === 'active' || startCompletion(view) },

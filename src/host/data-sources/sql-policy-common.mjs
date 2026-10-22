@@ -1,6 +1,7 @@
-export const systemSchemas = new Set(['mysql', 'information_schema', 'performance_schema', 'sys', 'system', 'xdb', 'outln'])
-export const WRITE_ONLY = '暂只开放查询与增删改（SELECT / INSERT / UPDATE / DELETE）；DDL 与工具语句未开放。'
-export const ONLY_SHOW = '只允许 SHOW INDEX、SHOW TABLE STATUS 等只读统计语句。'
+/** Parser could not prove a single read or DML statement. The database decides. */
+export function unverifiedStatement(sql) {
+  return { kind: 'write', tables: [], targets: [], references: [], aliases: [], sql: String(sql || '').trim().replace(/;\s*$/, '') }
+}
 
 function leadKind(sql) {
   let text = sql.trim()
@@ -72,15 +73,12 @@ export function aliasesOf(value) {
 }
 
 export const recordTable = (set, ref) => {
-  const db = String(ref?.db || '')
-  if (db && systemSchemas.has(db.toLowerCase())) throw new Error('不允许访问系统库对象。')
   const table = String(ref?.table || '')
   if (table) set.add(table)
 }
 
 // 通用输入校验：非空、大小、业务库。
 export function guard(sql, schema) {
-  if (typeof sql !== 'string' || !sql.trim() || Buffer.byteLength(sql) > 16000 || typeof schema !== 'string' || !schema || schema.length > 128 || systemSchemas.has(schema.toLowerCase())) throw new Error('请选择业务数据库（系统库不可作为目标），并输入不超过 16 KiB 的单条 SQL。')
-  if (/\/\*[!+]/.test(sql)) throw new Error('暂不支持可执行注释或提示。')
+  if (typeof sql !== 'string' || !sql.trim() || Buffer.byteLength(sql) > 16000 || typeof schema !== 'string' || !schema || schema.length > 128) throw new Error('请选择数据库，并输入不超过 16 KiB 的 SQL。')
 }
 

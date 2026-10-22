@@ -33,6 +33,8 @@ export function TreeBranch({
       className={`db-tree-row${selected ? ' is-selected' : ''}`}
       onClick={event => { event.preventDefault(); onSelect() }}
       onDoubleClick={onDoubleClick}
+      tabIndex={0}
+      onKeyDown={event=>{if(onContextMenu&&(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10'))){event.preventDefault();event.currentTarget.dispatchEvent(new MouseEvent('contextmenu',{bubbles:true,cancelable:true}))}}}
       onContextMenu={onContextMenu}
       onMouseDown={onMouseDown}
     >

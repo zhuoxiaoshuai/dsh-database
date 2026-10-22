@@ -1,6 +1,6 @@
 import {toolOwner, type ToolExecution} from '../../ai-tool-context.ts'
 import { defineTool } from '@deepseek-ai/dsh-tools'
-import type { ConnectionService } from '../../connection-service.ts'
+import type { AiDocumentPort } from '../../ai-service-ports.ts'
 import type { ExecutionStore } from '../../execution-store.ts'
 import { nativeErrorText } from '../../connect-error.mjs'
 import { formatKafkaCommand, parseKafkaCommand } from './command.mjs'
@@ -22,7 +22,7 @@ const peekFrom = (value: unknown): 'beginning' | 'latest' | 'offset' => {
   throw new Error('from 必须是 BEGINNING、LATEST 或 OFFSET。')
 }
 
-export function registerKafkaAiTools(ctx: { tools: { register(tool: unknown): void } }, service: ConnectionService,
+export function registerKafkaAiTools(ctx: { tools: { register(tool: unknown): void } }, service: AiDocumentPort,
   executions: ExecutionStore, validOwner: (id: string) => boolean): void {
   const owner = (execution:ToolExecution) => toolOwner(execution,validOwner)
   const selected = (session: string, args: Selection) => resolveAiConnection({
@@ -53,7 +53,7 @@ export function registerKafkaAiTools(ctx: { tools: { register(tool: unknown): vo
     }
   }
   ctx.tools.register(defineTool({
-    name: 'kafka_status', description: '查看当前对话可用的 Kafka 连接、健康状态及连接代次。', parameters: {}, output,
+    name: 'kafka_status', description: '先调本工具取 connectionId。消息、队列、Topic 用 kafka_*。', parameters: {}, output,
     async execute(_args: unknown, execution: ToolExecution) {
       const session = owner(execution)
       if (execution.signal?.aborted) throw new Error('请求已取消。')
@@ -71,6 +71,10 @@ export function registerKafkaAiTools(ctx: { tools: { register(tool: unknown): vo
         executionId: record.executionId,
         connections,
         help: '先用返回的 connectionId 和 generation 调 kafka_topics。唯一已登录连接可省略这两个参数。',
+        next: connections.filter(item => item.live).map(item => ({
+          tool: 'kafka_topics',
+          args: { connectionId: item.connectionId, generation: item.generation },
+        })),
       })
       } catch (error) {
         const message = nativeErrorText(error, 'Kafka 状态读取失败。')
@@ -85,6 +89,9 @@ export function registerKafkaAiTools(ctx: { tools: { register(tool: unknown): vo
     generation: { type: 'string' as const, description: '来自 kafka_status.connections。省略则用当前 generation。' },
   }
   const paging = { search: { type: 'string' as const }, cursor: { type: 'string' as const } }
+  ctx.tools.register(defineTool({ name: 'kafka_topic_groups', description: '按需分页查找 Topic 的当前分配及历史提交消费组；必须检查 complete、failed 和 nextCursor，不完整时不能断言没有关联。',
+    parameters: { ...required, topic: { type: 'string', required: true }, cursor: { type: 'string' } }, output,
+    execute: (args: Selection & { topic?: string; cursor?: string }, execution: ToolExecution) => run(args, { kind: 'topic-groups', topic: args.topic, cursor: args.cursor }, execution) }))
   ctx.tools.register(defineTool({
     name: 'kafka_topics', description: '搜索并分页列出账号可见的 Topic。search 是名称片段；下一页使用返回的 nextCursor。', parameters: { ...required, ...paging }, output,
     execute: (args: Selection & { search?: string; cursor?: string }, execution: ToolExecution) => run(args, { kind: 'topics', search: args.search, cursor: args.cursor }, execution),

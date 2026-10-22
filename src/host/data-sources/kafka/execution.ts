@@ -18,8 +18,9 @@ export const kafkaExecution = {
     if (writeKinds.has(verified.operation.slice('kafka_'.length)) && binding.environment !== 'sit') throw new Error('Kafka 写操作仅在 SIT 开放。')
   },
   prepareText(text: unknown) {
-    const operation = parseKafkaCommand(text) as { kind: 'topics' | 'describe' | 'peek' | 'groups' | 'group' | 'group-topics' | 'group-topic' | 'produce' | 'topic-config' | 'time-offsets' | 'scan' | 'produce-batch' | 'tombstone' | 'create-topic' | 'set-group-offsets'; topic?: string; partition?: number; groupId?: string; replayFrom?: { topic: string; partition: number; offset: string } }
+    const operation = parseKafkaCommand(text) as { kind: 'topics' | 'topic-groups' | 'describe' | 'peek' | 'groups' | 'group' | 'group-topics' | 'group-topic' | 'produce' | 'topic-config' | 'time-offsets' | 'scan' | 'produce-batch' | 'tombstone' | 'create-topic' | 'set-group-offsets'; topic?: string; partition?: number; groupId?: string; replayFrom?: { topic: string; partition: number; offset: string } }
     const action = operation.kind === 'topics' ? 'kafka-topics'
+      : operation.kind === 'topic-groups' ? 'kafka-topic-groups'
       : operation.kind === 'describe' ? 'kafka-describe'
       : operation.kind === 'peek' ? 'kafka-peek'
       : operation.kind === 'produce' ? 'kafka-produce'
@@ -35,6 +36,7 @@ export const kafkaExecution = {
       : ''
     if (!action) throw new Error('未知 Kafka 操作')
     const title = operation.kind === 'topics' ? '列出 Topic'
+      : operation.kind === 'topic-groups' ? `查看 Topic ${operation.topic} 的关联消费组`
       : operation.kind === 'describe' ? `查看 Topic ${operation.topic}`
       : operation.kind === 'peek' ? `读取 ${operation.topic} 分区 ${operation.partition}`
       : operation.kind === 'produce' ? `向 ${operation.topic} 发布单条消息`
@@ -52,6 +54,11 @@ export const kafkaExecution = {
     return { sourceKind: 'kafka' as const, action, text: String(text), input: { text: String(text) }, operation: `kafka_${operation.kind}`, title,
       recordPolicy: 'owned' as const,
       projectLiveResult: (result: Record<string, unknown>) => limitKafkaResult(result),
+      recoverPartialResult: (error: unknown) => {
+        const partial = (error as { sourceResult?: Record<string, unknown> } | undefined)?.sourceResult
+        return operation.kind === 'produce-batch' && partial?.kind === 'produce-batch' && Array.isArray(partial.receipts)
+          ? limitKafkaResult({ ...partial, status: 'unknown' }) : undefined
+      },
       ...(writeKinds.has(operation.kind) ? {
         classifyInterruption: (error: unknown, lifecycle: { aborted: boolean; dispatched: boolean }) =>
           (error as { effect?: string } | undefined)?.effect === 'none' ? (lifecycle.aborted ? 'cancelled' as const : 'failed' as const)

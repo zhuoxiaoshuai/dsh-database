@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react'
-import { SearchSelect } from './search-select.tsx'
+import { SearchSelect } from './workspace/parts/controls/search-select.tsx'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import type { Connection } from '../shared/workbench.ts'
 

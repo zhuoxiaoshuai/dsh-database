@@ -1,6 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react'
 import { Check, Copy, Eye, Pencil, Trash2 } from 'lucide-react'
-import { filterRows, filterTime, rowCopyText, rowPreview, rowSubmittable, sortRows, type KeyColumn, type KeyRow } from './key-model.ts'
+import { displayCell, filterRows, filterTime, rowCopyText, rowPreview, rowSubmittable, sortRows, type KeyColumn, type KeyRow } from './key-model.ts'
+import { parseBytes } from '../../shared/redis-bytes.ts'
+
+/** 单元格是 latin1 字节串，展示前转义；写回时再还原成字节。 */
+const submitCells = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).map(([key, value]) => [key, parseBytes(value)]))
 
 export function RedisKeyTable({
   name, kind, columns, rows, more, revision, writing, sequence = true, scoreSort = false, timeFilter = false,
@@ -54,19 +58,19 @@ export function RedisKeyTable({
   const submitCreate = () => {
     if (drafts.some(row => !rowSubmittable(kind, row))) { setFormError('请填写完整后再添加。'); return }
     setFormError('')
-    onCreate?.(drafts)
+    onCreate?.(drafts.map(submitCells))
   }
   const startEdit = (row: KeyRow) => {
     if (!allowEdit || writing) return
     setEditing(row.id)
-    setEditValues(Object.fromEntries(createFields.map(field => [field.key, row.cells[field.key] ?? ''])))
+    setEditValues(Object.fromEntries(createFields.map(field => [field.key, displayCell(row.cells[field.key])])))
     setCreating(false)
     setFormError('')
   }
   const submitEdit = (row: KeyRow) => {
     if (!rowSubmittable(kind, editValues)) { setFormError('请填写完整后再保存。'); return }
     setFormError('')
-    onEdit?.(row, editValues)
+    onEdit?.(row, submitCells(editValues))
   }
   const toggleSort = (key: string) => {
     if (sortKey === key) setDirection(current => current === 'asc' ? 'desc' : 'asc')
@@ -118,8 +122,8 @@ export function RedisKeyTable({
             {columns.map(column => {
               const field = createFields.find(item => item.key === column.key)
               const editingRow = editing === row.id && field
-              return <td key={column.key} className={[wrapColumn === column.key ? 'db-redis-key-wrap' : '', editingRow ? 'is-editing' : ''].filter(Boolean).join(' ') || undefined} title={row.cells[column.key] ?? ''} onClick={event => { if (onCell) { event.stopPropagation(); onCell(column.key, row) } }}>
-                <span className="db-redis-key-cell">{row.cells[column.key] ?? ''}</span>
+              return <td key={column.key} className={[wrapColumn === column.key ? 'db-redis-key-wrap' : '', editingRow ? 'is-editing' : ''].filter(Boolean).join(' ') || undefined} title={displayCell(row.cells[column.key])} onClick={event => { if (onCell) { event.stopPropagation(); onCell(column.key, row) } }}>
+                <span className="db-redis-key-cell">{displayCell(row.cells[column.key])}</span>
                 {editingRow && <input className="db-redis-key-editor" aria-label={field.label} placeholder={field.label} value={editValues[field.key] ?? ''} onClick={event => event.stopPropagation()} onChange={event => setEditValues(current => ({ ...current, [field.key]: event.target.value }))} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); submitEdit(row) } if (event.key === 'Escape') setEditing(undefined) }} />}
               </td>
             })}

@@ -1,10 +1,13 @@
 import { parseDocument, isMap, isSeq, isScalar } from 'yaml'
 import { parseTree } from 'jsonc-parser'
+import {normalizeNacosConfigType} from '../../../shared/nacos-config-types.mjs'
+import {protectMarkup} from './markup-protection.mjs'
 const sensitive = /(?:password|passwd|pwd|secret|token|credential|authorization|private.?key|signing.?key|encryption.?key|access.?key|api.?key)/i
 const credential = /-----BEGIN [^-]*PRIVATE KEY-----|(?:[a-z][a-z0-9+.-]*:\/\/|jdbc:)[^\s]*:[^\s@]+@|(?:AKIA|ASIA)[A-Z0-9]{16}|\b(?:Basic|Bearer)\s+[A-Za-z0-9+/_=.~-]{6,}|\b(?:gh[pousr]_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/i
 const invalid = () => { throw new Error('无法安全解析配置或修改敏感字段，请使用人工编辑。') }
 
 export function protectedConfig(text, type) {
+  type=normalizeNacosConfigType(type)
   const ranges = []
   const add = (start, end) => ranges.push({start, end})
   try {
@@ -43,16 +46,18 @@ export function protectedConfig(text, type) {
         if (match && (sensitive.test(match[1]) || credential.test(line))) add(offset, offset + line.replace(/\r?\n$/, '').length)
         offset += line.length
       }
-    } else return {safe: false, ranges: [], text: '[此配置格式不向 AI 返回正文]'}
+    } else if(type==='xml'||type==='html')protectMarkup(text,type,add,sensitive,credential)
+    else return {safe: false, ranges: [], text: '[此配置格式不向 AI 返回正文]'}
     // Comments can contain credentials even when they are not parsed as fields.
-    for (const match of text.matchAll(/^.*(?:password|secret|token|private.?key|credential)\s*[:=].*$/gmi)) {
+    for (const match of type==='xml'||type==='html'?[]:text.matchAll(/^.*(?:password|secret|token|private.?key|credential)\s*[:=].*$/gmi)) {
       if (!ranges.some(r => match.index >= r.start && match.index < r.end)) add(match.index, match.index + match[0].length)
     }
-    for(const match of text.matchAll(/^.*$/gm)) if(credential.test(match[0]) && /^\s*[#!\/]/.test(match[0])
+    for(const match of type==='xml'||type==='html'?[]:text.matchAll(/^.*$/gm)) if(credential.test(match[0]) && /^\s*[#!\/]/.test(match[0])
       && !ranges.some(r=>match.index>=r.start&&match.index<r.end)) add(match.index,match.index+match[0].length)
     // A credential outside a reliably parsed field or comment is not editable/model-visible.
     for(const match of text.matchAll(new RegExp(credential.source,'gi'))) if(!ranges.some(r=>match.index>=r.start&&match.index+match[0].length<=r.end)) invalid()
     ranges.sort((a,b) => a.start - b.start)
+    for(let i=1;i<ranges.length;){if(ranges[i].start<=ranges[i-1].end){ranges[i-1].end=Math.max(ranges[i-1].end,ranges[i].end);ranges.splice(i,1)}else i++}
     let masked = text
     for (const range of [...ranges].reverse()) masked = masked.slice(0, range.start) + '[REDACTED]' + masked.slice(range.end)
     return {safe: true, ranges, text: masked}

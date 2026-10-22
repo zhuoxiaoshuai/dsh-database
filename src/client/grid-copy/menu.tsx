@@ -1,6 +1,7 @@
+import {useOverlayEvents,workbenchBoundary} from '../workspace/parts/overlay/overlay-events.ts'
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { isHostDark } from '../workspace/parts/host-theme.ts'
+import { useWorkbenchTheme } from '../workspace/parts/theme/use-workbench-theme.ts'
 import { placeCopyMenu, type MenuPlacement } from './placement.ts'
 
 export type CopyAction = 'cell' | 'field' | 'rows' | 'insert' | 'tsv-fields' | 'tsv-values' | 'tsv-both' | 'comma-fields' | 'comma-values' | 'comma-both'
@@ -15,7 +16,9 @@ export function GridCopyMenu({ x, y, anchor, header, extra, onPick, onClose }: {
   onPick(action: CopyAction): void
   onClose(): void
 }): React.ReactElement {
+  const owner=useRef(anchor);owner.current=anchor
   const layer = useRef<HTMLDivElement>(null)
+  useOverlayEvents({open:true,anchor:owner,surface:layer,close:onClose,exclusive:true,includeAnchor:false})
   const main = useRef<HTMLDivElement>(null)
   const fly = useRef<HTMLDivElement>(null)
   const trigger = useRef<Record<Submenu, HTMLButtonElement | null>>({ tsv: null, comma: null })
@@ -33,8 +36,13 @@ export function GridCopyMenu({ x, y, anchor, header, extra, onPick, onClose }: {
       const mainRect = main.current.getBoundingClientRect()
       const flyRect = fly.current?.getBoundingClientRect()
       const itemRect = active ? trigger.current[active]?.getBoundingClientRect() : undefined
-      const next = placeCopyMenu(x, y, mainRect, active ? { width: flyRect?.width ?? 156, height: flyRect?.height ?? 0 } : undefined,
-        itemRect ? itemRect.top - mainRect.top : 0, { width: window.innerWidth, height: window.innerHeight })
+      const boundary=workbenchBoundary(anchor)?.getBoundingClientRect()
+      const origin={left:Math.max(0,boundary?.left??0),top:Math.max(0,boundary?.top??0)}
+      const width=Math.min(window.innerWidth,boundary?.right??window.innerWidth)-origin.left
+      const height=Math.min(window.innerHeight,boundary?.bottom??window.innerHeight)-origin.top
+      const local = placeCopyMenu(x-origin.left, y-origin.top, mainRect, active ? { width: flyRect?.width ?? 156, height: flyRect?.height ?? 0 } : undefined,
+        itemRect ? itemRect.top - mainRect.top : 0, {width,height})
+      const next={...local,left:local.left+origin.left,top:local.top+origin.top,flyLeft:local.flyLeft+origin.left,flyTop:local.flyTop+origin.top}
       setPlace(current => Object.keys(next).every(key => next[key as keyof MenuPlacement] === current[key as keyof MenuPlacement]) ? current : next)
     }
     measure()
@@ -54,29 +62,24 @@ export function GridCopyMenu({ x, y, anchor, header, extra, onPick, onClose }: {
     main.current?.querySelector<HTMLButtonElement>('button')?.focus({ preventScroll: true })
   }, [])
 
-  useEffect(() => {
-    const outside = (event: PointerEvent) => { if (!layer.current?.contains(event.target as Node)) onClose() }
-    const key = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose() } }
-    window.addEventListener('pointerdown', outside)
-    window.addEventListener('keydown', key)
-    return () => { window.removeEventListener('pointerdown', outside); window.removeEventListener('keydown', key); keep() }
-  }, [onClose])
+  useEffect(()=>()=>keep(),[])
 
   const onKeyDown = (event: React.KeyboardEvent) => {
     const target = event.target as HTMLElement
+    if(event.key==='Escape'){event.preventDefault();event.stopPropagation();onClose();return}
     if (event.key === 'Tab') { onClose(); return }
     if (event.key === 'ArrowRight' && target.dataset.submenu) {
       event.preventDefault(); show(target.dataset.submenu as Submenu)
       requestAnimationFrame(() => layer.current?.querySelector<HTMLElement>('.db-grid-copy-options button')?.focus())
     } else if (event.key === 'ArrowLeft' && active) {
       event.preventDefault(); trigger.current[active]?.focus(); setActive(undefined)
-    } else if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    } else if (['ArrowDown','ArrowUp','Home','End'].includes(event.key)) {
       const menu = target.closest('[role=menu]')
       const buttons = Array.from(menu?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [])
       if (!buttons.length) return
       event.preventDefault()
       const index = buttons.indexOf(target as HTMLButtonElement)
-      buttons[(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus()
+      buttons[event.key==='Home'?0:event.key==='End'?buttons.length-1:(index + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length]?.focus()
     }
   }
 
@@ -85,9 +88,9 @@ export function GridCopyMenu({ x, y, anchor, header, extra, onPick, onClose }: {
     <button type="button" role="menuitem" onClick={() => pick(`${kind}-values`)}>数据</button>
     <button type="button" role="menuitem" onClick={() => pick(`${kind}-both`)}>字段名和数据</button>
   </>
-  const dark = !!anchor?.closest('.db-workbench')?.classList.contains('db-dark') || isHostDark(anchor?.ownerDocument)
-  return createPortal(<div ref={layer} className={`db-workbench db-grid-menu-layer${dark ? ' db-dark' : ''}`} onKeyDown={onKeyDown} onClick={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}>
-    <div ref={main} className="db-dropdown db-context-menu db-grid-copy-menu" style={{ left: place.left, top: place.top }} role="menu" aria-label="结果复制菜单">
+  const theme = useWorkbenchTheme(anchor)
+  return createPortal(<div ref={layer} {...theme.attributes} style={theme.style} data-db-parent-dialog={anchor?.closest('[data-db-dialog-id]')?.getAttribute('data-db-dialog-id')} className={`db-workbench db-grid-menu-layer${theme.dark ? ' db-dark' : ''}`} onKeyDown={onKeyDown} onClick={event => event.stopPropagation()} onPointerDown={event => event.stopPropagation()}>
+    <div ref={main} className="db-dropdown db-context-menu db-grid-copy-menu" style={{left:place.left,top:place.top,maxWidth:Math.max(0,(workbenchBoundary(anchor)?.clientWidth??window.innerWidth)-16),maxHeight:Math.max(0,(workbenchBoundary(anchor)?.clientHeight??window.innerHeight)-16)}} role="menu" aria-label="结果复制菜单">
       <button type="button" role="menuitem" onClick={() => pick(header ? 'tsv-values' : 'cell')}>复制</button>
       <button type="button" role="menuitem" onClick={() => pick('field')}>复制字段名</button>
       {!header && <>
@@ -104,6 +107,6 @@ export function GridCopyMenu({ x, y, anchor, header, extra, onPick, onClose }: {
       </div>)}
       {extra && <><div className="db-grid-menu-divider" role="separator" /><div className="db-grid-copy-extra" onClick={onClose}>{extra}</div></>}
     </div>
-    {active && !place.inline && <div ref={fly} className="db-dropdown db-context-menu db-grid-copy-fly db-grid-copy-options" style={{ left: place.flyLeft, top: place.flyTop }} role="menu" aria-label={active === 'tsv' ? '制表符分隔' : '逗号分隔'} onMouseEnter={keep} onMouseLeave={hide}>{options(active)}</div>}
+    {active && !place.inline && <div ref={fly} className="db-dropdown db-context-menu db-grid-copy-fly db-grid-copy-options" style={{left:place.flyLeft,top:place.flyTop,maxHeight:Math.max(0,(workbenchBoundary(anchor)?.clientHeight??window.innerHeight)-16)}} role="menu" aria-label={active === 'tsv' ? '制表符分隔' : '逗号分隔'} onMouseEnter={keep} onMouseLeave={hide}>{options(active)}</div>}
   </div>, document.body)
 }

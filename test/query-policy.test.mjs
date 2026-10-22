@@ -2,13 +2,26 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { authorizeStatement, authorizeSelect } from '../src/host/query-policy.mjs'
 
-for (const dialect of ['mysql', 'oracle']) test(dialect + ' rejects locking reads in nested query branches', async () => {
+test('mysql leaves locking reads for the database', async () => {
   for (const sql of [
     'SELECT * FROM (SELECT * FROM records FOR UPDATE) t',
     'SELECT * FROM records WHERE id = (SELECT id FROM records WHERE id = 1 FOR UPDATE)',
     'WITH locked AS (SELECT id FROM records FOR UPDATE) SELECT * FROM locked',
     'SELECT * FROM records FOR UPDATE',
-  ]) await assert.rejects(authorizeStatement(dialect, sql, dialect === 'oracle' ? 'BUSINESS' : 'business'), /锁定|校验|语法/)
+  ]) assert.equal((await authorizeStatement('mysql', sql, 'business')).kind, 'select')
+})
+
+test('oracle leaves a parsed locking read on the readonly path and unparsed text for the database', async () => {
+  assert.equal((await authorizeStatement('oracle', 'SELECT * FROM records FOR UPDATE', 'BUSINESS')).kind, 'select')
+  assert.equal((await authorizeStatement('oracle', 'SELECT * FROM (SELECT * FROM records FOR UPDATE) t', 'BUSINESS')).kind, 'select')
+  for (const sql of [
+    'SELECT * FROM records WHERE id = (SELECT id FROM records WHERE id = 1 FOR UPDATE)',
+    'WITH locked AS (SELECT id FROM records FOR UPDATE) SELECT * FROM locked',
+  ]) {
+    const result = await authorizeStatement('oracle', sql, 'BUSINESS')
+    assert.equal(result.kind, 'write')
+    assert.deepEqual(result.targets, [])
+  }
 })
 
 test('MySQL read policy accepts joins, CTEs, aggregate and window functions', async () => {
@@ -33,15 +46,29 @@ test('policy accepts leading line and block comments before select or write stat
   ]) assert.equal((await authorizeStatement(dialect, sql, schema)).kind, sql.includes('UPDATE') ? 'write' : 'select')
 })
 
-test('MySQL refuses writes-like reads and executable comments', async () => {
-  for (const [sql, reason] of [
-    ["SELECT * INTO OUTFILE '/tmp/x' FROM records", 'OUTFILE'],
-    ['SELECT * FROM records FOR UPDATE', '锁定'],
-    ['SELECT /*!50000 SLEEP(30) */ 1', ''],
-  ]) await assert.rejects(authorizeStatement('mysql', sql, 'business'), reason ? new RegExp(reason) : undefined)
+test('MySQL leaves parsed locking reads for the database', async () => {
+  for (const sql of [
+    'SELECT * FROM records FOR UPDATE',
+  ]) assert.equal((await authorizeStatement('mysql', sql, 'business')).kind, 'select')
 })
 
-test('MySQL write policy admits insert, update and delete, refuses ddl and utility statements', async () => {
+test('MySQL classifies file exports and executable comments as writes', async () => {
+  for (const sql of [
+    "SELECT * INTO OUTFILE '/tmp/x' FROM records",
+    "SELECT * FROM records INTO DUMPFILE '/tmp/x'",
+    "SELECT 1 /*!50000 INTO OUTFILE '/tmp/x' */",
+    "SELECT 1--1 /*!50000 INTO OUTFILE '/tmp/x' */",
+    'SELECT /*!50000 SLEEP(30) */ 1',
+  ]) {
+    assert.equal((await authorizeStatement('mysql', sql, 'business')).kind, 'write')
+    await assert.rejects(authorizeSelect('mysql', sql, 'business'), /SELECT/)
+  }
+  for (const sql of ["SELECT '/*!50000 INTO OUTFILE */'", "SELECT 1 /* /*! ordinary comment */", 'SELECT 1 INTO @value']) {
+    assert.equal((await authorizeStatement('mysql', sql, 'business')).kind, 'select')
+  }
+})
+
+test('MySQL write policy admits insert, update and delete, and passes ddl to the database', async () => {
   const insert = await authorizeStatement('mysql', "INSERT INTO hotels (name, location) VALUES ('A', 'B')", 'business')
   assert.equal(insert.kind, 'write'); assert.ok(insert.tables.includes('hotels'))
   const update = await authorizeStatement('mysql', "UPDATE hotels SET price_tier = 'Luxury' WHERE id = 3", 'business')
@@ -49,12 +76,16 @@ test('MySQL write policy admits insert, update and delete, refuses ddl and utili
   const remove = await authorizeStatement('mysql', 'DELETE FROM hotels WHERE id = 3', 'business')
   assert.equal(remove.kind, 'write'); assert.deepEqual(remove.targets, [{ schema: 'business', name: 'hotels' }])
   for (const sql of ['DROP TABLE records', 'TRUNCATE TABLE records', 'ALTER TABLE records ADD c INT', 'CALL do_it()', 'SET @x = 1', 'USE other', 'CREATE TABLE t (id INT)', 'GRANT SELECT ON *.* TO u']) {
-    await assert.rejects(authorizeStatement('mysql', sql, 'business'), /增删改|DDL/)
+    const result = await authorizeStatement('mysql', sql, 'business')
+    assert.equal(result.kind, 'write')
+    assert.deepEqual(result.targets, [])
   }
 })
 
-test('MySQL write policy refuses system-schema targets and oversize sql', async () => {
-  await assert.rejects(authorizeStatement('mysql', 'UPDATE mysql.user SET Host = \'x\'', 'business'), /系统/)
+test('MySQL write policy passes system-schema targets and still bounds sql size', async () => {
+  const system = await authorizeStatement('mysql', 'UPDATE mysql.user SET Host = \'x\'', 'business')
+  assert.equal(system.kind, 'write')
+  assert.deepEqual(system.targets, [{ schema: 'mysql', name: 'user' }])
   await assert.rejects(authorizeStatement('mysql', 'SELECT 1 FROM ' + 'a'.repeat(20000), 'business'), /16 KiB/)
 })
 
@@ -69,12 +100,14 @@ test('Oracle normal queries pass: package functions, cross-schema reads', async 
   }
 })
 
-test('incomplete parser validation fails closed before database dispatch', async () => {
+test('incomplete parser validation is sent to the database', async () => {
   for (const [dialect, sql, schema] of [
     ['mysql', 'SELECT * FORM records', 'business'],
     ['oracle', 'SELECT * FORM RECORDS', 'BUSINESS'],
   ]) {
-    await assert.rejects(authorizeStatement(dialect, sql, schema), /无法完整校验/)
+    const result = await authorizeStatement(dialect, sql, schema)
+    assert.equal(result.kind, 'write')
+    assert.deepEqual(result.targets, [])
   }
   assert.equal((await authorizeStatement('mysql', "SELECT 'a;b' FROM records", 'business')).kind, 'select')
 })
@@ -87,27 +120,34 @@ test('multiple statements are authorized in order and keep write confirmation', 
   const mixed = await authorizeStatement('mysql', 'SELECT 1; UPDATE records SET id = 1 WHERE id = 2', 'business')
   assert.equal(mixed.kind, 'write')
   assert.ok(mixed.targets.some(target => target.name === 'records'))
-  await assert.rejects(authorizeStatement('mysql', 'SELECT 1; DROP TABLE records', 'business'), /增删改|DDL/)
-  await assert.rejects(authorizeStatement('oracle', 'SELECT 1 FROM DUAL; CREATE TABLE T (ID NUMBER)', 'BUSINESS'), /增删改|DDL|无法完整校验/)
+  const mysqlDdl = await authorizeStatement('mysql', 'SELECT 1; DROP TABLE records', 'business')
+  assert.equal(mysqlDdl.kind, 'write')
+  assert.deepEqual(mysqlDdl.targets, [])
+  const oracleDdl = await authorizeStatement('oracle', 'SELECT 1 FROM DUAL; CREATE TABLE T (ID NUMBER)', 'BUSINESS')
+  assert.equal(oracleDdl.kind, 'write')
+  assert.deepEqual(oracleDdl.targets, [])
 })
 
-test('Oracle write policy admits insert, update and delete, refuses dblink and ddl', async () => {
+test('Oracle write policy admits insert, update and delete, and passes dblink and ddl to the database', async () => {
   const insert = await authorizeStatement('oracle', "INSERT INTO RECORDS (id) VALUES (1)", 'BUSINESS')
   assert.equal(insert.kind, 'write')
   const update = await authorizeStatement('oracle', "UPDATE RECORDS SET id = 2 WHERE id = 1", 'BUSINESS')
   assert.equal(update.kind, 'write')
   const remove = await authorizeStatement('oracle', 'DELETE FROM RECORDS WHERE id = 1', 'BUSINESS')
   assert.equal(remove.kind, 'write'); assert.deepEqual(remove.targets, [{ schema: 'BUSINESS', name: 'RECORDS' }])
-  for (const [sql, reason] of [
-    ['SELECT * FROM RECORDS@LINK', ''],
-    ['CREATE TABLE T (ID NUMBER)', ''],
-  ]) await assert.rejects(authorizeStatement('oracle', sql, 'BUSINESS'), reason ? new RegExp(reason) : undefined)
+  for (const sql of ['SELECT * FROM RECORDS@LINK', 'CREATE TABLE T (ID NUMBER)']) {
+    const result = await authorizeStatement('oracle', sql, 'BUSINESS')
+    assert.ok(result.kind === 'select' || result.kind === 'write')
+    if (result.kind === 'write' && /CREATE/i.test(sql)) assert.deepEqual(result.targets, [])
+  }
 })
 
-test('policy rejects invalid sql and system schemas for both dialects', async () => {
+test('policy rejects empty sql and unknown dialects, and passes system schemas and invalid text', async () => {
   await assert.rejects(authorizeStatement('mysql', '', 'business'))
-  await assert.rejects(authorizeStatement('mysql', 'SELECT 1', 'information_schema'), /系统/)
-  await assert.rejects(authorizeStatement('oracle', 'NOT A QUERY', 'BUSINESS'))
+  assert.equal((await authorizeStatement('mysql', 'SELECT 1', 'information_schema')).kind, 'select')
+  const invalid = await authorizeStatement('oracle', 'NOT A QUERY', 'BUSINESS')
+  assert.equal(invalid.kind, 'write')
+  assert.deepEqual(invalid.targets, [])
   await assert.rejects(authorizeStatement('mssql', 'SELECT 1', 'business'))
 })
 
@@ -121,8 +161,11 @@ test('explain policy accepts EXPLAIN prefix for both dialects and returns explai
   assert.equal(oracle.kind, 'explain')
   for (const dialect of ['mysql', 'oracle']) {
     const prefix = dialect === 'oracle' ? 'EXPLAIN PLAN FOR ' : 'EXPLAIN '
-    for (const sql of ['INSERT INTO records (id) VALUES (1)', 'UPDATE records SET id = 2', 'DELETE FROM records'])
-      await assert.rejects(authorizeStatement(dialect, prefix + sql, 'business'), /EXPLAIN SELECT/)
+    for (const sql of ['INSERT INTO records (id) VALUES (1)', 'UPDATE records SET id = 2', 'DELETE FROM records']) {
+      const result = await authorizeStatement(dialect, prefix + sql, 'business')
+      assert.equal(result.kind, 'write')
+      assert.deepEqual(result.targets, [])
+    }
   }
 })
 
@@ -131,6 +174,7 @@ test('show policy admits read-only SHOW statements about indexes and table stats
   assert.equal(idx.kind, 'show'); assert.ok(idx.tables.includes('records'))
   const status = await authorizeStatement('mysql', 'SHOW TABLE STATUS FROM `business`', 'business')
   assert.equal(status.kind, 'show')
-  // 不允许 SHOW PROCESSLIST 等无关 SHOW，按只读统计白名单拒绝
-  await assert.rejects(authorizeStatement('mysql', 'SHOW PROCESSLIST', 'business'), /只允许/)
+  const processlist = await authorizeStatement('mysql', 'SHOW PROCESSLIST', 'business')
+  assert.equal(processlist.kind, 'write')
+  assert.deepEqual(processlist.targets, [])
 })

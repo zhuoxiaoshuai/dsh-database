@@ -1,7 +1,7 @@
 import type { DataSourceId } from '../../../shared/data-sources/types.ts'
 import { supportedAllDataSources } from '../../../shared/data-sources/registry.ts'
-import { clientModules } from '../../data-sources/registry.ts'
+import { historySources } from '../../data-sources/history-registry.ts'
 export function executionDetailSource(id?: string) {
   if (!id || !supportedAllDataSources.includes(id as DataSourceId)) return undefined
-  return clientModules.get(id as DataSourceId).history
+  return historySources.get(id as DataSourceId)
 }

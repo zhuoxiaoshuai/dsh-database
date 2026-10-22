@@ -1,24 +1,22 @@
+import {CopyButton} from '../workspace/parts/feedback/copy-button.tsx'
+import {copyText} from '../workspace/parts/feedback/clipboard.ts'
+import {ResourceError} from '../workspace/parts/feedback/resource-error.tsx'
 import React, { useState } from 'react'
 import { KafkaGroupDetail, KafkaGroupTopicDetail } from './group-detail.tsx'
 import { KafkaDescribeTable } from './describe-table.tsx'
 import { kafkaJsonPreview, kafkaExportText, type KafkaBytesValue } from './message-view.ts'
+import type { KafkaGroupMember, KafkaGroupResult, KafkaGroupTopicResult, KafkaTopicGroupsResult } from '../../shared/kafka-inspection.ts'
+export type { KafkaGroupMember, KafkaGroupResult, KafkaGroupTopicResult } from '../../shared/kafka-inspection.ts'
 
 type Bytes = KafkaBytesValue
 type KafkaMessage = { offset: string; timestamp: string; key: Bytes; value: Bytes; headers: Record<string, Bytes | Bytes[]> }
-export type KafkaGroupMember = { memberId: string; clientId: string; clientHost: string; assignment: Record<string, number[]> }
-export type KafkaGroupResult = { kind: 'group'; groupId: string; state: string; protocol: string; protocolType: string; members: KafkaGroupMember[] }
-export type KafkaGroupTopicResult = {
-  kind: 'group-topic'
-  groupId: string
-  topic: string
-  state?: string
-  partitions: { partition: number; current: string | null; end: string | null; lag: string | null; consumer: string | null }[]
-}
 export type KafkaResult = {
-  kind: 'topics' | 'describe' | 'peek' | 'groups' | 'group' | 'group-topics' | 'group-topic' | 'produce'
+  kind: 'topics' | 'topic-groups' | 'describe' | 'peek' | 'groups' | 'group' | 'group-topics' | 'group-topic' | 'produce'
     | 'topic-config' | 'time-offsets' | 'scan' | 'produce-batch' | 'tombstone' | 'create-topic' | 'set-group-offsets'
   topics?: string[]
   groups?: string[]
+  associations?: KafkaTopicGroupsResult['associations']
+  failed?: number
   truncated?: boolean
   resultTruncated?: boolean
   search?: string
@@ -34,6 +32,7 @@ export type KafkaResult = {
   complete?: boolean
   reason?: string
   elapsedMs?: number
+  collectedAt?: string
   executionId?: string
   groupId?: string
   state?: string
@@ -106,16 +105,18 @@ function KafkaMessageView({ message, topic, partition, onUse, canWrite = false }
     return JSON.stringify(source.headers || {}, null, 2)
   })
   const copy = async () => {
-    try { await navigator.clipboard.writeText(JSON.stringify(message, null, 2)); setError('') }
+    try { if(!await copyText(JSON.stringify(message,null,2)))throw new Error('复制失败，请选中文字复制');setError('') }
     catch { setError('复制失败，请选中预览文字复制。') }
   }
-  return <article className="db-kafka-message"><header><strong>分区 {partition} · Offset {message.offset}</strong><span>{message.timestamp}</span>
+  return <details className="db-kafka-msg-item" open>
+    <summary><span className="db-kafka-msg-offset">分区 {partition} · Offset {message.offset}</span><span className="db-kafka-msg-time">{message.timestamp}</span></summary>
+    <article className="db-kafka-message"><header>
     {onUse && <button type="button" className="db-text-button" onClick={() => onUse(`PEEK ${JSON.stringify(topic)} PARTITION ${partition} FROM OFFSET ${message.offset} LIMIT 20`)}>从此处查看</button>}
     <button type="button" className="db-text-button" onClick={() => void copy()}>复制消息预览</button></header>
-    {error && <p role="alert" className="db-error">{error}</p>}
+    {error && <ResourceError message={error}/>}
     <p><b>Key：</b><KafkaBytes value={message.key} /></p><p><b>Value：</b><KafkaBytes value={message.value} /></p>
-    {Object.keys(message.headers || {}).length > 0 && <details><summary>Headers</summary>{Object.entries(message.headers).map(([name, value]) => <p key={name}><b>{name}：</b>{(Array.isArray(value) ? value : [value]).map((part, index) => <React.Fragment key={index}>{index > 0 && '；'}<KafkaBytes value={part} /></React.Fragment>)}</p>)}</details>}
-    {onUse && canWrite && replay && <details><summary>编辑并重新发布</summary><div className="db-kafka-results">
+    {Object.keys(message.headers || {}).length > 0 && <details className="db-resource-disclosure"><summary>Headers</summary>{Object.entries(message.headers).map(([name, value]) => <p key={name}><b>{name}：</b>{(Array.isArray(value) ? value : [value]).map((part, index) => <React.Fragment key={index}>{index > 0 && '；'}<KafkaBytes value={part} /></React.Fragment>)}</p>)}</details>}
+    {onUse && canWrite && replay && <details className="db-resource-disclosure"><summary>编辑并重新发布</summary><div className="db-resource-form db-kafka-form">
       <p className="db-muted">来源：{topic} / 分区 {partition} / Offset {message.offset}。新消息不会覆盖原消息。</p>
       <label>目标 Topic<input value={targetTopic} onChange={event => setTargetTopic(event.target.value)} /></label>
       <label>Key 格式<select value={keyEncoding} onChange={event => setKeyEncoding(event.target.value as 'utf8' | 'base64')}><option value="utf8">UTF-8</option><option value="base64">Base64</option></select></label>
@@ -124,7 +125,7 @@ function KafkaMessageView({ message, topic, partition, onUse, canWrite = false }
       <label>Value<textarea value={valueDraft} onChange={event => setValueDraft(event.target.value)} /></label>
       <label>Headers JSON<textarea value={headersDraft} onChange={event => setHeadersDraft(event.target.value)} /></label>
       <p className="db-muted">改动预览：目标 {targetTopic === topic ? '不变' : `${topic} → ${targetTopic}`}；Key {keyDraft === (message.key.kind === 'binary' ? message.key.base64 || '' : message.key.text || '') ? '不变' : '已修改'}；Value {valueDraft === (message.value.kind === 'binary' ? message.value.base64 || '' : message.value.text || '') ? '不变' : '已修改'}。</p>
-      <button type="button" className="db-btn" onClick={() => { try {
+      <button type="button" className="db-primary" onClick={() => { try {
         const headers = JSON.parse(headersDraft)
         onUse(`PRODUCE ${JSON.stringify({ topic: targetTopic,
           ...(message.key.kind !== 'null' || keyDraft ? { key: keyEncoding === 'base64' ? { base64: keyDraft } : keyDraft } : {}),
@@ -134,6 +135,7 @@ function KafkaMessageView({ message, topic, partition, onUse, canWrite = false }
       } catch { setError('Headers 必须是有效 JSON。') } }}>填入重发草稿</button>
     </div></details>}
   </article>
+  </details>
 }
 
 function nextListCommand(result: KafkaResult): string | undefined {
@@ -145,14 +147,19 @@ function nextListCommand(result: KafkaResult): string | undefined {
 export function KafkaResultView({ result, onUse, snapshotScope = '', canWrite = false }: { result?: KafkaResult; onUse?(text: string): void; snapshotScope?: string; canWrite?: boolean }): React.ReactElement {
   if (!result) return <p className="db-muted db-query-result-empty">执行后在此显示 Kafka 结果。</p>
   const next = nextListCommand(result)
-  const pageHint = <><p className="db-muted">列表变化可能导致重复或遗漏；需要完整重新遍历时请刷新第一页。</p>{next && onUse && <button type="button" className="db-btn" onClick={() => onUse(next)}>下一页草稿</button>}</>
+  const pageHint = <><p className="db-muted">列表变化可能导致重复或遗漏；需要完整重新遍历时请刷新第一页。</p>{next && onUse && <button type="button" className="db-text-button" onClick={() => onUse(next)}>下一页草稿</button>}</>
   const warning = result.resultTruncated ? <p className="db-info-note">详情达到大小上限，仅显示部分信息。</p> : undefined
+  if (result.kind === 'topic-groups') return <div className="db-kafka-results">{warning}<p>{result.topic} · 关联消费组</p>
+    {(result.associations || []).map(item => <p key={item.groupId}><button className="db-text-button" onClick={() => onUse?.(`GROUP ${JSON.stringify(item.groupId)} TOPIC ${JSON.stringify(result.topic)}`)}>{item.groupId}</button> · {item.assigned ? '当前分配' : ''}{item.assigned && item.committed ? ' / ' : ''}{item.committed ? '历史提交' : ''}{!item.complete ? ' · 信息不完整' : ''}</p>)}
+    {!result.associations?.length && <p>{result.complete && !result.resultTruncated ? '未发现关联组。' : '尚未找到关联组，结果不完整。'}</p>}
+    {result.warning && <p role="status">{result.warning}</p>}
+    {result.nextCursor && onUse && <button className="db-text-button" onClick={() => onUse(`TOPIC_GROUPS ${JSON.stringify(result.topic)} CURSOR ${result.nextCursor}`)}>下一页草稿</button>}</div>
   if (result.kind === 'topics' || result.kind === 'group-topics') return <div className="db-kafka-results"><p className="db-muted">{result.groupId ? `${result.groupId} · ` : ''}本页 {result.topics?.length || 0} 个 Topic{result.truncated ? ' · 还有后续页' : ''}</p>
     <ul>{(result.topics || []).map(topic => <li key={topic}><button type="button" className="db-text-button" onClick={() => onUse?.(result.kind === 'group-topics' ? `GROUP ${JSON.stringify(result.groupId)} TOPIC ${JSON.stringify(topic)}` : `DESCRIBE ${JSON.stringify(topic)}`)}>{topic}</button></li>)}</ul>{pageHint}</div>
-  if (result.kind === 'describe') return <>{warning}<KafkaDescribeTable topic={result.topic || ''} partitions={result.partitions || []} onUse={onUse} /></>
+  if (result.kind === 'describe') return <>{warning}{result.warning && <p className="db-info-note">{result.warning}</p>}<KafkaDescribeTable topic={result.topic || ''} partitions={result.partitions || []} onUse={onUse} /></>
   if (result.kind === 'groups') return <div className="db-kafka-results"><p className="db-muted">本页 {result.groups?.length || 0} 个消费组{result.truncated ? ' · 还有后续页' : ''}</p>
     <ul>{(result.groups || []).map(groupId => <li key={groupId}><button type="button" className="db-text-button" onClick={() => onUse?.(`GROUP ${JSON.stringify(groupId)}`)}>{groupId}</button></li>)}</ul>{pageHint}</div>
-  if (result.kind === 'group') return <>{warning}<KafkaGroupDetail group={{ kind: 'group', groupId: result.groupId || '', state: result.state || '', protocol: result.protocol || '', protocolType: result.protocolType || '', members: result.members || [] }} />{onUse && result.groupId && <button type="button" className="db-btn" onClick={() => onUse(`GROUP ${JSON.stringify(result.groupId)} TOPICS`)}>关联 Topic 草稿</button>}</>
+  if (result.kind === 'group') return <>{warning}<KafkaGroupDetail group={{ kind: 'group', groupId: result.groupId || '', state: result.state || '', protocol: result.protocol || '', protocolType: result.protocolType || '', members: result.members || [], complete: result.complete, resultTruncated: result.resultTruncated, warning: result.warning, collectedAt: result.collectedAt }} />{onUse && result.groupId && <button type="button" className="db-text-button" onClick={() => onUse(`GROUP ${JSON.stringify(result.groupId)} TOPICS`)}>关联 Topic 草稿</button>}</>
   if (result.kind === 'group-topic') {
     const topic = result as unknown as KafkaGroupTopicResult
     return <>{warning}{result.warning && <p className="db-info-note">{result.warning}</p>}<KafkaGroupTopicDetail detail={{ kind: 'group-topic', groupId: topic.groupId, topic: topic.topic, state: topic.state, partitions: topic.partitions || [] }} onUse={onUse} snapshotScope={snapshotScope} canWrite={canWrite} /></>
@@ -160,20 +167,20 @@ export function KafkaResultView({ result, onUse, snapshotScope = '', canWrite = 
   if (result.kind === 'produce') return <div className="db-kafka-results"><p>Broker 已确认发布到 {result.topic} · 分区 {result.partition ?? '未知'}{result.baseOffset !== undefined ? ` · Offset ${result.baseOffset}` : ''}。</p>
     <p className="db-muted">Value {result.valueBytes ?? 0} B。回执不包含消息正文；发布后请按 Key 或业务标识核对消费链路。</p>
     {result.replayFrom && <p className="db-muted">修正来源：{result.replayFrom.topic} / 分区 {result.replayFrom.partition} / Offset {result.replayFrom.offset}</p>}
-    {onUse && result.topic && result.partition !== undefined && result.baseOffset !== undefined && <button type="button" className="db-btn" onClick={() => onUse(`PEEK ${JSON.stringify(result.topic)} PARTITION ${result.partition} FROM OFFSET ${result.baseOffset} LIMIT 1`)}>回读此 Offset 草稿</button>}</div>
+    {onUse && result.topic && result.partition !== undefined && result.baseOffset !== undefined && <button type="button" className="db-text-button" onClick={() => onUse(`PEEK ${JSON.stringify(result.topic)} PARTITION ${result.partition} FROM OFFSET ${result.baseOffset} LIMIT 1`)}>回读此 Offset 草稿</button>}</div>
   if (result.kind === 'topic-config') return <div className="db-kafka-results"><strong>{result.topic} · Topic 配置</strong>
     <ul>{Object.entries(result.configs || {}).map(([name, item]) => <li key={name}>{name}: {item.value ?? '未知'}{item.isDefault ? '（默认）' : ''}</li>)}</ul></div>
   if (result.kind === 'time-offsets') return <div className="db-kafka-results"><p>{result.topic} · {new Date(result.timestamp || 0).toLocaleString()}</p>
     <ul>{(result.partitions as unknown as { partition: number; offset: string; noLaterMessage: boolean }[] || []).map(item => <li key={item.partition}>
       分区 {item.partition} · Offset {item.offset}{item.noLaterMessage ? ' · 该时间之后无消息，定位到末尾' : ''}
       {onUse && <button type="button" className="db-text-button" onClick={() => onUse(`PEEK ${JSON.stringify(result.topic)} PARTITION ${item.partition} FROM OFFSET ${item.offset} LIMIT 20`)}>查看</button>}
-    </li>)}</ul>{onUse && result.topic && <button type="button" className="db-btn" onClick={() => {
+    </li>)}</ul>{onUse && result.topic && <button type="button" className="db-text-button" onClick={() => {
       const parts = (result.partitions as unknown as { partition: number }[] || []).slice(0, 8).map(item => item.partition)
       if (parts.length) onUse(`SCAN ${JSON.stringify({ topic: result.topic, partitions: parts, timestamp: result.timestamp })}`)
     }}>跨分区取样草稿</button>}</div>
   if (result.kind === 'scan') return <div className="db-kafka-results"><p>{result.topic} · 已检查 {result.inspected ?? 0} 条 · 匹配 {result.messages?.length || 0} 条。</p>
     {!result.complete && <p className="db-info-note">范围未查完（{result.reason || '部分分区未读取'}）；下方续读位置仅适用于本次扫描快照。</p>}
-    {onUse && !result.complete && result.nextOffsets && result.topic && result.partitions && <button type="button" className="db-btn" onClick={() => onUse(`SCAN ${JSON.stringify({ topic: result.topic, partitions: result.partitions, offsets: result.nextOffsets,
+    {onUse && !result.complete && result.nextOffsets && result.topic && result.partitions && <button type="button" className="db-text-button" onClick={() => onUse(`SCAN ${JSON.stringify({ topic: result.topic, partitions: result.partitions, offsets: result.nextOffsets,
       ...(result.key !== undefined ? { key: result.key } : {}), ...(result.header !== undefined ? { header: result.header } : {}) })}`)}>下一段扫描草稿</button>}
     {(result.messages as (KafkaMessage & { partition: number })[] || []).map(message => <KafkaMessageView key={`${message.partition}/${message.offset}`} topic={result.topic || ''} partition={message.partition} message={message} onUse={onUse} canWrite={canWrite} />)}</div>
   if (result.kind === 'produce-batch') return <div className="db-kafka-results"><p>{result.topic} · 已确认 {result.receipts?.length || 0} 条 · 未发送 {result.notSent ?? 0} 条。</p>
@@ -181,22 +188,22 @@ export function KafkaResultView({ result, onUse, snapshotScope = '', canWrite = 
     <ul>{(result.receipts || []).map(item => <li key={item.index}>第 {item.index + 1} 条 · 分区 {item.partition}{item.baseOffset ? ` · Offset ${item.baseOffset}` : ''}
       {onUse && item.baseOffset && <button type="button" className="db-text-button" onClick={() => onUse(`PEEK ${JSON.stringify(result.topic)} PARTITION ${item.partition} FROM OFFSET ${item.baseOffset} LIMIT 1`)}>回读</button>}</li>)}</ul></div>
   if (result.kind === 'tombstone') return <div className="db-kafka-results"><p>墓碑已获 Broker 确认：{result.topic} · 分区 {result.partition ?? '未知'}{result.baseOffset ? ` · Offset ${result.baseOffset}` : ''}。</p><p className="db-muted">历史记录的压缩异步发生；请按业务协议核对效果。</p></div>
-  if (result.kind === 'create-topic') return <div className="db-kafka-results"><p>已创建 {result.topic} · {result.partitionCount ?? '未知'} 个分区 · {result.cleanupPolicy}。</p>{onUse && <button type="button" className="db-btn" onClick={() => onUse(`DESCRIBE ${JSON.stringify(result.topic)}`)}>查看 Topic 草稿</button>}</div>
+  if (result.kind === 'create-topic') return <div className="db-kafka-results"><p>已创建 {result.topic} · {result.partitionCount ?? '未知'} 个分区 · {result.cleanupPolicy}。</p>{onUse && <button type="button" className="db-text-button" onClick={() => onUse(`DESCRIBE ${JSON.stringify(result.topic)}`)}>查看 Topic 草稿</button>}</div>
   if (result.kind === 'set-group-offsets') return <div className="db-kafka-results"><p>{result.groupId} / {result.topic} · 位点调整后已回读。</p>
     <ul>{Object.entries(result.after || {}).map(([partition, offset]) => <li key={partition}>分区 {partition}: {result.before?.[partition] ?? '未提交'} → {offset}</li>)}</ul></div>
   if (result.kind !== 'peek') { const unsupported: never = result.kind; throw new Error(`无法显示 Kafka 结果：${unsupported}`) }
   return <div className="db-kafka-results"><p className="db-muted">{result.topic} · 分区 {result.partition} · 本次范围 [{result.start}, {result.high}) · {result.messages?.length || 0} 条 · {result.elapsedMs || 0} ms</p>
     {result.complete ? <p>已到达本次读取上界。</p> : <p className="db-info-note">读取未遍历完整范围（{result.reason === 'limit' ? '达到条数上限' : result.reason === 'bytes' ? '达到结果大小上限' : result.reason === 'deadline' ? '超过读取截止时间' : result.reason === 'cancelled' ? '已请求取消' : result.reason === 'error' ? '读取连接中断' : '读取中断'}）。LATEST 可能因压缩或 offset 空洞少于指定条数。</p>}
-    <button type="button" className="db-btn" onClick={() => {
+    <button type="button" className="db-text-button" onClick={() => {
       const url = URL.createObjectURL(new Blob([kafkaExportText(result)], { type: 'application/json;charset=utf-8' }))
       try { const link = document.createElement('a'); link.href = url; link.download = 'kafka-loaded-preview.json'; link.click() }
       finally { URL.revokeObjectURL(url) }
     }}>导出当前结果 JSON</button>
-    {onUse && result.topic && result.partition !== undefined && result.messages?.length && <button type="button" className="db-btn" onClick={() => {
+    {onUse && result.topic && result.partition !== undefined && result.messages?.length && <button type="button" className="db-text-button" onClick={() => {
       const last = result.messages?.at(-1)
       if (last) onUse(`PEEK ${JSON.stringify(result.topic)} PARTITION ${result.partition} FROM OFFSET ${(BigInt(last.offset) + 1n).toString()} LIMIT 20`)
     }}>下一段草稿</button>}
-    <button type="button" className="db-btn" onClick={() => void navigator.clipboard.writeText(`${result.topic} / 分区 ${result.partition} / [${result.start}, ${result.high}) / ${result.messages?.length || 0} 条 / ${result.complete ? '完整' : '未查完'}`)}>复制排障摘要</button>
+    <CopyButton text={`${result.topic} / 分区 ${result.partition} / [${result.start}, ${result.high}) / ${result.messages?.length || 0} 条 / ${result.complete ? '完整' : '未查完'}`}>复制排障摘要</CopyButton>
     {(result.messages || []).map(message => <KafkaMessageView key={message.offset} topic={result.topic || ''} partition={result.partition || 0} message={message} onUse={onUse} canWrite={canWrite} />)}
   </div>
 }

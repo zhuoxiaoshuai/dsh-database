@@ -15,7 +15,7 @@ test('maintenance action buttons share the compact button class', () => {
   const css = readFileSync(new URL('../src/client/style.css', import.meta.url), 'utf8')
   const objectPage = readFileSync(new URL('../src/client/object-workspace.tsx', import.meta.url), 'utf8')
   const queryPage = readFileSync(new URL('../src/client/sql-workspace-tab.tsx', import.meta.url), 'utf8')
-  assert.match(css, /\.db-workbench \.db-maintenance-small\{height:24px/)
+  assert.match(css, /\.db-workbench \.db-maintenance-small\{height:var\(--db-inline-height\)/)
   for (const label of ['新增', '删除', '保存']) {
     assert.match(objectPage, new RegExp(`db-maintenance-small[^>]*[\\s\\S]{0,200}>${label}`))
     assert.match(queryPage, new RegExp(`db-maintenance-small[^>]*[\\s\\S]{0,200}>${label}`))

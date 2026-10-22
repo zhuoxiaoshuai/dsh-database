@@ -65,7 +65,7 @@ SQL schema/cache/focus/pending 导航控制移入 client/sql；每连接导航�
 - 真实模型调用与 callId 关联、用户 Desktop profile 重启：NOT_RUN。没有修改日常 profile。
 - 本轮重新实连 SQL/Redis/Kafka 业务服务器：NOT_RUN；现有单元与受控 UI 回归通过。
 - 预览不能无副作用地证明远端 WRITE 权限，明确在执行时由 Nacos 校验。新增/删除仍有远端并发窗口，不声称原子条件操作。
-- 敏感检测不能识别任意未知业务秘密。未知格式、语法歧义、YAML 引用/标签、重复字段、Properties 转义/续行与加密编辑保守拒绝 AI；人工不受解析器限制。
+- 敏感检测不能识别任意未知业务秘密。未知格式、语法歧义、YAML 引用/标签、重复字段、Properties 转义/续行与加密编辑保守拒绝 AI。人工发布 JSON、YAML、Properties 时同样做语法校验；Text 与删除不校验正文。这与 AI 的敏感内容限制是两件事。
 - 预览复用拦截依赖既有 ExecutionStore 的记录保留范围，无第二套持久状态。
 - 不实现 P1/P2。没有发布远端 release 或替换用户日常安装。
 
@@ -84,3 +84,31 @@ npm run test:package-closure
 真实脚本必须指向专用、可写的 Nacos 2.4.3 fixture，不能指向生产实例。NACOS_TEST_PORT 指定本机端口；测试固定使用 fixture 管理账号 nacos/nacos，创建随机 Namespace 与 dsh-reader/dsh-writer 专用账号。所有凭据仅为本轮测试值。test:host 同时设置 DSH_DESKTOP_APP、DSH_TEST_BROWSER=msedge、DSH_TEST_NACOS=1。Windows 测试 TEMP/TMP 指向工作区 artifacts/nacos-design-review-temp，避免沙箱临时目录权限干扰。
 
 测试容器 dsh-nacos-p0-243-20261010（label dsh.test=nacos-p0，127.0.0.1:9997→8848）只归本轮测试所有，镜像 digest 为 sha256:00774155ca5816f81d8bdc9e3a73d2f41f40542c3bc47bbce7791d1cec9d3fae。交付收尾清理该容器；重跑须重新准备专用 fixture。证据保留在被 Git 忽略的 artifacts，验收脚本与本记录进入源码。
+
+
+## 2026-10-12：六类配置校验与发布对比补充
+
+本节记录本轮源码及独立验收，前文 2026-10-10 的安装记录不代表本轮新代码已安装。
+
+- 统一 `nacos-config-types` 的类型、YML 别名、远端类型优先和未知类型提示；编辑器、历史、Diff、Host 和 AI 参数共用。六类为 YAML、JSON、Properties、XML、HTML、Text，不增加 TOML/INI 专用支持。
+- 复用 yaml/jsonc-parser，新增 fast-xml-parser 校验、Lezer XML 原文定位、parse5 HTML 解析和 CodeMirror XML/HTML 高亮。正文始终作为源码显示，不读取外部实体、不执行 HTML 脚本、不自动格式化。
+- YAML 每个文档必须为键值对象；JSON 严格语法和重复键；Properties 按 Java Unicode 转义规则校验并处理文末续行；XML 检查根、标签、属性、实体及命名空间；HTML 按 HTML 文档/片段解析。Text 不做格式检查，未知类型明确未校验。
+- 发布对比使用统一只读组件：错误原文范围与行标红、行尾安全原因、最多 100 个问题可点击定位。无效草稿仅生成本地 Diff，不调用远端预览，也不能提交。返回修改保留目标/格式/正文并恢复焦点。
+- 打开对比即可用上下键循环定位，同时定位两侧；上下按钮使用相同逻辑。断开或换代撤销旧预览，保留脏草稿。删除不校验正文。
+- XML/HTML AI 修改沿用原 Host 入口、SIT 权限、预览签名、CAS、unknown/no-replay。原文范围识别直接/间接敏感字段、实体编码值、CDATA、注释及凭据模式；HTML 脚本/样式/事件/模板等不透明内容保护。DTD、自定义实体和无法可靠定位的自动修复结构拒绝 AI 正文/修改。非敏感唯一局部替换后复验并比较敏感原文；Text 保留保守边界。
+- Host/Worker 的 Nacos provider 在既有边界打包共享格式模块，修正源目录与 lib 目录相对层级差异；没有额外 HTTP 路由、状态层或重复写入流程。
+
+| 验证层级 | 结果 | 本轮证据 |
+| --- | --- | --- |
+| 类型、单元、构建 | PASS | `artifacts/nacos-six-formats-check.log`：880/880，Host ESM 与浏览器工厂构建通过 |
+| Nacos 受控 UI | PASS | `artifacts/nacos-six-formats-ui.log`、`artifacts/ui/nacos/result.json`：六类有效/无效预览、定位/返回焦点、首次上下键、纯新增/删除/文末变更/无差异、断开/换代、旧有搜索与页签行为；无 pageerror |
+| 主题受控 UI | PASS | `artifacts/nacos-six-formats-theme.log`：三类来源 420/768/1200 浅/深色，Nacos 编辑身份/undo/草稿及自定义 Diff 调色板；Nacos 补充截图覆盖 560px 窄窗口 |
+| 安装包闭包 | PASS | `artifacts/nacos-six-formats-package.log`：72 个文件，所有相对导入可达 |
+| 真实 Nacos 2.4.3 | PASS | `artifacts/nacos-six-formats-live.log`、`artifacts/nacos-live/run-*/result.json`：25 项；六类人工创建/读取/历史/删除，四类人工更新与 XML/HTML SIT AI 更新，两账号权限、脱敏、CAS、UAT/PVT 拒绝、回执丢失 unknown/no-replay |
+| 本轮实际 DSH 安装 / 真实模型自主调用 | NOT_RUN | 本轮没有替换用户安装；受控 UI 与真实 Host/Worker→Nacos 调用分别记录，不能替代安装后及模型端验收 |
+
+截图：`artifacts/ui/nacos/invalid-preview.png`、`invalid-preview-dark.png`、`invalid-preview-narrow.png`、`xml-preview.png`、`html-preview.png`。
+
+复跑说明：最初受限网络下的既有失败不能直接归因于产品；允许本机通信后完成完整检查。曾有一次并发全量运行中既有 HTTP 回执测试失败，独立与最终全量均通过；一次 UI 导航等待超时重跑通过，未据此声称已定位环境根因。安装包实际检查曾揭示共享模块相对路径问题，已修复并重新验证。
+
+真实测试只操作本轮专用 `dsh-nacos-243-formats-test` 容器（label `dsh.acceptance=nacos-six-formats`，固定镜像 `nacos/nacos-server:v2.4.3`，随机 loopback 入口），没有修改日常 8848 的 Nacos 2.5.1。脚本已删除随机 Namespace/服务，交付前清理专用容器。HTTPS、认证关闭、活跃监听客户端、长期压力及本轮 SQL/Redis/Kafka 真实服务器回归仍为 NOT_RUN，沿用前述边界。

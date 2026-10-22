@@ -1,3 +1,4 @@
+import {WorkbenchTooltips} from '../parts/overlay/tooltip.tsx'
 import { allowNavigation } from '../parts/navigation-guard.ts'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CircleAlert, Check, Database, Info, Plus, Power, Trash2, X } from 'lucide-react'
@@ -8,8 +9,8 @@ import { mergeWorkspaceConnections, mergeSessionConnections, blendLiveConnection
 import { coerceVisibleSchemas, unavailableBridge, type Connection, type ConnectionWorkbench } from '../../../shared/workbench.ts'
 import { canReuseSavedLogin } from '../../../shared/connection-input.ts'
 import { databaseCss } from '../../style-css.ts'
-import { isHostDark, subscribeHostTheme } from '../parts/host-theme.ts'
-import {DialogFrame} from '../parts/dialog-frame.tsx'
+import { useWorkbenchTheme } from '../parts/theme/use-workbench-theme.ts'
+import {DialogFrame} from '../parts/overlay/dialog-frame.tsx'
 
 function ensureStyle(): void {
   if (typeof document === 'undefined') return
@@ -46,7 +47,7 @@ function ConfirmDialog({
   onCancel(): void
   onConfirm(): void
 }): React.ReactElement {
-  return <DialogFrame title={title} close={onCancel} busy={busy} footer={<><button disabled={busy} onClick={onCancel}>取消</button><button className="db-danger-button" disabled={busy} onClick={onConfirm}>{confirmIcon}{confirmLabel}</button></>}><p>{body}</p></DialogFrame>
+  return <DialogFrame title={title} ariaLabel={label} closeLabel={closeLabel} size="confirm" close={onCancel} busy={busy} footer={<><button className="db-btn" disabled={busy} onClick={onCancel}>取消</button><button className="db-danger-button" disabled={busy} onClick={onConfirm}>{confirmIcon}{confirmLabel}</button></>}><p>{body}</p></DialogFrame>
 }
 
 export function DatabaseWorkspace({ conversationId, visible = true, preview = false, onActive, onDialogChange }: Props): React.ReactElement {
@@ -57,10 +58,16 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
   const [deleteTarget, setDeleteTarget] = useState<Connection>()
   const [disconnectTarget, setDisconnectTarget] = useState<Connection>()
   const revisionRef = useRef(0)
-  const [busy, setBusy] = useState<string>()
+  const [busy, setBusy] = useState<Set<string>>(() => new Set())
+  const busyRef = useRef(new Set<string>())
+  const beginBusy = (id: string) => { if (busyRef.current.has(id)) return false; busyRef.current.add(id); setBusy(new Set(busyRef.current)); return true }
+  const endBusy = (id: string) => { busyRef.current.delete(id); if (alive.current) setBusy(new Set(busyRef.current)) }
+  const activeRef = useRef(activeId); activeRef.current = activeId
+  const hasOperations = connections.some(row => row.lifecycle?.status === 'queued' || row.lifecycle?.status === 'running')
   const pollInflight = useRef(false)
   const [toast, setToast] = useState<WorkspaceToast>()
-  const [dark, setDark] = useState(false)
+  const theme = useWorkbenchTheme()
+  const dark = theme.dark
   const [passwordStorage, setPasswordStorage] = useState(() => typeof navigator !== 'undefined' && /Win/i.test(navigator.userAgent))
   const alive = useRef(true)
   const seeded = useRef(false)
@@ -83,6 +90,7 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
     return () => window.clearTimeout(timer)
   }, [toast])
   const applySnapshot = useCallback((snapshot: { connections?: Connection[]; passwordStorage?: boolean; lastActiveId?: string; revision?: number }, mode: 'full' | 'merge' | 'session') => {
+    if (typeof snapshot.revision === 'number' && snapshot.revision < revisionRef.current) return
     const listed = Array.isArray(snapshot.connections) ? snapshot.connections : []
     setPasswordStorage(snapshot.passwordStorage !== false)
     if (typeof snapshot.revision === 'number') revisionRef.current = snapshot.revision
@@ -93,9 +101,9 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
     })
     setActiveId(previous => {
       const aliveId = previous && listed.some(row => row.id === previous)
-      if (mode !== 'full' && aliveId) return previous
+      if (mode === 'merge' && aliveId) return previous
       if (snapshot.lastActiveId && listed.some(row => row.id === snapshot.lastActiveId)) return snapshot.lastActiveId
-      return aliveId ? previous : listed[0]?.id
+      return mode === 'session' ? listed[0]?.id : aliveId ? previous : listed[0]?.id
     })
     seeded.current = true
   }, [])
@@ -150,49 +158,46 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
       } catch { /* keep current UI; next poll retries */ }
       finally { pollInflight.current = false }
     }
-    const timer = window.setInterval(() => { void poll() }, 4000)
+    const timer = window.setInterval(() => { void poll() }, hasOperations ? 1000 : 4000)
     const onVisible = () => { if (!document.hidden) void poll() }
     document.addEventListener('visibilitychange', onVisible)
     return () => { current = false; window.clearInterval(timer); document.removeEventListener('visibilitychange', onVisible) }
-  }, [applySnapshot, bridge, visible])
+  }, [applySnapshot, bridge, visible, hasOperations])
   useEffect(() => { onDialogChange?.(!!form || !!deleteTarget || !!disconnectTarget) }, [form, deleteTarget, disconnectTarget, onDialogChange])
   useEffect(() => { onActive?.(visible ? activeId : undefined) }, [activeId, visible, onActive])
-  useEffect(() => {
-    const sync = () => setDark(isHostDark())
-    const stop = subscribeHostTheme(sync)
-    sync()
-    return stop
-  }, [])
 
   const active = connections.find(row => row.id === activeId)
+  const reload = async () => {
+    const snapshot = await bridge.listWorkspace?.()
+    if (alive.current && snapshot) applySnapshot(snapshot, 'merge')
+  }
   const open = async (connection: Connection) => {
-    if(connection.id!==activeId && !await allowNavigation(sqlOwner))return
-    if (!connection.live) {
-      if (canReuseSavedLogin(connection) && connection.settings) {
-        if (busy) return
-        setBusy(connection.id); setToast(undefined)
+    if (connection.lifecycle?.status === 'queued' || connection.lifecycle?.status === 'running' || busyRef.current.has(connection.id)) return
+    if (!connection.live || connection.health === 'degraded') {
+      if (canReuseSavedLogin(connection) && connection.settings && bridge.startConnection) {
+        if (!beginBusy(connection.id)) return
         try {
-          const live = await bridge.updateConnection!(connection.id, { ...connection.settings, password: '', useSavedPassword: true, rememberPassword: true })
-          if (!alive.current) return
-          setConnections(rows => rows.map(row => row.id === live.id ? blendLiveConnection(row, live) : row))
-          rememberActive(live.id)
-          if (live.passwordWarning) showToast(live.passwordWarning, 'info')
-          else showToast(`已连接 ${live.name} · ${live.version}`, 'ok')
-        } catch (error) {
-          const text = error instanceof Error ? error.message : '无法重新连接。'
-          showToast(text, 'error')
-          setForm({ editing: connection })
-        }
-        finally { if (alive.current) setBusy(undefined) }
+          await bridge.startConnection({ ...connection.settings, password: '', useSavedPassword: true, rememberPassword: true }, crypto.randomUUID(), connection.id)
+          await reload()
+        } catch (error) { if (alive.current) showToast(error instanceof Error ? error.message : '无法连接。', 'error') }
+        finally { endBusy(connection.id) }
         return
       }
       setForm({ editing: connection }); return
     }
     if (await allowNavigation(sqlOwner)) rememberActive(connection.id)
   }
+  const cancel = async (id: string) => {
+    const operation = connections.find(row => row.id === id)?.lifecycle
+    if (!operation || !bridge.cancelConnection || !beginBusy(id)) return
+    try { await bridge.cancelConnection(id, operation.operationId); await reload() }
+    catch (error) { if (alive.current) showToast(error instanceof Error ? error.message : '无法取消连接。', 'error') }
+    finally { endBusy(id) }
+  }
   const disconnectShared = async () => {
-    if (!disconnectTarget || busy || !await allowNavigation(sqlOwner)) return
-    setBusy(disconnectTarget.id); setToast(undefined)
+    if (!disconnectTarget || busyRef.current.has(disconnectTarget.id) || disconnectTarget.id === activeRef.current && !await allowNavigation(sqlOwner) || !beginBusy(disconnectTarget.id)) return
+    const target = disconnectTarget
+    setToast(undefined); setToast(undefined)
     try {
       await bridge.disconnectConnection?.(disconnectTarget.id)
       if (!alive.current) return
@@ -200,33 +205,30 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
       setDisconnectTarget(undefined)
       showToast(`已断开共享登录 ${disconnectTarget.name}，所有对话都需要重新登录后才能查询。`, 'ok')
     } catch (error) { if (alive.current) showToast(error instanceof Error ? error.message : '无法断开连接。', 'error') }
-    finally { if (alive.current) setBusy(undefined) }
+    finally { endBusy(target.id) }
   }
   const remove = async () => {
-    if (!deleteTarget || busy || !await allowNavigation(sqlOwner)) return
-    setBusy(deleteTarget.id); setToast(undefined)
+    if (!deleteTarget || busyRef.current.has(deleteTarget.id) || deleteTarget.id === activeRef.current && !await allowNavigation(sqlOwner) || !beginBusy(deleteTarget.id)) return
+    const target = deleteTarget
+    setToast(undefined); setToast(undefined)
     try {
       await bridge.removeConnection?.(deleteTarget.id)
       if (!alive.current) return
-      const index = connections.findIndex(row => row.id === deleteTarget.id)
-      const rest = connections.filter(row => row.id !== deleteTarget.id)
-      const next = activeId === deleteTarget.id ? rest[Math.min(index, rest.length - 1)]?.id : activeId
-      setConnections(rest)
+      setConnections(rows => rows.filter(row => row.id !== target.id))
       setDeleteTarget(undefined)
-      rememberActive(next)
+      if (activeRef.current === target.id) rememberActive(connections.find(row => row.id !== target.id)?.id)
     } catch (error) { if (alive.current) showToast(error instanceof Error ? error.message : '无法删除连接。', 'error') }
-    finally { if (alive.current) setBusy(undefined) }
+    finally { endBusy(target.id) }
   }
   const copy = async (id: string) => {
-    if (busy || !bridge.duplicateConnection || !await allowNavigation(sqlOwner)) return
+    if (!bridge.duplicateConnection || !beginBusy(id)) return
     const source = connections.find(row => row.id === id)
-    if (!source) return
-    setBusy(id); setToast(undefined)
+    if (!source) { endBusy(id); return }
+    setToast(undefined)
     try {
       const connection = await bridge.duplicateConnection(id)
       if (!alive.current) return
       setConnections(rows => rows.some(row => row.id === connection.id) ? rows : [...rows, connection])
-      rememberActive(connection.id)
       showToast(
         source.hasPassword && !connection.hasPassword
           ? `已复制为 ${connection.name}，请重新输入密码`
@@ -234,12 +236,11 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
         source.hasPassword && !connection.hasPassword ? 'info' : 'ok',
       )
     } catch (error) { if (alive.current) showToast(error instanceof Error ? error.message : '无法复制连接。', 'error') }
-    finally { if (alive.current) setBusy(undefined) }
+    finally { endBusy(id) }
   }
   const connected = async (connection: Connection) => {
     setConnections(rows => rows.some(row => row.id === connection.id) ? rows.map(row => row.id === connection.id ? blendLiveConnection(row, connection) : row) : [...rows, connection])
     setForm(undefined)
-    if (activeId === connection.id || await allowNavigation(sqlOwner)) rememberActive(connection.id)
     if (connection.passwordWarning) showToast(connection.passwordWarning, 'info')
     else showToast(`已连接 ${connection.name} · ${connection.version}`, 'ok')
   }
@@ -263,15 +264,13 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
     return true
   }
   const toastIcon = toast?.kind === 'error' ? <CircleAlert size={16} /> : toast?.kind === 'ok' ? <Check size={15} /> : <Info size={15} />
-  const markOffline = (id: string) => {
-    setConnections(rows => rows.map(row => row.id === id ? { ...row, live: false, health: 'offline' } : row))
-  }
   const reportUnavailable = (text: string, connectionId?: string) => {
     showToast(text, 'error')
-    if (connectionId) markOffline(connectionId)
+    if (connectionId) void reload()
   }
 
-  return <div className={`db-workbench ${dark ? 'db-dark' : ''}`} data-conversation={sqlOwner} style={{ height: '100%', containerType: 'inline-size' }}>
+  return <div className={`db-workbench ${dark ? 'db-dark' : ''}`} {...theme.attributes} data-conversation={sqlOwner} style={{ ...theme.style, height: '100%', containerType: 'inline-size' }}>
+    <WorkbenchTooltips/>
     {toast && <div
       className={`db-toast db-workspace-toast db-toast-${toast.kind}`}
       role={toast.kind === 'error' ? 'alert' : 'status'}
@@ -280,21 +279,21 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
       <span>{toast.text}</span>
       <button type="button" className="db-toast-close db-icon-button" aria-label="关闭提示" onClick={() => setToast(undefined)}><X size={14} /></button>
     </div>}
-    {connections.length ? <WorkbenchShell bridge={bridge} conversationId={sqlOwner} connection={active || connections[0]} connections={connections} reconnecting={busy} onPick={pick} onAdd={() => setForm({})} onEdit={id => {
+    {connections.length ? <WorkbenchShell bridge={bridge} conversationId={sqlOwner} connection={active || connections[0]} connections={connections} busyConnections={busy} onPick={pick} onAdd={() => setForm({})} onEdit={id => {
       const target = connections.find(row => row.id === id) || active || connections[0]
       if (target) setForm({ editing: target })
     }} onCopy={id => { void copy(id) }} onConnect={id => {
       const target = connections.find(row => row.id === id)
       if (target) void open(target)
-    }} onDisconnect={id => {
+    }} onCancelConnect={id => { void cancel(id) }} onDisconnect={id => {
       const target = connections.find(row => row.id === id)
-      if (target?.live) setDisconnectTarget(target)
+      if (target && (target.live || target.desiredState === 'online')) setDisconnectTarget(target)
     }} onDelete={id => {
       const target = connections.find(row => row.id === id)
       if (target) setDeleteTarget(target)
     }} onUnavailable={(text, connectionId) => reportUnavailable(text, connectionId)} onWorkbench={(id, patch) => patchWorkbench(id, patch)} />
       : <div className="db-result-empty"><span className="db-result-empty-icon"><Database size={24} /></span><strong>选择或添加数据库连接</strong><p>连接登录在工作区共享。复杂结构变更请使用 Navicat。</p><button className="db-primary" onClick={() => setForm({})}><Plus size={15} />添加连接</button></div>}
-    {form && <ConnectionForm bridge={bridge} editing={form.editing} passwordStorage={passwordStorage} onClose={() => setForm(undefined)} onConnected={connected} />}
+    {form && <ConnectionForm bridge={bridge} editing={form.editing} passwordStorage={passwordStorage} onClose={() => setForm(undefined)} onConnected={connected} onStarted={() => { void reload().catch(error => showToast(error instanceof Error ? error.message : '无法读取连接状态。', 'error')) }} />}
     {disconnectTarget && <ConfirmDialog
       label="断开共享连接"
       title={`断开“${disconnectTarget.name}”的共享登录？`}
@@ -302,7 +301,7 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
       closeLabel="取消断开"
       confirmLabel="断开共享连接"
       confirmIcon={<Power size={14} />}
-      busy={!!busy}
+      busy={busy.has(disconnectTarget.id)}
       onCancel={() => setDisconnectTarget(undefined)}
       onConfirm={() => void disconnectShared()}
     />}
@@ -313,7 +312,7 @@ export function DatabaseWorkspace({ conversationId, visible = true, preview = fa
       closeLabel="取消删除"
       confirmLabel="删除连接"
       confirmIcon={<Trash2 size={14} />}
-      busy={!!busy}
+      busy={busy.has(deleteTarget.id)}
       onCancel={() => setDeleteTarget(undefined)}
       onConfirm={() => void remove()}
     />}

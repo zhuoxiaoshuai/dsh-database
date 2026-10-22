@@ -1,3 +1,8 @@
+import {copyText as writeClipboard} from '../workspace/parts/feedback/clipboard.ts'
+import {FormField} from '../workspace/parts/controls/form-field.tsx'
+import {DialogFrame} from '../workspace/parts/overlay/dialog-frame.tsx'
+import {useWorkbenchConfirm} from '../workspace/parts/overlay/confirm.tsx'
+import {ResourceError} from '../workspace/parts/feedback/resource-error.tsx'
 import {createRequestScope} from '../workspace/parts/request-scope.ts'
 import {useNavigationGuard} from '../workspace/parts/navigation-guard.ts'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
@@ -6,11 +11,11 @@ import type { Connection, WorkspaceBridge } from '../../shared/workbench.ts'
 import type { RedisValue } from '../../shared/redis-result.ts'
 import { RedisValueView as Value } from './value.tsx'
 import { formatValue } from '../workspace/parts/formatted-cell-value.ts'
-import { useDialog } from '../workspace/parts/dialog.ts'
-import { useDragResize } from '../workspace/parts/use-drag-resize.ts'
+import { useDragResize } from '../workspace/parts/hooks/use-drag-resize.ts'
 import { usePagedList } from '../workspace/parts/use-paged-list.ts'
 import { SearchTree, SearchTreeNode, SearchTreeSplit } from '../workspace/tree/search-tree.tsx'
 import { redisKeyMatches, redisScanMatch } from '../../shared/redis-scan-match.ts'
+import { displayBytes, parseBytes } from '../../shared/redis-bytes.ts'
 import { buildKeyTree, type KeyFolder } from './key-tree.ts'
 import { detailCard, detailRows, nextPage, rejectStringSave, rowSubmittable, stringFromDetail, tableColumns, viewKind, type KeyRow, type StringEncoding } from './key-model.ts'
 import { RedisKeyToolbar } from './key-toolbar.tsx'
@@ -48,10 +53,10 @@ function RedisKeyBranch({ folder, depth, active, onOpen }: { folder: KeyFolder; 
   const icon = <Folder size={12} className="db-search-tree-icon" />
   const keyIcon = <KeyRound size={12} className="db-search-tree-icon" />
   if (!folder.children.length && folder.key) {
-    return <SearchTreeNode text={folder.label} title={folder.key} depth={depth} selected={active === folder.key} icon={keyIcon} onSelect={() => onOpen(folder.key!)} />
+    return <SearchTreeNode text={folder.label} title={displayBytes(folder.key)} depth={depth} selected={active === folder.key} icon={keyIcon} onSelect={() => onOpen(folder.key!)} />
   }
   return <SearchTreeNode folder defaultOpen text={folder.label} depth={depth} icon={icon}>
-    {folder.key && <SearchTreeNode text={folder.label} title={folder.key} depth={depth + 1} selected={active === folder.key} icon={keyIcon} onSelect={() => onOpen(folder.key!)} />}
+    {folder.key && <SearchTreeNode text={folder.label} title={displayBytes(folder.key)} depth={depth + 1} selected={active === folder.key} icon={keyIcon} onSelect={() => onOpen(folder.key!)} />}
     {folder.children.map(child => <RedisKeyBranch key={child.path} folder={child} depth={depth + 1} active={active} onOpen={onOpen} />)}
   </SearchTreeNode>
 }
@@ -91,9 +96,9 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
   const writingRef = useRef(false)
   const createDialog = useRef<HTMLDivElement>(null)
   patternRef.current = pattern
-  useDialog(createDialog, () => { if (!writing) setCreating(false) }, creating)
+  const {confirm,confirmation}=useWorkbenchConfirm()
   const startTreeResize = useDragResize((start, next) => {
-    setTreeWidth(Math.min(480, Math.max(160, treeWidth + (next.clientX - start.clientX))))
+    setTreeWidth(Math.min(320, Math.max(180, treeWidth + (next.clientX - start.clientX))))
   })
   const loadKeys = async (cursor: string | undefined, signal: AbortSignal) => {
     if (!databaseRef.current) return { items: [], nextCursor: undefined }
@@ -106,7 +111,7 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
     for (let page = 0; page < (all ? SCAN_ALL_PAGES : 1); page++) {
       if (signal.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
       const result = await bridge.explorer(connection, 'list', { cursor: next, search: match, database: databaseRef.current }, signal)
-      items.push(...result.nodes.map(node => node.title).filter(name => redisKeyMatches(name, patternRef.current)))
+      items.push(...result.nodes.map(node => node.title).filter(name => redisKeyMatches(displayBytes(name), patternRef.current)))
       next = result.nextCursor || '0'
       if (next === '0') break
     }
@@ -183,9 +188,14 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
       if (readScope.current.isCurrent(ticket)) setDetailError(caught instanceof Error ? caught.message : '读取 Key 失败。')
     } finally {readScope.current.finish(ticket)}
   }
-  useNavigationGuard(bridge.conversationId || '', connection.id, !!draft?.dirty, () => window.confirm('Key 有未保存更改，确定离开？'))
-  const openKey = (name: string) => {
-    if (writingRef.current || (draft?.dirty && !window.confirm('Key 有未保存更改，确定切换？'))) return
+  useNavigationGuard(bridge.conversationId || '', connection.id, !!draft?.dirty, () => confirm({title:'放弃 Key 修改',body:'Key 有未保存更改，确定离开？',confirmLabel:'放弃修改'}))
+  const keyOwner=JSON.stringify([connection.id,connection.generation,database])
+  const currentKeyOwner=useRef(keyOwner);currentKeyOwner.current=keyOwner
+  const openKey = async (name: string) => {
+    if(writingRef.current)return
+    const previous=shownKey.current
+    if(draft?.dirty&&!await confirm({title:'切换 Key',body:'Key 有未保存更改，确定切换？',confirmLabel:'放弃并切换'}))return
+    if(writingRef.current||shownKey.current!==previous||currentKeyOwner.current!==keyOwner)return
     setDrawerOpen(false)
     shownKey.current = name
     setSelected(name)
@@ -199,7 +209,8 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
     setDetailError('')
     try {
       if (operation === 'rename') {
-        const next = String(extra.value || '').trim()
+        // 输入框里是展示串：\xNN 还原成字节，其余按 UTF-8 编码；\x00 等字节不应被 trim 掉。
+        const next = parseBytes(String(extra.value ?? ''))
         if (!next || next === name) return { ok: true as const }
         await redisKey({ key: name, operation: 'rename', value: next })
         shownKey.current = next
@@ -231,9 +242,11 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
   }
   const createKey = async () => {
     if (writingRef.current) return
-    const name = newName.trim()
+    // 先按文本 trim，再解析 \xNN：这样首尾空白约束保留，同时不破坏字节转义。
+    const name = parseBytes(newName.trim())
     if (!name) { setCreateError('请填写 Key。'); return }
-    if (newType === 'hash' && !newField.trim()) { setCreateError('请填写字段。'); return }
+    const fieldName = parseBytes(newField.trim())
+    if (newType === 'hash' && !fieldName) { setCreateError('请填写字段。'); return }
     if (newType !== 'string' && !newValue) { setCreateError('请填写初始值。'); return }
     writingRef.current = true
     setWriting(true)
@@ -241,7 +254,7 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
     setDetailError('')
     try {
       const operation = { string: 'set', hash: 'hset', list: 'lpush', set: 'sadd', zset: 'zadd' }[newType]
-      await redisKey({ key: name, operation, value: newValue, field: newField.trim(), score: Number(newScore) })
+      await redisKey({ key: name, operation, value: newValue, field: fieldName, score: Number(newScore) })
       setRemoved(previous => { const next = new Set(previous); next.delete(name); return next })
       setCreated(previous => previous.includes(name) ? previous : [...previous, name])
       onKeyChange?.({ operation: 'add', name })
@@ -254,10 +267,10 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
     finally { writingRef.current = false; setWriting(false) }
   }
   const copyText = async (text: string) => {
-    try { await navigator.clipboard.writeText(text) }
+    try { if(!await writeClipboard(text))throw new Error('复制失败') }
     catch { setDetailError('复制失败，请选中文字复制') }
   }
-  const names = [...new Set([...paged.items, ...created].filter(name => !removed.has(name) && redisKeyMatches(name, pattern)))]
+  const names = [...new Set([...paged.items, ...created].filter(name => !removed.has(name) && redisKeyMatches(displayBytes(name), pattern)))]
   const tree = buildKeyTree(names)
   const keyType = String(draft?.detail?.keyType || '')
   const kind = draft?.detail ? viewKind(keyType, draft.view) : undefined
@@ -335,18 +348,18 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
           <button className="db-redis-btn" type="button" disabled={paged.loading || !connection.live || !database || scanDone} title="连续 SCAN 直到本轮结束或达到上限。" onClick={() => void more(true)}>加载全部</button></>}>
         {names.length ? <>
           {tree.folders.map(folder => <RedisKeyBranch key={folder.path} folder={folder} depth={0} active={selected} onOpen={openKey} />)}
-          {tree.leaves.map(name => <SearchTreeNode key={name} text={name} title={name} selected={selected === name} icon={keyIcon} onSelect={() => openKey(name)} />)}
+          {tree.leaves.map(name => <SearchTreeNode key={name} text={displayBytes(name)} title={displayBytes(name)} selected={selected === name} icon={keyIcon} onSelect={() => openKey(name)} />)}
         </> : null}
       </SearchTree>}
       detail={<div className="db-redis-key-detail">
-        {detailError && <p className="db-error" role="alert">{detailError}</p>}
-        {draft && <RedisKeyToolbar key={draft.name} name={draft.name} keyType={draft.detail ? keyType : ''} ttl={ttl} operable={operable} canRefresh={live && !writing}
+        {detailError && <ResourceError message={detailError}/>}
+        {draft && <RedisKeyToolbar scopeIdentity={keyOwner} key={draft.name} name={draft.name} keyType={draft.detail ? keyType : ''} ttl={ttl} operable={operable} canRefresh={live && !writing}
           onRename={async next => (await edit(draft.name, 'rename', { value: next })).ok}
           onExpire={seconds => { void edit(draft.name, 'expire', { seconds }) }}
           onPersist={() => { void edit(draft.name, 'persist') }}
           onDelete={() => { void edit(draft.name, 'delete') }}
           onRefresh={() => { void read(draft.name, '0', 0, { bits: draft.view === 'bit' }) }}
-          onCopy={() => { void copyText(draft.name) }}
+          onCopy={() => { void copyText(displayBytes(draft.name)) }}
           onTtlError={setDetailError} />}
         {draft && <div className="db-redis-key-body">
           {!draft.detail && !detailError && <p className="db-muted db-redis-empty">正在读取 Key…</p>}
@@ -379,18 +392,18 @@ export function RedisOverview({ bridge, connection, refreshToken = 0, database =
         </div>}
         {!draft && <p className="db-muted db-redis-empty">{!database ? '在左侧选择数据库后显示 Key。' : (started ? '选择 Key 查看类型、TTL 和内容。' : '正在扫描 Key…')}</p>}
       </div>} />
-    {creating && <div className="db-overlay db-modal"><div ref={createDialog} className="db-dialog" role="dialog" aria-modal="true" aria-label="新建 Key">
-      <div className="db-dialog-heading"><h2>新建 Key</h2></div>
-      {createError && <p className="db-error" role="alert">{createError}</p>}
-      <label className="db-form-label">Key<input value={newName} onChange={event => setNewName(event.target.value)} /></label>
-      <label className="db-form-label">类型<select value={newType} onChange={event => setNewType(event.target.value as KeyKind)}><option value="string">String</option><option value="hash">Hash</option><option value="list">List</option><option value="set">Set</option><option value="zset">ZSet</option></select></label>
-      {newType === 'hash' && <label className="db-form-label">字段<input value={newField} onChange={event => setNewField(event.target.value)} /></label>}
-      {newType === 'zset' && <label className="db-form-label">分数<input value={newScore} onChange={event => setNewScore(event.target.value)} /></label>}
-      <label className="db-form-label">初始值<textarea className="db-redis-create-value" value={newValue} onChange={event => setNewValue(event.target.value)} /></label>
-      <div className="db-dialog-footer">
-        <button type="button" disabled={writing} onClick={() => setCreating(false)}>取消</button>
+    {creating && <DialogFrame title="新建 Key" close={()=>setCreating(false)} busy={writing} footer={      <>
+        <button type="button" className="db-btn" disabled={writing} onClick={() => setCreating(false)}>取消</button>
         <button type="button" className="db-primary" disabled={writing || !connection.live} onClick={() => void createKey()}>{writing ? '正在创建…' : '创建'}</button>
-      </div>
-    </div></div>}
+      </>}>
+      {createError && <ResourceError message={createError}/>}
+      <FormField label="Key"><input value={newName} onChange={event => setNewName(event.target.value)} /></FormField>
+      <FormField label="类型"><select value={newType} onChange={event => setNewType(event.target.value as KeyKind)}><option value="string">String</option><option value="hash">Hash</option><option value="list">List</option><option value="set">Set</option><option value="zset">ZSet</option></select></FormField>
+      {newType === 'hash' && <FormField label="字段"><input value={newField} onChange={event => setNewField(event.target.value)} /></FormField>}
+      {newType === 'zset' && <FormField label="分数"><input value={newScore} onChange={event => setNewScore(event.target.value)} /></FormField>}
+      <FormField label="初始值"><textarea className="db-redis-create-value" value={newValue} onChange={event => setNewValue(event.target.value)} /></FormField>
+
+    </DialogFrame>}
+    {confirmation}
   </>
 }

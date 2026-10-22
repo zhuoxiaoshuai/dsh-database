@@ -19,9 +19,10 @@ export function mergeKafkaNames(previous: KafkaNames, incoming: Partial<KafkaNam
 
 export function namesFromKafkaResult(value: unknown): Partial<KafkaNames> {
   if (!value || typeof value !== 'object') return {}
-  const result = value as { topics?: unknown; groups?: unknown; topic?: unknown; groupId?: unknown }
+  const result = value as { topics?: unknown; groups?: unknown; topic?: unknown; groupId?: unknown; associations?: unknown }
   return {
     topics: [...(Array.isArray(result.topics) ? result.topics.filter((item): item is string => typeof item === 'string') : []), ...(typeof result.topic === 'string' ? [result.topic] : [])],
-    groups: [...(Array.isArray(result.groups) ? result.groups.filter((item): item is string => typeof item === 'string') : []), ...(typeof result.groupId === 'string' ? [result.groupId] : [])],
+    groups: [...(Array.isArray(result.groups) ? result.groups.filter((item): item is string => typeof item === 'string') : []), ...(typeof result.groupId === 'string' ? [result.groupId] : []),
+      ...(Array.isArray(result.associations) ? result.associations.flatMap(item => item && typeof item.groupId === 'string' ? [item.groupId] : []) : [])],
   }
 }

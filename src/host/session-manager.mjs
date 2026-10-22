@@ -26,7 +26,7 @@ export function startIdleCatalogProbe(sessions, exclusive, busy, interval = 30_0
     probing = true
     void exclusive(async () => {
       if (!stopped && !busy()) await sessions.probeCatalog()
-    }).catch(() => { if (!stopped) sessions.markDegraded() }).finally(() => { probing = false })
+    }).catch(error => { if (!stopped) sessions.markDegraded(error) }).finally(() => { probing = false })
   }, interval)
   timer.unref()
   return () => { stopped = true; clearInterval(timer) }
@@ -50,7 +50,7 @@ export function createSessionManager({
   let catalog
   let catalogId = 0
   let health = 'connecting'
-  const setHealth = next => { if (health !== next) { health = next; onHealth?.(next) } }
+  const setHealth = (next, error) => { if (health !== next || error) { health = next; onHealth?.(next, error) } }
   let detachCatalog
   let closed = false
   let version = ''
@@ -77,7 +77,12 @@ export function createSessionManager({
     await destroyOne(conn)
   }
 
+  function assertIdentity(probed) {
+    if (identity && probed?.identity && JSON.stringify(identity) !== JSON.stringify(probed.identity)) throw Object.assign(new Error('数据库实例或账号身份发生变化，请重新连接。'), { category: 'configuration' })
+  }
+
   function adoptCatalog(conn, probed) {
+    assertIdentity(probed)
     catalog = conn
     detachCatalog = watchConnection?.(conn, () => {
       if (catalog !== conn || closed) return
@@ -112,19 +117,21 @@ export function createSessionManager({
     if (catalog) {
       try {
         const probed = await probe(catalog)
+        assertIdentity(probed)
         version = String(probed?.version || version || '').slice(0, 120)
         database = String(probed?.database || database || '').slice(0, 128)
         identity = probed?.identity
         setHealth('ready')
         return catalog
-      } catch {
+      } catch (error) {
         await destroyCatalog()
+        if (error?.category === 'configuration') throw error
       }
     }
     try {
       return await ensureCatalog()
     } catch (error) {
-      if (health !== 'offline') setHealth('degraded')
+      if (health !== 'offline') setHealth('degraded', error)
       throw error
     }
   }
@@ -186,6 +193,7 @@ export function createSessionManager({
         }
         if (recoveryPolicy.discardOnTimeout(error)) {
           await destroyCatalog()
+          setHealth('degraded', error)
           throw error
         }
         if (!fatal(error)) throw error
@@ -243,8 +251,8 @@ export function createSessionManager({
         throw error
       }
     },
-    markDegraded() {
-      if (health !== 'offline') setHealth('degraded')
+    markDegraded(error) {
+      if (health !== 'offline') setHealth('degraded', error)
       return health
     },
     async close() {

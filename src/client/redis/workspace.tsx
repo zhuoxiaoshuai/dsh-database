@@ -12,10 +12,10 @@ import type { StandardSourceBindings } from '../data-sources/types.ts'
 type Suggestion = 'loading' | 'partial' | 'complete' | 'failed'
 type EditorContext = { bridge: WorkspaceBridge; connection: Connection; database: string; keys: readonly string[]; onSuggestion(status: Suggestion): void }
 
-export function RedisQueryEditor({ value, onChange, onRun, editorContext }: { value: string; onChange(value: string): void; onRun(value: string): void; editorContext?: unknown }): React.ReactElement {
+export function RedisQueryEditor({ value, onChange, onRun, editorContext, disabled }: { value: string; onChange(value: string): void; onRun(value: string): void; editorContext?: unknown; disabled?: boolean }): React.ReactElement {
   const ctx = editorContext as EditorContext | undefined
   if (!ctx) throw new Error('Redis 命令编辑器缺少工作区上下文。')
-  return <RedisCommandEditor value={value} onChange={onChange} onRun={onRun} onCursorChange={() => {}} keys={ctx.keys}
+  return <RedisCommandEditor disabled={disabled} value={value} onChange={onChange} onRun={onRun} onCursorChange={() => {}} keys={ctx.keys}
     identity={`${ctx.connection.id}:${ctx.connection.generation ?? ''}:${ctx.database}`}
     onKeySuggestionStatus={ctx.onSuggestion}
     suggestKeys={async (prefix, signal) => {
@@ -65,7 +65,7 @@ export function useRedisBindings(bridge: WorkspaceBridge, connection: Connection
     editorContext: { bridge, connection, database: commandDatabase, keys, onSuggestion: (value: Suggestion) => { if (identityRef.current === identity) setSuggestion(value) } },
     overview: () => <RedisOverview bridge={bridge} connection={connection} refreshToken={refreshToken} database={selectedDatabase} onKeys={onKeys} onKeyChange={onKeyChange} />,
     Editor: RedisQueryEditor, Result: RedisResultView, hint: text => hintFor(text, suggestion),
-    queryFooter: setText => history.length > 0 ? <details className="db-redis-command-history"><summary>本页命令历史</summary>{history.map((item, index) => <button key={`${item}:${index}`} type="button" className="db-text-button" onClick={() => setText(item)}>{item.slice(0, 100)}</button>)}</details> : null,
+    queryFooter: setText => history.length > 0 ? <details className="db-redis-command-history"><summary>本页命令历史</summary>{history.map((item, index) => <button key={`${item}:${index}`} type="button" className="db-text-button" title={'原样回填；带 \\xNN 的参数按字节执行'} onClick={() => setText(item)}>{item.slice(0, 100)}</button>)}</details> : null,
     runText: async (text, signal) => {
         if (!bridge.executeText || !connection.live) throw new Error('请先连接 Redis。')
         const result = await bridge.executeText(connection, text, { database: commandDatabase }, signal)

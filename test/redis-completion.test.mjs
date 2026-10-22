@@ -64,8 +64,11 @@ test('cached and remote Key completion replaces only the active argument and rou
     const encoded = encodeRedisKey(key)
     assert.equal(parseRedisCommand(`GET ${encoded}`)[1], key)
   }
-  assert.equal(encodeRedisKey('\u0000bad'), null)
+  assert.equal(encodeRedisKey('\u0000bad'), '\\x00bad')
   assert.equal(encodeRedisKey('\ufffdbad'), null)
+  // 二进制 Key 补全后必须能被命令台还原成同样的字节
+  const binary = String.fromCharCode(0xac, 0xed, 0x00, 0x05) + 'java'
+  assert.equal(parseRedisCommand(`GET ${encodeRedisKey(binary)}`)[1], binary)
   assert.equal(redisCompletionAt('GET ', 4, true, ['space key'])?.options[0].apply, '"space key"')
 })
 

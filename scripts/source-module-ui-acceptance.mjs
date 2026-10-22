@@ -64,7 +64,7 @@ try {
   await page.getByRole('button', { name: '查询对象 item' }).click()
   await assert.rejects(page.evaluate(async () => window.fixture.host.executeText(window.fixture.connection, 'READ item', { unexpected: 'target' })))
   await page.getByRole('button', { name: '执行', exact: true }).first().click()
-  await page.getByText('模拟读取完成', { exact: true }).waitFor()
+  await page.locator('.db-tab-body:not([hidden])').getByText('模拟读取完成', { exact: true }).waitFor()
   const records = () => page.evaluate(async () => window.fixture.host.executions('execution-list', {}))
   assert.equal((await records()).items.length, 1, 'one manual operation creates one main record')
   await page.getByRole('tab', { name: 'AI Query' }).click()
@@ -76,7 +76,7 @@ try {
   const executed = await ai('READ item')
   assert.equal(executed.status, 200, JSON.stringify(executed.body))
   assert.ok(executed.body.executionId)
-  await page.getByLabel('模拟源操作').fill('READ other')
+  await page.locator('.db-tab-body:not([hidden])').getByLabel('模拟源操作').fill('READ other')
   await page.waitForFunction(async () => {
     const { host, connection } = window.fixture
     const body = await host.executions('execution-document-get', { id: connection.id, generation: connection.generation })
@@ -91,7 +91,7 @@ try {
   assert.equal((await ai('READ other')).status, 200, 'return-to-AI reuses the same document flow')
   await page.getByRole('tab', { name: '经验库' }).click()
   await page.getByLabel('标题').fill('模拟经验')
-  await page.getByLabel('模拟源操作').fill('READ item')
+  await page.locator('.db-tab-body:not([hidden])').getByLabel('模拟源操作').fill('READ item')
   await page.getByRole('button', { name: '保存', exact: true }).click()
   await page.getByText('模拟经验', { exact: true }).waitFor()
   const items = await page.evaluate(async () => window.fixture.host.templates('knowledge-search', { connectionId: window.fixture.connection.id, generation: window.fixture.connection.generation }))
@@ -99,14 +99,24 @@ try {
   assert.equal(items.items[0].sourceId, 'mock-source')
   assert.equal((await records()).items.length, 3, 'knowledge saving and rejected AI publication do not execute')
   await page.getByRole('button', { name: '试运行', exact: true }).click()
-  await page.getByText('模拟读取完成', { exact: true }).waitFor()
+  await page.locator('.db-tab-body:not([hidden])').getByText('模拟读取完成', { exact: true }).waitFor()
   assert.equal((await records()).items.length, 4, 'knowledge trial uses normal execution and one record')
   for (const width of [420, 768, 1200]) {
     await page.setViewportSize({ width, height: 760 })
     await page.getByRole('tab', { name: '查询', exact: true }).click()
-    await page.getByLabel('模拟源操作').fill('READ item')
+    // Wait for ResizeObserver to commit the production layout before choosing its edit tab.
+    await page.waitForFunction(() => {
+      const editor = document.querySelector('.db-tab-body:not([hidden]) textarea[aria-label="模拟源操作"]')
+      const split = editor?.closest('.db-sql-split')
+      if (!split?.clientWidth || !split.clientHeight) return false
+      const compact = split.clientWidth < 480 || split.clientHeight < 420
+      return split.parentElement?.classList.contains('is-compact-view') === compact
+    })
+    const editView = page.getByRole('tablist', { name: '编辑与结果', exact: true }).getByRole('tab', { name: '编辑', exact: true })
+    if (await editView.isVisible()) await editView.click()
+    await page.locator('.db-tab-body:not([hidden])').getByLabel('模拟源操作').fill('READ item')
     await page.getByRole('button', { name: '执行', exact: true }).first().click()
-    await page.getByText('模拟读取完成', { exact: true }).waitFor()
+    await page.locator('.db-tab-body:not([hidden])').getByText('模拟读取完成', { exact: true }).waitFor()
   }
   assert.deepEqual(errors, [])
   const report = { status: 'PASS', fixture: 'test-only-source', registrationOnly: true, checks: ['authenticated HTTP', 'invalid context rejected', 'real ConnectionService and Worker', 'public standard mount', 'single record', 'AI document and takeover/return', 'knowledge persistence without execution', 'knowledge trial with single record', '420/768/1200'], pageErrors: errors }

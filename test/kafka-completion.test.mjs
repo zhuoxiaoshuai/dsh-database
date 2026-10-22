@@ -11,7 +11,7 @@ const complete = (text, pos = text.length) => source(new CompletionContext(Edito
 
 test('Kafka completion follows JSON tokens and exact parameter positions', () => {
   for (const [text, labels] of [
-    ['', ['TOPICS', 'DESCRIBE', 'PEEK', 'GROUPS', 'GROUP', 'PRODUCE', 'PRODUCE_BATCH', 'TOMBSTONE', 'CREATE_TOPIC', 'SET_GROUP_OFFSETS', 'TOPIC_CONFIG', 'TIME_OFFSETS', 'SCAN']],
+    ['', ['TOPICS', 'TOPIC_GROUPS', 'DESCRIBE', 'PEEK', 'GROUPS', 'GROUP', 'PRODUCE', 'PRODUCE_BATCH', 'TOMBSTONE', 'CREATE_TOPIC', 'SET_GROUP_OFFSETS', 'TOPIC_CONFIG', 'TIME_OFFSETS', 'SCAN']],
     ['PEEK "with spaces" ', ['PARTITION']], ['PEEK "x" PARTITION ', []],
     ['PEEK "x" PARTITION 0 ', ['FROM']], ['PEEK "x" PARTITION 0 FROM ', ['BEGINNING', 'LATEST', 'OFFSET']],
     ['PEEK "x" PARTITION 0 FROM OFFSET ', []], ['PEEK "x" PARTITION 0 FROM OFFSET 1 ', ['LIMIT']],

@@ -25,12 +25,12 @@ export function useWorkspaceNavigation() {
     const closing = tabsRef.current.find(tab => tab.id === id)
     if (!closing) return
     if (config.current?.beforeClose && !await config.current.beforeClose(closing)) return
-    if (!tabsRef.current.includes(closing)) return
+    if (!tabsRef.current.some(tab => tab.id === id)) return
     config.current?.onClose?.(closing)
-    const next = tabsRef.current.filter(tab => tab.id !== id)
-    tabsRef.current = next
-    setTabs(next)
-    setActive(current => current === id ? next.at(-1)?.id || config.current?.fallback || '' : current)
+    const removed = tabsRef.current.filter(tab => tab.id !== id)
+    tabsRef.current = removed
+    setTabs(previous => previous.filter(tab => tab.id !== id))
+    setActive(current => current === id ? removed.at(-1)?.id || config.current?.fallback || '' : current)
   }, [])
   const configure = useCallback((next: NavigationConfig) => { config.current = next }, [])
   const initialize = useCallback(() => {

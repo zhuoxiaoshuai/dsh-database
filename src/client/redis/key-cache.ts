@@ -1,4 +1,5 @@
 import { encodeRedisKey } from './completion.ts'
+import { byteLengthOf } from '../../shared/redis-bytes.ts'
 
 const MAX_KEYS = 5000
 const MAX_BYTES = 1024 * 1024
@@ -7,10 +8,10 @@ const MAX_BYTES = 1024 * 1024
 export function mergeCachedKeys(previous: readonly string[], incoming: readonly string[]): string[] {
   const keys = [...previous]
   const seen = new Set(keys)
-  let bytes = keys.reduce((size, key) => size + new TextEncoder().encode(key).length, 0)
+  let bytes = keys.reduce((size, key) => size + byteLengthOf(key), 0)
   for (const key of incoming) {
     if (seen.has(key) || encodeRedisKey(key) === null) continue
-    const size = new TextEncoder().encode(key).length
+    const size = byteLengthOf(key)
     if (keys.length >= MAX_KEYS) break
     if (bytes + size > MAX_BYTES) continue
     keys.push(key); seen.add(key); bytes += size

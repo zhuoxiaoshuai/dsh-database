@@ -1,6 +1,7 @@
 import { classify, riskOf, unique, type TemplateRisk } from './data-sources/template-common.ts'
 import { parseTemplate as parseMysql } from './data-sources/mysql/template-parser.ts'
 import { parseTemplate as parseOracle } from './data-sources/oracle/template-parser.ts'
+import { splitStatements } from './query-policy.mjs'
 export type { TemplateRisk } from './data-sources/template-common.ts'
 
 export type DialectKind = 'mysql' | 'oracle'
@@ -87,9 +88,7 @@ function finishDraft(originalSql: string, dialect: DialectKind, parsed: Template
   const suggestedTags = unique([dialect, features.operation, ...features.tables, features.risk]).slice(0, 12)
   const suggestedSummary = features.parseOk
     ? `${features.operation.toUpperCase()}，涉及 ${features.tables.join(', ') || '未列出表'}；条件字段 ${features.conditionColumns.join(', ') || '无'}。`
-    : attempted
-      ? '未能完整解析语句结构，仅按原文保存，不会自动合并到已有模板。'
-      : ''
+    : ''
   return { originalSql, normalizedSql, fingerprint, features, suggestedTitle, suggestedTags, suggestedSummary }
 }
 
@@ -98,10 +97,38 @@ export function draftSqlExperience(sql: string, dialect: DialectKind): Normalize
   return finishDraft(clip(sql), dialect, undefined, false)
 }
 
+function combineParsed(parts: ParsedTemplateFeatures[]): TemplateFeatures {
+  if (parts.length === 1) return { ...parts[0], risk: riskOf(parts[0].operation), parseOk: true }
+  const operations = unique(parts.map(part => part.operation))
+  const operation = operations.length === 1 ? parts[0].operation : 'batch'
+  const risks = parts.map(part => riskOf(part.operation))
+  const risk: TemplateRisk = risks.includes('ddl') ? 'ddl' : risks.includes('dml') ? 'dml' : risks.includes('unknown') ? 'unknown' : 'readonly'
+  return {
+    operation,
+    tables: unique(parts.flatMap(part => part.tables)),
+    columns: unique(parts.flatMap(part => part.columns)),
+    conditionColumns: unique(parts.flatMap(part => part.conditionColumns)),
+    joins: unique(parts.flatMap(part => part.joins)),
+    aggregates: unique(parts.flatMap(part => part.aggregates)),
+    groupBy: unique(parts.flatMap(part => part.groupBy)),
+    orderBy: unique(parts.flatMap(part => part.orderBy)),
+    risk: operations.length === 1 ? riskOf(operation) : risk,
+    parseOk: true,
+  }
+}
+
 export async function normalizeSqlExperience(sql: string, dialect: DialectKind): Promise<NormalizedTemplate> {
   const originalSql = clip(sql)
   if (!originalSql) throw new Error('请输入要保存的 SQL。')
-  const raw = await templateParsers[dialect](originalSql)
-  const parsed: TemplateFeatures | undefined = raw ? { ...raw, risk: riskOf(raw.operation), parseOk: true } : undefined
+  const parts = splitStatements(originalSql, dialect)
+  const statements = parts.length ? parts : [originalSql]
+  const parsedParts: ParsedTemplateFeatures[] = []
+  let failed = false
+  for (const part of statements) {
+    const raw = await templateParsers[dialect](part)
+    if (raw) parsedParts.push(raw)
+    else failed = true
+  }
+  const parsed = parsedParts.length ? { ...combineParsed(parsedParts), parseOk: !failed } : undefined
   return finishDraft(originalSql, dialect, parsed, true)
 }

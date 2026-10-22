@@ -1,6 +1,9 @@
 import type { Dialect } from './workbench.ts'
 import { clientWorkspaceDescriptor } from './data-sources/registry.ts'
 
+/** 旧草稿把解析失败写进简介。它不是 SQL 说明，成功解析后要覆盖掉。 */
+export const UNPARSED_TEMPLATE_SUMMARY = '未能完整解析语句结构，仅按原文保存，不会自动合并到已有模板。'
+
 // 去除前导注释（-- 行注释 / # MySQL 行注释 / /* 块注释 */），用于语句类型预判。
 // 未闭合的块注释会原样返回，由 host 侧解析器报语法错误。
 export function isExplainSql(text: string): boolean {

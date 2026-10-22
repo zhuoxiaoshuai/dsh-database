@@ -10,7 +10,7 @@ export type TreePaneActions = {
   focusTree(next: TreeFocus): void
   highlight(name: string, kind: ObjectKind): void
   openObject(schema: string, table: string, kind: ObjectKind): void
-  openContextMenu(event: { clientX: number; clientY: number }, schema: string, table: string, kind: ObjectKind): void
+  openContextMenu(event: { clientX: number; clientY: number; currentTarget?: EventTarget | null }, schema: string, table: string, kind: ObjectKind): void
   refresh(): void
   openSql(sql?: string): void
   openNamed(kind: 'ai' | 'templates'): void

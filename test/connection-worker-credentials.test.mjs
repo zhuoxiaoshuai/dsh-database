@@ -15,6 +15,6 @@ test('session factories keep credentials after input.password is cleared', () =>
   assert.ok(block.includes('dialect.openCatalog(credentials)'))
   assert.ok(block.includes('dialect.openMaintenance(credentials)'))
   assert.ok(block.includes('dialect.probe(conn, credentials)'))
-  assert.ok(block.includes('createQueryPool: () => createDatabaseQueryPool(credentials)'))
+  assert.ok(block.includes('createQueryPool: () => createDatabaseQueryPool(credentials,'))
   assert.ok(worker.includes("input.password = ''"))
 })

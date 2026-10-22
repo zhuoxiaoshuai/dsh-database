@@ -40,6 +40,6 @@ test('Redis knowledge is connection-bound, versioned and rejects known credentia
   assert.equal(second.version, 2)
   assert.throws(() => store.publishKnowledge({ sourceId: 'redis', connectionId: 'a', text: 'AUTH user password' }), /凭据/)
   assert.throws(() => store.publishKnowledge({ sourceId: 'redis', connectionId: 'a', text: 'ACL SETUSER user >password' }), /凭据/)
-  store.archiveKnowledge('redis', first.id, 'a')
+  store.archiveKnowledge('redis', first.id, 'a', store.getKnowledge('redis', first.id, 'a').archiveGuard)
   assert.equal(store.searchKnowledge('redis', 'a').length, 0)
 })

@@ -161,11 +161,13 @@ test('remembered passwords are ciphertext only and can reopen a connection', asy
   const again = new ConnectionService(() => true, directory, workerUrl, memoryPasswordProtector)
   t.after(() => again.dispose())
   await again.restoreRemembered('owner-c')
+  const deadline = Date.now() + 3000
+  while (!again.list('owner-c').find(item => item.id === connected.id)?.live && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
   const restoredLive = again.list('owner-c').find(item => item.id === connected.id)
   assert.equal(restoredLive?.live, true)
 })
 
-test('reusing a live remembered login keeps the session and serializes concurrent updates', async t => {
+test('reusing a live remembered login keeps the session and rejects concurrent updates', async t => {
   const { directory, cleanup } = temporaryDirectory('database-saved-reuse-')
   t.after(cleanup)
   const workerUrl = new URL(pathToFileURL(join(process.cwd(), 'test/fixtures/database-worker.mjs')))
@@ -179,12 +181,9 @@ test('reusing a live remembered login keeps the session and serializes concurren
   assert.equal(renamed.name, '127.0.0.1:1521')
   assert.equal(renamed.generation, connected.generation)
   assert.equal(service.list('owner-a').find(item => item.id === connected.id)?.name, '127.0.0.1:1521')
-  const pair = await Promise.all([
-    service.update('owner-a', connected.id, { ...input, password: '', useSavedPassword: true, rememberPassword: true }),
-    service.update('owner-a', connected.id, { ...input, password: '', useSavedPassword: true, rememberPassword: true }),
-  ])
-  assert.equal(pair[0].generation, connected.generation)
-  assert.equal(pair[1].generation, connected.generation)
+  const first = service.update('owner-a', connected.id, { ...input, password: '', useSavedPassword: true, rememberPassword: true })
+  await assert.rejects(service.update('owner-a', connected.id, { ...input, password: '', useSavedPassword: true, rememberPassword: true }), error => error.code === 'connection_busy')
+  assert.equal((await first).generation, connected.generation)
 })
 
 test('workspace file in Desktop harness is used when DSH_HOME is empty', t => {

@@ -1,7 +1,7 @@
 import React, { useMemo, useRef } from 'react'
 import { Search, X } from 'lucide-react'
 import { schemaNameListed, type CatalogChild } from '../../../shared/workbench.ts'
-import { useBackdropDismiss, useDialog } from '../parts/dialog.ts'
+import {DialogFrame} from '../parts/overlay/dialog-frame.tsx'
 import type { CatalogFilterCopy } from './catalog-filter-copy.ts'
 
 export function VisibleCatalogDialog({
@@ -21,16 +21,8 @@ export function VisibleCatalogDialog({
   const names = useMemo(() => items.filter(item => item.id), [items])
   const needle = search.trim().toLocaleLowerCase()
   const filtered = needle ? names.filter(item => item.label.toLocaleLowerCase().includes(needle)) : names
-  const dialog = useRef<HTMLDivElement>(null)
-  useDialog(dialog, onClose, open)
-  const backdrop = useBackdropDismiss(onClose)
   if (!open) return null
-  return <div className="db-overlay db-modal" onMouseDown={backdrop.onMouseDown} onClick={backdrop.onClick}>
-    <div ref={dialog} className="db-dialog" role="dialog" aria-modal="true" aria-label={copy.ariaLabel} onClick={event => event.stopPropagation()}>
-      <div className="db-dialog-heading">
-        <h2>{copy.title}</h2>
-        <button type="button" className="db-icon-button" aria-label="关闭" onClick={onClose}><X size={18} /></button>
-      </div>
+  return <DialogFrame title={copy.title} ariaLabel={copy.ariaLabel} close={onClose} footer={names.length?<><button type="button" className="db-btn" onClick={()=>onDraft([])}>清空</button><button type="button" className="db-btn" onClick={onClose}>取消</button><button type="button" className="db-primary" onClick={onSave}>保存</button></>:<button type="button" className="db-primary" onClick={onClose}>关闭</button>}>
       <p className="db-muted">{copy.hint}</p>
       {names.length ? <>
         <div className="db-catalog-search">
@@ -55,15 +47,8 @@ export function VisibleCatalogDialog({
           })}
           {!filtered.length && <p className="db-muted">{copy.emptyMatch}</p>}
         </div>
-        <div className="db-dialog-footer">
-          <button type="button" onClick={() => onDraft([])}>清空</button>
-          <button type="button" onClick={onClose}>取消</button>
-          <button type="button" className="db-primary" onClick={onSave}>保存</button>
-        </div>
       </> : <>
         <p className="db-info-note">{copy.emptyList}</p>
-        <div className="db-dialog-footer"><button type="button" className="db-primary" onClick={onClose}>关闭</button></div>
       </>}
-    </div>
-  </div>
+  </DialogFrame>
 }

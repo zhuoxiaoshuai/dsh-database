@@ -173,6 +173,18 @@ try {
     await current.locator('.db-sql-result').waitFor()
     findings.push({ id: source + '-registered-ai-host-worker-event-hook-renderer', status: 'PASS', executionId: executed.executionId })
     await current.close()
+    if (source === 'redis' || source === 'kafka') {
+      const latest = executions.latestDisplay('owner', hostConnections[source].id)
+      assert.equal(latest.resultEnvelope.sourceId, source)
+      for (let i = 0; i < 90; i++) executions.emitWorkbench('owner', { type: 'EXECUTION_DOCUMENT_CHANGED', connectionId: hostConnections[source].id,
+        generation: hostConnections[source].generation, document: service.getExecutionDocument('owner', hostConnections[source].id) })
+      current = await page('chain-' + source)
+      await current.waitForFunction(id => window.probe.results?.current?.executionId === id, latest.executionId)
+      await current.locator('.db-sql-result').getByText(expected, { exact: true }).first().waitFor()
+      assert.deepEqual(await current.evaluate(() => window.probe.results.current.identity), latest.identity)
+      findings.push({ id: source + '-native-result-remount-after-event-eviction', status: 'PASS', executionId: latest.executionId })
+      await current.close()
+    }
   }
   for (const source of ['hook', 'redis']) {
   current = await page(source); await current.waitForFunction(() => window.probe.document.text === 'TOPICS')
@@ -203,7 +215,7 @@ try {
   await current.locator('td[data-row="0"][data-col="1"]').dblclick(); await current.getByLabel('编辑 value', { exact: true }).fill('changed'); await current.getByLabel('编辑 value', { exact: true }).press('Enter')
   await current.evaluate(() => { window.probe.holdPreview = true })
   await current.getByRole('button', { name: '保存修改', exact: true }).click()
-  await current.getByRole('button', { name: '确认', exact: true }).click()
+  await current.getByRole('button', { name: '提交修改', exact: true }).click()
   await current.waitForFunction(() => window.probe.releasePreview)
   await current.evaluate(() => window.probe.setSchema('other')); await current.waitForFunction(() => window.probe.schema === 'other')
   await current.evaluate(() => window.probe.releasePreview()); await current.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))); assert.equal(await current.evaluate(() => window.probe.writeCalls || 0), 0)

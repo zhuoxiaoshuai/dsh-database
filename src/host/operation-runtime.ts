@@ -2,6 +2,7 @@ import type { ExecutionStore } from './execution-store.ts'
 import { nativeErrorText } from './connect-error.mjs'
 import type { ExecutionType, DocumentExecutionIdentity } from '../shared/execution.ts'
 import type { Result } from '../shared/workbench.ts'
+import type { ExecutionResultEnvelope } from '../shared/execution-result.ts'
 
 export type OperationStatus = 'succeeded' | 'failed' | 'cancelled' | 'unknown'
 export type OperationLifecycle = { aborted: boolean; dispatched: boolean }
@@ -24,11 +25,13 @@ export interface OperationBinding {
   environment: string
 }
 export interface OperationOptions<T> {
+  onCreated?(executionId: string): void
   classifyInterruption?(error: unknown, lifecycle: OperationLifecycle): OperationStatus
   completedResultIsDefinitive?: boolean
   summarizeFailure?(error: unknown, lifecycle: OperationLifecycle, status: OperationStatus): string
   deferCheckPassed?: boolean
-  projectCompletion?(result: T): { message?: string; result?: Result; conclusion?: string }
+  projectCompletion?(result: T, status: OperationStatus): { message?: string; result?: Result; conclusion?: string; resultEnvelope?: ExecutionResultEnvelope }
+  recoverPartialResult?(error: unknown): T | undefined
   onFinished?(executionId: string | undefined, status: OperationStatus, result?: T, message?: string): void
 }
 
@@ -128,6 +131,7 @@ async function runLifecycle<T extends object>(executions: ExecutionStore | undef
       draft: metadata.draft, reason: metadata.reason, conclusion: metadata.conclusion })
     if (record) {
       executions?.attachAbort(record.executionId, controller)
+      options.onCreated?.(record.executionId)
       if (!options.deferCheckPassed) markChecked()
       executions?.transition(record.executionId, 'checking')
     }
@@ -136,9 +140,9 @@ async function runLifecycle<T extends object>(executions: ExecutionStore | undef
     const proposed = controller.signal.aborted && !options.completedResultIsDefinitive
       ? options.classifyInterruption?.(undefined, lifecycle()) || 'cancelled'
       : classifyResult?.(result) || 'succeeded'
-    const completion = options.projectCompletion?.(result)
+    const completion = options.projectCompletion?.(result, proposed)
     if (record) {
-      if (completion) executions?.complete(record.executionId, proposed, completion.message, completion.result, completion.conclusion)
+      if (completion) executions?.complete(record.executionId, proposed, completion.message, completion.result, completion.conclusion, completion.resultEnvelope)
       else executions?.complete(record.executionId, proposed, summarize(result))
     }
     const executionStatus = actualStatus(proposed)
@@ -148,14 +152,17 @@ async function runLifecycle<T extends object>(executions: ExecutionStore | undef
   } catch (error) {
     const failure = options.projectFailure?.(error, lifecycle())
     const proposed = failure?.status || options.classifyInterruption?.(error, lifecycle()) || (controller.signal.aborted ? 'cancelled' : 'failed')
+    const native = nativeErrorText(error, '')
     const message = failure?.message ?? options.summarizeFailure?.(error, lifecycle(), actualStatus(proposed))
-      ?? (proposed === 'unknown' ? '操作结果未知，请核验。' : nativeErrorText(error, '操作失败。'))
+      ?? (proposed === 'unknown' ? (native ? `${native} 操作结果未知，请核验。` : '操作结果未知，请核验。') : native || '操作失败。')
     if (record && failure?.event && !isTerminal()) executions?.event(record.executionId, failure.event, message)
     const receipt = error as { steps?: Result['steps']; batch?: Result[] } | undefined
     const partial = Array.isArray(receipt?.steps) ? { columns: [], rows: [], truncated: false, elapsedMs: 0, message, steps: receipt.steps, batch: receipt.batch } : undefined
-    if (record) executions?.complete(record.executionId, proposed, message, partial)
+    const sourcePartial = options.recoverPartialResult?.(error)
+    const completion = sourcePartial && options.projectCompletion?.(sourcePartial, actualStatus(proposed))
+    if (record) executions?.complete(record.executionId, proposed, message, partial || completion?.result, completion?.conclusion, completion?.resultEnvelope)
     const actualMessage = record && executions?.get?.(binding.owner, record.executionId)?.message
-    publishFinished(actualStatus(proposed), undefined, actualMessage || message)
+    publishFinished(actualStatus(proposed), sourcePartial, actualMessage || message)
     const rejected = failure?.error ?? error
     if (!dispatched && rejected && typeof rejected === 'object') Object.assign(rejected, { effect: (rejected as {effect?: string}).effect || 'none', phase: (rejected as {phase?: string}).phase || 'check' })
     if (rejected && typeof rejected === 'object') Object.assign(rejected, { executionId: record?.executionId, executionStatus: actualStatus(proposed) })

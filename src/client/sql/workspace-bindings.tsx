@@ -1,3 +1,4 @@
+import {copyText} from '../workspace/parts/feedback/clipboard.ts'
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { Plus } from 'lucide-react'
 import { ObjectWorkspace } from '../object-workspace.tsx'
@@ -13,7 +14,8 @@ import type { TreeFocus } from '../tree-focus.ts'
 import { refreshCatalogLayer } from '../schema/refresh.ts'
 import { catalogSchemaName, coerceVisibleSchemas, composeTableSelect, pickDefaultSchema, type CatalogResult, type ConnectionWorkbench, type SharedQuery } from '../../shared/workbench.ts'
 import { dialectCapabilities } from '../../shared/dialect-capabilities.ts'
-import { useDelayedClickDismiss } from '../workspace/parts/use-delayed-click-dismiss.ts'
+import {MenuSurface} from '../workspace/parts/overlay/menu.tsx'
+import type {MenuAnchor} from '../workspace/parts/overlay/floating-surface.tsx'
 import { isAbortError } from '../../shared/connection-errors.ts'
 import type { NavigationConfig } from '../workspace/source/workspace-navigation.ts'
 import type { StandardSourceBindings } from '../data-sources/types.ts'
@@ -69,7 +71,7 @@ export function useSqlWorkspaceBindings({
     const cached = sqlCacheRef.current.get(`${conversationId}:${connection.id}`) || []
     sqlCacheRef.current.set(`${conversationId}:${connection.id}`, [...cached.filter(item => item.id !== closing.id), { id: closing.id, name: closing.name, sql: closing.sql }])
   }
-  const [menu, setMenu] = useState<{ x: number; y: number; schema: string; name: string; objectKind: ObjectKind }>()
+  const [menu, setMenu] = useState<MenuAnchor & {schema:string;name:string;objectKind:ObjectKind}>()
   const [sqlSeq, setSqlSeq] = useState((connection.workbench?.queryTabs?.length || 0) + 1)
   const [status, setStatus] = useState<{ rows?: number; elapsedMs?: number; failed?: boolean; message?: string }>({})
   const collab = useExecutionDocument(host, connection)
@@ -146,7 +148,6 @@ export function useSqlWorkspaceBindings({
     collabSchemaSeen.current = qs
     if (qs !== schema) restoreSchema(qs)
   }, [active, collabQuery.schema, schema])
-  useDelayedClickDismiss(!!menu, () => setMenu(undefined))
 
   const loadTree = async (nextSchema: string, refresh = false, signal?: AbortSignal) => {
     const seq = ++treeSeq.current
@@ -251,7 +252,7 @@ export function useSqlWorkspaceBindings({
     if (templateId) setFocusTemplateId(templateId)
     openNamed({ id: 'templates', kind: 'templates' })
   }
-  const copyName = async (name: string) => { try { await navigator.clipboard.writeText(name) } catch { /* ignore */ } }
+  const copyName=async(name:string)=>setHint(await copyText(name)?'已复制':'复制失败，请选中文字复制')
   const activateSchema = (name: string) => {
     setSchema(name)
     const cached = cache.tablesSnapshot(connection, name)
@@ -266,7 +267,7 @@ export function useSqlWorkspaceBindings({
     openObject,
     openContextMenu: (event, schemaName, tableName, kind) => {
       activateSchema(schemaName)
-      setMenu({ x: event.clientX, y: event.clientY, schema: schemaName, name: tableName, objectKind: kind })
+      setMenu({element:event.currentTarget as HTMLElement,...(event.clientX||event.clientY?{x:event.clientX,y:event.clientY}:{}),schema:schemaName,name:tableName,objectKind:kind})
     },
     refresh: () => { void refreshCatalogLayer(cache, connection, schema ? { layer: 'database', schema } : { layer: 'connection' }).catch(() => {}) },
     openSql,
@@ -280,14 +281,13 @@ export function useSqlWorkspaceBindings({
       const tab = item as Tab
       return { id: tab.id, label: tab.kind === 'home' ? (folder === 'view' ? '视图' : '表') : tab.kind === 'object' ? objectTabLabel(tab) : tab.kind === 'sql' ? tab.name : tab.kind === 'ai' ? 'AI Query' : '经验库', closable: tab.kind !== 'home' }
     },
-    toolbar: <>
-      <button className="db-primary" disabled={!connection.live || !schema} aria-label="新建查询" onClick={() => openSql()}><Plus size={14} />新建查询</button>
-      <button aria-pressed={folder === 'table' && active === 'home'} onClick={() => showHomeFolder('table')}>表</button>
-      <button aria-pressed={folder === 'view' && active === 'home'} onClick={() => showHomeFolder('view')}>视图</button>
-      <button onClick={() => openNamed({ id: 'ai', kind: 'ai' })}>AI Query</button>
-      <button onClick={() => openNamed({ id: 'templates', kind: 'templates' })}>经验库</button>
-      <span className="db-session"><span className={`db-status-dot ${connection.live ? '' : 'is-off'}`} />{connection.health === 'degraded' ? '部分可用' : connection.health === 'connecting' ? '连接中' : connection.live ? '已连接' : '未连接'}</span>
-    </>,
+    taskActions: [
+      {id:'query',label:'新建查询',disabled:!connection.live || !schema,onOpen:()=>openSql()},
+      {id:'table',label:'表',onOpen:()=>showHomeFolder('table')},
+      {id:'view',label:'视图',onOpen:()=>showHomeFolder('view')},
+      {id:'ai',label:'AI Query',onOpen:()=>openNamed({id:'ai',kind:'ai'})},
+      {id:'templates',label:'经验库',onOpen:()=>openNamed({id:'templates',kind:'templates'})},
+    ],
     notice: <>      {hint && <p className="db-info-note" role="status">{hint}</p>}
       <AiActivityBanner items={queryBus.items} peer={queryBus.peer} onOpen={() => { openNamed({ id: 'ai', kind: 'ai' }); }} onViewPeer={id => {
         if (!connections.find(item => item.id === id)?.live) return
@@ -317,18 +317,18 @@ export function useSqlWorkspaceBindings({
           }
           if (draft.kind === 'ddl') setStructureDraft({ table: draft.table, executionId })
         }} />}
-        {tab.kind === 'templates' && <SqlTemplateLibrary embedded bridge={host} connection={connection} schema={schema} schemas={sqlSchemaNames} cache={cache} focusTemplateId={focusTemplateId} reloadKey={templateEpoch} onClose={() => closeTab('templates')} onApply={sql => openSql(sql)} onSaved={id => { setTemplateEpoch(n => n + 1); setFocusTemplateId(id) }} onSchemaChange={setSchema} />}
+        {tab.kind === 'templates' && <SqlTemplateLibrary embedded active={isActive} bridge={host} connection={connection} schema={schema} schemas={sqlSchemaNames} cache={cache} focusTemplateId={focusTemplateId} reloadKey={templateEpoch} onClose={() => closeTab('templates')} onApply={sql => openSql(sql)} onSaved={id => { setTemplateEpoch(n => n + 1); setFocusTemplateId(id) }} onSchemaChange={setSchema} />}
 </>
     },
     status: <> | {schema || '—'}{activeTab?.kind === 'object' ? ` | ${objectTabLabel(activeTab)}` : activeTab?.kind === 'sql' ? ` | ${activeTab.name}` : activeTab?.kind === 'home' ? ` | ${folder === 'view' ? '视图' : '表'}` : ''}{status.message ? ` | ${status.message}` : status.failed ? ' | 失败' : status.rows !== undefined ? ` | ${status.rows} 行` : ''}{status.message ? '' : status.elapsedMs !== undefined ? ` | ${status.elapsedMs}ms` : ''}</>,
-    extra: <>    {menu && <div className="db-dropdown db-context-menu" style={{ position: 'fixed', left: menu.x, top: menu.y }} role="menu" onClick={event => event.stopPropagation()}>
+    extra: <>    {menu && <MenuSurface anchor={menu} close={()=>setMenu(undefined)} label={`${menu.schema}.${menu.name} 操作`}>
       <button onClick={() => openObject(menu.schema, menu.name, menu.objectKind, 'data')}>打开数据</button>
       <button onClick={() => openObject(menu.schema, menu.name, menu.objectKind, 'columns')}>查看字段</button>
       {menu.objectKind === 'table' && <button onClick={() => openObject(menu.schema, menu.name, menu.objectKind, 'indexes')}>查看索引</button>}
       <button onClick={() => { openSql(`${composeTableSelect(connection.dialect, menu.schema, menu.name)};`); setMenu(undefined) }}>SQL查询</button>
       <button onClick={() => { void copyName(menu.name); setMenu(undefined) }}>复制表名</button>
       <button onClick={() => { void refreshCatalogLayer(cache, connection, menu ? { layer: 'table', schema: menu.schema, table: menu.name } : { layer: 'connection' }).catch(() => {}); setMenu(undefined) }}>刷新</button>
-    </div>}
+    </MenuSurface>}
     {structureDraft && <StructureForm bridge={host} connection={connection} schema={schema} table={structureDraft.table} metadata={structureDraft.metadata} executionId={structureDraft.executionId} onClose={() => setStructureDraft(undefined)} onChanged={() => setStructureDraft(undefined)} />}</>,
   } }
 }

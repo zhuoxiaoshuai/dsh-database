@@ -1,3 +1,5 @@
+import {usePanelSize} from './workspace/parts/hooks/use-panel-size.ts'
+import {DrawerBackdrop,DrawerClose} from './workspace/parts/layout/drawer-chrome.tsx'
 import React, { useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { AiCollabEditorPane, AiCollabRoot } from './ai-collab-pane.tsx'
@@ -5,14 +7,17 @@ import { PaneGutter, PANE_GUTTER } from './workspace/shell/pane-gutter.tsx'
 import { SaveExperienceDialog } from './save-experience-dialog.tsx'
 import { publishExperienceFromSql } from '../shared/publish-experience.ts'
 import { AiStepChain } from './ai-step-chain.tsx'
-import { useDragResize } from './workspace/parts/use-drag-resize.ts'
+import { useDragResize } from './workspace/parts/hooks/use-drag-resize.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { EXECUTION_STATUS_LABELS, executionChain, executionOutcomeSummary, executionReason, executionTitle, groupExecutionsByLocalDay, historyItemsForConnection, isDisplayHistoryExecution, isTerminalStatus, type DisplayResult, type ExecutionRecord } from '../shared/execution.ts'
 import { type Connection, type WorkspaceBridge } from '../shared/workbench.ts'
 import type { ExecutionDocumentController } from './workspace/source/use-execution-document.ts'
 import { activeExecution, useExecutionItems } from './ai-query-bus.ts'
 import { executionDetailSource } from './workspace/source/execution-details.tsx'
+import type { ExecutionResultEnvelope } from '../shared/execution-result.ts'
 import { previewJson } from './workspace/parts/preview-json.tsx'
+import { useDrawerFocus } from './workspace/parts/overlay/use-drawer-focus.ts'
+import { ResourceError } from './workspace/parts/feedback/resource-error.tsx'
 
 function visibleHistory(items: ExecutionRecord[], connection?: Connection): ExecutionRecord[] {
   const source = executionDetailSource(connection?.dialect)
@@ -35,7 +40,7 @@ function clockLabel(iso: string): string {
 function ExecutionRecordDrawer({
   record, connection, bridge, onOpenDraft, onWriteSql, onVerifyOriginal, onClose, actionsEnabled,
 }: {
-  record: ExecutionRecord & { result?: unknown; resultMissing?: boolean }
+  record: ExecutionRecord & { result?: unknown; resultEnvelope?: ExecutionResultEnvelope; resultMissing?: boolean }
   connection?: Connection
   bridge: WorkspaceBridge
   onOpenDraft?(draft: Draft, executionId: string): void
@@ -50,7 +55,7 @@ function ExecutionRecordDrawer({
   return <aside className="db-ai-drawer" aria-label="执行详情">
     <header className="db-ai-drawer-head">
       <strong>执行详情</strong>
-      <button type="button" className="db-icon-button" aria-label="关闭详情" onClick={onClose}><X size={16} /></button>
+      <DrawerClose label="关闭详情" close={onClose}/>
     </header>
     <div className="db-ai-drawer-body">
       <div className="db-ai-record-card">
@@ -71,9 +76,10 @@ function ExecutionRecordDrawer({
         </section>}
         {executionReason(record) && <section className="db-ai-record-section"><strong>原因</strong><p>{executionReason(record)}</p></section>}
         {executionDetailSource(record.dialect)?.renderText(record, onWriteSql) || <section className="db-ai-record-section"><strong>操作</strong><p>{record.operation}</p></section>}
-        {record.result != null && <section className="db-ai-record-section"><strong>结果预览</strong>{(() => {
+        {(record.resultEnvelope || record.result != null) && <section className="db-ai-record-section"><strong>结果预览</strong>{(() => {
           const source = executionDetailSource(record.dialect)
-          return source ? source.renderResult(source.resultEnvelope(record, record.result)) : previewJson(record.result)
+          const envelope = record.resultEnvelope || source?.resultEnvelope(record, record.result)
+          return source && envelope ? source.renderResult(envelope) : previewJson(record.resultEnvelope?.payload ?? record.result)
         })()}</section>}
         {record.resultMissing && <section className="db-ai-record-section"><p className="db-muted">结果预览未保留。</p></section>}
         <section className="db-ai-record-section"><strong>执行事件</strong><p className="db-catalog-source">{record.initiator === 'user' ? '用户' : 'AI'} · {elapsedLabel(record) || '—'} · callId {record.callId || '（无）'} · executionId {record.executionId}</p><ol>{record.events.map((event, i) => <li key={i}>{event.kind} · {event.elapsedMs} ms{event.message ? ` · ${event.message}` : ''}</li>)}</ol></section>
@@ -103,33 +109,29 @@ function AiExecutionChrome({
   extra?: React.ReactNode
 }): React.ReactElement {
   const [selected, setSelected] = useState<string>()
-  const [detail, setDetail] = useState<(ExecutionRecord & { result?: unknown; resultMissing?: boolean })>()
+  const [detail, setDetail] = useState<(ExecutionRecord & { result?: unknown; resultEnvelope?: ExecutionResultEnvelope; resultMissing?: boolean })>()
   const [drawerOpen, setDrawerOpen] = useState(false)
   const [collapsedDays, setCollapsedDays] = useState<Set<string>>(() => new Set())
-  const [listWidth, setListWidth] = useState(200)
+  const [listWidth, setListWidth] = useState(220)
   const [listCollapsed, setListCollapsed] = useState(false)
   const [detailWidth, setDetailWidth] = useState(320)
   const rootRef = useRef<HTMLDivElement>(null)
-  const [availableWidth, setAvailableWidth] = useState(0)
+  const {width:availableWidth}=usePanelSize(rootRef)
   const [historyDrawerOpen, setHistoryDrawerOpen] = useState(false)
-  const compact = availableWidth > 0 && availableWidth < listWidth + 540
+  const compact = availableWidth > 0 && availableWidth < 760
+  const overlayDetail = availableWidth > 0 && availableWidth < 1120
+  const historyRef = useRef<HTMLDivElement>(null), historyTrigger = useRef<HTMLButtonElement>(null)
+  const detailRef = useRef<HTMLDivElement>(null), detailTrigger = useRef<HTMLElement | null>(null)
+  useDrawerFocus(compact && historyDrawerOpen,historyRef,historyTrigger,()=>setHistoryDrawerOpen(false))
+  useDrawerFocus(overlayDetail && drawerOpen,detailRef,detailTrigger,()=>setDrawerOpen(false))
   const visibleListCollapsed = compact ? !historyDrawerOpen : listCollapsed
 
-  useEffect(() => {
-    const node = rootRef.current
-    if (!node) return
-    const measure = () => setAvailableWidth(node.clientWidth)
-    measure()
-    const observer = new ResizeObserver(measure)
-    observer.observe(node)
-    return () => observer.disconnect()
-  }, [])
   useEffect(() => {
     if (!compact) setHistoryDrawerOpen(false)
   }, [compact])
 
   const startListResize = useDragResize((start, next) => {
-    setListWidth(Math.min(520, Math.max(180, listWidth + (next.clientX - start.clientX))))
+    setListWidth(Math.min(320, Math.max(180, listWidth + (next.clientX - start.clientX))))
   })
 
   const startDetailResize = useDragResize((start, next) => {
@@ -144,7 +146,7 @@ function AiExecutionChrome({
     if (!selected || !bridge.executions) { setDetail(undefined); return }
     let alive = true
     void bridge.executions('execution-get', { executionId: selected }).then(value => {
-      if (alive) setDetail(value as unknown as ExecutionRecord & { result?: unknown; resultMissing?: boolean })
+      if (alive) setDetail(value as unknown as ExecutionRecord & { result?: unknown; resultEnvelope?: ExecutionResultEnvelope; resultMissing?: boolean })
     }).catch(() => { if (alive) setDetail(undefined) })
     return () => { alive = false }
   }, [bridge, selected, items])
@@ -160,24 +162,27 @@ function AiExecutionChrome({
     })
   }
   const current = listed.find(item => item.executionId === selected) || items.find(item => item.executionId === selected)
-  const detailCurrent: (ExecutionRecord & { result?: unknown; resultMissing?: boolean }) | undefined = current && detail?.executionId === selected ? { ...current, ...detail } : current || detail
+  const detailCurrent: (ExecutionRecord & { result?: unknown; resultEnvelope?: ExecutionResultEnvelope; resultMissing?: boolean }) | undefined = current && detail?.executionId === selected ? { ...current, ...detail } : current || detail
   const pick = (id: string) => {
     setSelected(id)
     onFocus?.(id)
   }
-  const openDetail = (id: string) => { pick(id); setDrawerOpen(true); setHistoryDrawerOpen(false) }
+  const openDetail = (id: string) => { detailTrigger.current=document.activeElement as HTMLElement; pick(id); setDrawerOpen(true); setHistoryDrawerOpen(false) }
 
-  const gridColumns = compact ? `${PANE_GUTTER}px minmax(0, 1fr)` : drawerOpen
+  const gridColumns = compact ? 'minmax(0,1fr)' : drawerOpen && !overlayDetail
     ? `${listCollapsed ? PANE_GUTTER : listWidth}px minmax(0, 1fr) 7px ${detailWidth}px`
     : `${listCollapsed ? PANE_GUTTER : listWidth}px minmax(0, 1fr)`
 
-  return <div ref={rootRef} className={`db-ai-executions${compact ? ' is-compact' : ''}`} hidden={hidden} aria-label={label} style={{ gridTemplateColumns: gridColumns }}>
-    <div className={`db-ai-list${visibleListCollapsed ? ' is-collapsed' : ''}${compact && historyDrawerOpen ? ' is-drawer' : ''}`}>
+  return <div ref={rootRef} className={`db-ai-executions${compact ? ' is-compact' : ''}${overlayDetail?' is-detail-overlay':''}`} hidden={hidden} aria-label={label} style={{ gridTemplateColumns: gridColumns }}>
+    {compact && <button ref={historyTrigger} type="button" className="db-text-button db-ai-history-trigger" aria-label="打开执行历史" aria-expanded={historyDrawerOpen} onClick={()=>setHistoryDrawerOpen(value=>!value)}>执行历史</button>}
+    {compact && historyDrawerOpen && <DrawerBackdrop label="关闭执行历史" close={()=>setHistoryDrawerOpen(false)}/>}
+    <div ref={historyRef} tabIndex={-1} className={`db-ai-list${visibleListCollapsed ? ' is-collapsed' : ''}${compact && historyDrawerOpen ? ' is-drawer' : ''}`}>
       {!visibleListCollapsed && <>
       <div className="db-ai-list-head">
         <strong>执行历史</strong>
       </div>
-      {error && <p className="db-error" role="alert">{error}</p>}
+      {compact && <DrawerClose label="关闭执行历史" close={()=>setHistoryDrawerOpen(false)}/>}
+      {error && <ResourceError message={error}/>}
       {!listed.length && <p className="db-info-note">{emptyNote}</p>}
       {dayGroups.map(group => {
         const open = !collapsedDays.has(group.dayKey)
@@ -209,7 +214,9 @@ function AiExecutionChrome({
     </div>
     <div className={`db-ai-detail${flushDetail ? ' is-flush' : ''}`}>{children}</div>
     {drawerOpen && <>
-      {!compact && <div className="db-ai-drawer-resizer" role="separator" aria-orientation="vertical" aria-label="拖拽调整详情宽度" onPointerDown={startDetailResize} />}
+      {!overlayDetail && <div className="db-ai-drawer-resizer" role="separator" aria-orientation="vertical" aria-label="拖拽调整详情宽度" onPointerDown={startDetailResize} />}
+      {overlayDetail && <DrawerBackdrop label="关闭执行详情" close={()=>setDrawerOpen(false)}/>}
+      <div ref={detailRef} tabIndex={-1} className="db-ai-detail-slot">
       {detailCurrent ? <ExecutionRecordDrawer
         record={detailCurrent}
         connection={connection}
@@ -219,7 +226,7 @@ function AiExecutionChrome({
         onVerifyOriginal={onVerifyOriginal}
         onClose={() => setDrawerOpen(false)}
         actionsEnabled={!!connection?.live}
-      /> : <aside className="db-ai-drawer"><p className="db-info-note">选择一条记录后查看详情。</p></aside>}
+      /> : <aside className="db-ai-drawer"><p className="db-info-note">选择一条记录后查看详情。</p></aside>}</div>
     </>}
     {extra}
   </div>

@@ -23,7 +23,7 @@ export const mockHostModule = {
   knowledge: { id: 'mock-source', dispatch(store, connectionId, body) {
     if (body.action === 'knowledge-search') return { items: store.searchKnowledge('mock-source', connectionId, body.query) }
     if (body.action === 'knowledge-publish') return store.publishKnowledge({ ...body, sourceId: 'mock-source', connectionId })
-    if (body.action === 'knowledge-archive') return store.archiveKnowledge('mock-source', body.id, connectionId)
+    if (body.action === 'knowledge-archive') return store.archiveKnowledge('mock-source', body.id, connectionId, body.archiveGuard)
     throw new Error('模拟源经验操作无效。')
   } },
   ai: { key: 'mock-source', register(ctx, service, _executions, validOwner) {

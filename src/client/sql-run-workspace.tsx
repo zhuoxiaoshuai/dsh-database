@@ -1,11 +1,12 @@
-import React from 'react'
-import { format } from 'sql-formatter'
+import React, { useRef, useState } from 'react'
 import { SqlEditor } from './editor.tsx'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { ExecutionWorkbench } from './workspace/source/execution-workbench.tsx'
 import type { Connection } from '../shared/workbench.ts'
-import { dialectCapabilities } from '../shared/dialect-capabilities.ts'
+import { prepareSqlFormat } from '../shared/sql-format.ts'
+import type { SqlEditorFormatRequest, SqlEditorHandle } from './sql/editor-format.ts'
 import { AiControlBar } from './workspace/source/ai-control-bar.tsx'
+import { ActionMenu } from './workspace/parts/overlay/action-menu.tsx'
 
 export type SqlQueryActions = {
   run: boolean
@@ -93,7 +94,7 @@ export function SqlRunWorkspace({
   runProgress?: string
   hasSelection?: boolean
   onCancel?(): void
-  onFormat?(): void
+  onFormat?(request: SqlEditorFormatRequest): Promise<void>
   onClear?(): void
   onSave?(): void
   onApply?(): void
@@ -119,12 +120,26 @@ export function SqlRunWorkspace({
   const runDisabled = busy || !connection.live || (canRun === false) || !sql.trim()
   const saveDisabled = busy || (canSave === false) || !sql.trim()
   const explainDisabled = busy || !connection.live || (canExplain === false) || !sql.trim()
+  const formatRef = useRef<SqlEditorHandle>(null)
+  const formatting = useRef<Promise<void>>()
+  const [formatSelection, setFormatSelection] = useState(false)
+  const [formatError, setFormatError] = useState('')
 
   const handleFormat = () => {
-    if (onFormat) { onFormat(); return }
-    try {
-      onChange(format(sql, { language: dialectCapabilities(connection.dialect).formatterLanguage }))
-    } catch { /* keep */ }
+    if (formatting.current) return
+    setFormatError('')
+    const task = (async () => {
+      const request = formatRef.current?.captureFormat()
+      if (!request) throw new Error('编辑器尚未就绪。')
+      if (request.range && !request.text.slice(request.range.from, request.range.to).trim()) return
+      if (onFormat) { await onFormat(request); return }
+      const result = prepareSqlFormat(request.text, connection.dialect, request.range)
+      if (result.text === request.text) return
+      request.apply(result)
+      onChange(result.text)
+    })().catch(error => setFormatError(error instanceof Error ? error.message : '格式化失败。'))
+    formatting.current = task
+    void task.finally(() => { if (formatting.current === task) formatting.current = undefined })
   }
   const handleClear = () => {
     if (onClear) { onClear(); return }
@@ -139,13 +154,16 @@ export function SqlRunWorkspace({
   const toolbar = <div className="db-catalog-tools db-sql-toolbar">
     {toolbarStart}
     {actions.run && <button type="button" className="db-sql-toolbar-btn db-primary" disabled={runDisabled} onClick={run}>{hasSelection ? '执行选中' : '运行'}</button>}
-    {actions.runAll && <button type="button" className="db-sql-toolbar-btn" disabled={runDisabled} onClick={() => onRunAll?.()}>运行全部</button>}
-    {actions.cancel && onCancel && <button type="button" className="db-sql-toolbar-btn" disabled={!busy} onClick={onCancel}>停止</button>}
-    {runProgress && <span className="db-muted db-sql-run-progress" role="status">{runProgress}</span>}
+    {actions.cancel && onCancel && busy && <button type="button" className="db-sql-toolbar-btn" onClick={onCancel}>停止</button>}
+    {actions.format && <button type="button" className="db-sql-toolbar-btn" disabled={busy} onClick={handleFormat}>{formatSelection ? '格式化选中' : '格式化全文'}</button>}
+    {formatError && <span className="db-error" role="alert">{formatError}</span>}
     {actions.explain && onExplain && <button type="button" className="db-sql-toolbar-btn" disabled={explainDisabled} onClick={() => onExplain()}>解释</button>}
-    {actions.save && onSave && <button type="button" className="db-sql-toolbar-btn" disabled={saveDisabled} onClick={onSave}>保存</button>}
-    {actions.format && <button type="button" className="db-sql-toolbar-btn" disabled={busy} onClick={handleFormat}>格式化</button>}
-    {actions.clear && <button type="button" className="db-sql-toolbar-btn" disabled={busy || !sql} onClick={handleClear}>清空</button>}
+    {runProgress && <span className="db-muted db-sql-run-progress" role="status">{runProgress}</span>}
+    <ActionMenu label="更多查询操作">
+      {actions.runAll && <button role="menuitem" type="button" disabled={runDisabled} onClick={() => onRunAll?.()}>运行全部</button>}
+      {actions.save && onSave && <button role="menuitem" type="button" disabled={saveDisabled} onClick={onSave}>保存</button>}
+      {actions.clear && <button role="menuitem" type="button" disabled={busy || !sql} onClick={handleClear}>清空</button>}
+    </ActionMenu>
     {actions.applyToQuery && onApply && <button type="button" className="db-sql-toolbar-btn" onClick={onApply}>复制到当前查询</button>}
     {toolbarExtra}
     {actions.ai && ai && <AiControlBar pending={ai.pending} controller={ai.controller} connectionName={ai.connectionName} target={ai.target} onTakeover={ai.onTakeover} onReturnAi={ai.onReturnAi} />}
@@ -155,7 +173,7 @@ export function SqlRunWorkspace({
     className={className}
     resultKey={resultKey}
     toolbar={toolbar}
-    editor={visible => <><div className="db-sql-editor"><SqlEditor value={sql} dialect={connection.dialect} schema={schema} connection={connection} cache={cache} visible={visible} onChange={onChange} onSelectionChange={onSelectionChange} onCursorChange={onCursorChange} onRun={(text, mode) => onRun?.(text, mode ?? (text?.trim() ? 'current' : 'all'))} onSave={onSave} /></div>{editorExtra}</>}
+    editor={visible => <><div className="db-sql-editor"><SqlEditor formatRef={formatRef} value={sql} dialect={connection.dialect} schema={schema} connection={connection} cache={cache} visible={visible} onChange={onChange} onSelectionChange={text => { setFormatSelection(text.length > 0); onSelectionChange?.(text) }} onCursorChange={onCursorChange} onRun={(text, mode) => onRun?.(text, mode ?? (text?.trim() ? 'current' : 'all'))} onSave={onSave} /></div>{editorExtra}</>}
     result={resultFrame}
     rail={railRun}
     resultOpen={controlledOpen}

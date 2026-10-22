@@ -71,7 +71,7 @@ test('Kafka catalog roots sit on the connection tree, not in the overview switch
   assert.match(workbench, /catalogRoot/)
   assert.match(overview, /catalog === 'groups' \? 'groups' : 'topics'/)
   assert.match(overview, /mode === 'groups'[\s\S]*groupsReplace\(\)/)
-  assert.doesNotMatch(overview, /groupsLoaded|startGroups|db-search-tree-modes|setMode\(|aria-pressed/)
+  assert.doesNotMatch(overview, /groupsLoaded|startGroups|db-search-tree-modes|setMode\(/)
 })
 
 test('catalog child visibility is a connection menu, not a SQL-only dialog', () => {

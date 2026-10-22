@@ -1,8 +1,10 @@
+import {useWorkbenchConfirm,type ConfirmOptions} from '../workspace/parts/overlay/confirm.tsx'
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { kafkaSource } from '../../shared/data-sources/kafka.ts'
 import { kafkaConnectionForm } from '../kafka/connection-fields.tsx'
 import { KafkaOverview } from '../kafka/overview.tsx'
 import { KafkaCommandEditor } from '../kafka/editor.tsx'
+import { KafkaQueryWorkspace } from '../kafka/query-workspace.tsx'
 import { KafkaResultView } from '../kafka/results.tsx'
 import { kafkaParameterHint } from '../kafka/completion.ts'
 import type { KafkaNames } from '../kafka/completion.ts'
@@ -18,7 +20,7 @@ const logo = { viewBox: '0 0 32 32', artwork: (
 
 const writeCommand = /^\s*(PRODUCE|PRODUCE_BATCH|TOMBSTONE|CREATE_TOPIC|SET_GROUP_OFFSETS)\s+/i
 
-function confirmPublish(text: string): boolean {
+function confirmPublish(text: string,confirm:(options:ConfirmOptions)=>Promise<boolean>): boolean|Promise<boolean> {
   const match = writeCommand.exec(text)
   if (!match) return true
   let detail = '目标待校验'
@@ -28,11 +30,19 @@ function confirmPublish(text: string): boolean {
     if (match[1].toUpperCase() === 'PRODUCE_BATCH') detail += ` / ${input.messages?.length || 0} 条`
     if (match[1].toUpperCase() === 'SET_GROUP_OFFSETS') detail += `\n旧位置 ${JSON.stringify(input.expected)}\n目标 ${input.offsets ? JSON.stringify(input.offsets) : `时间 ${input.timestamp}`}`
   } catch { /* Host validates the command. */ }
-  return window.confirm(`在 SIT 执行 ${match[1].toUpperCase()}：${detail}？\n写入结果未知时请先核对，勿直接重试。`)
+  return confirm({title:`确认 ${match[1].toUpperCase()}`,body:`在 SIT 执行 ${match[1].toUpperCase()}：${detail}？\n写入结果未知时请先核对，勿直接重试。`,confirmLabel:`执行 ${match[1].toUpperCase()}`,danger:true})
 }
 
-function useKafkaBindings({ host, connection, catalogRoot, refreshToken }: WorkspaceSourceContext): StandardSourceBindings {
+function useKafkaBindings({ host, connection, catalogRoot, refreshToken, onCatalogRoot }: WorkspaceSourceContext): StandardSourceBindings {
+  const {confirm,confirmation}=useWorkbenchConfirm()
   const identity = `${connection.id}\0${connection.generation || ''}`
+  const [jump, setJump] = useState<{ identity: string; groupId: string; topic: string; sequence: number }>()
+  const [returnTopic, setReturnTopic] = useState(false)
+  useEffect(() => { if (catalogRoot !== 'groups') setReturnTopic(false) }, [catalogRoot])
+  const jumpSequence = useRef(0)
+  const navigateGroup = (groupId: string, topic: string) => {
+    setJump({ identity, groupId, topic, sequence: ++jumpSequence.current }); setReturnTopic(true); onCatalogRoot?.('groups')
+  }
   const currentIdentity = useRef(identity)
   currentIdentity.current = identity
   const [cache, setCache] = useState<{ identity: string; names: KafkaNames }>({ identity, names: { topics: [], groups: [] } })
@@ -54,12 +64,17 @@ function useKafkaBindings({ host, connection, catalogRoot, refreshToken }: Works
     return <KafkaResultView {...props} snapshotScope={identity} canWrite={connection.environment === 'sit'} />
   }, [onNames, connection.environment])
   return { sourceName: 'Kafka', editorContext: names,
-    overview: onUse => <KafkaOverview bridge={host} connection={connection} catalog={catalogRoot === 'groups' ? 'groups' : 'topics'} refreshToken={refreshToken} onUse={onUse} onNames={onNames} />,
-    Editor: KafkaCommandEditor, Result, hint: kafkaParameterHint, confirmDocumentRun: confirmPublish,
-    runText: (text, signal) => {
+    overview: onUse => <>{(['topics','groups'] as const).map(mode => <div key={`${identity}:${mode}`} hidden={(catalogRoot === 'groups' ? 'groups' : 'topics') !== mode} style={{ display: (catalogRoot === 'groups' ? 'groups' : 'topics') === mode ? 'contents' : 'none' }}>
+      <KafkaOverview bridge={host} connection={connection} catalog={mode} active={(catalogRoot === 'groups' ? 'groups' : 'topics') === mode} refreshToken={refreshToken} onUse={onUse} onNames={onNames}
+        jump={mode === 'groups' && jump?.identity === identity ? jump : undefined} onNavigate={navigateGroup}
+        onReturn={mode === 'groups' && returnTopic && jump?.identity === identity ? () => { onCatalogRoot?.('topics'); setReturnTopic(false) } : undefined}/>
+    </div>)}</>,
+    Editor: KafkaCommandEditor, ManualQuery: KafkaQueryWorkspace, Result, hint: kafkaParameterHint, confirmDocumentRun:text=>confirmPublish(text,confirm), extra:confirmation,
+    runText: async (text, signal) => {
       if (!host.executeText) throw new Error('Kafka 执行通道不可用。')
       if (writeCommand.test(text) && connection.environment !== 'sit') throw new Error('Kafka 写操作仅在 SIT 开放。')
-      if (!confirmPublish(text)) throw new Error('已取消发布。')
+      if(!await confirmPublish(text,confirm))throw new Error('已取消发布。')
+      if(currentIdentity.current!==identity||signal?.aborted)throw new Error('执行目标已改变。')
       return host.executeText(connection, text, {}, signal)
     } }
 }

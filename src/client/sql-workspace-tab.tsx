@@ -5,7 +5,7 @@ import { SqlRunWorkspace } from './sql-run-workspace.tsx'
 import { SaveExperienceDialog } from './save-experience-dialog.tsx'
 import { publishExperienceFromSql } from '../shared/publish-experience.ts'
 import { isBinaryCell } from './data-grid.tsx'
-import { QueryResultFrame } from './workspace/source/query-result-frame.tsx'
+import { QueryResultFrame } from './workspace/parts/layout/query-result-frame.tsx'
 import { QueryResultGrid } from './query-result-grid.tsx'
 import { TableStructurePane } from './table-structure-pane.tsx'
 import { SqlToolbarSchemaTable } from './sql-toolbar-schema-table.tsx'
@@ -13,7 +13,9 @@ import { SqlToolbarTemplatePicker } from './sql-toolbar-template-picker.tsx'
 import { ConfirmWriteDialog } from './confirm-write-dialog.tsx'
 import { executeDmlOp, type DmlOp } from './execute-dml.ts'
 import { useGridSave } from './sql/use-grid-save.ts'
-import { ownsSqlRun, canReplaySqlRun, type SqlRunSnapshot } from './sql/run-snapshot.ts'
+import { useTabExecution } from './sql/use-tab-execution.ts'
+import { useQueryMaintenance } from './sql/use-query-maintenance.ts'
+import { canReplaySqlRun, type SqlRunSnapshot } from './sql/run-snapshot.ts'
 import type { SchemaCache } from './schema/schema-cache.ts'
 import { createSqlBatch, formatSqlBatchStatus, resultTabLabel, runSqlBatch, statementKindLabel, stepStatusLabel, resolveRunStatements, type SqlStep } from '../shared/sql-batch.ts'
 import { isWritableEnvironment, type Connection, type Result, type WorkspaceBridge } from '../shared/workbench.ts'
@@ -22,7 +24,6 @@ import { commitCellChange, rowKey as gridRowKey, selectedCellValue as gridSelect
 import { SQL_SPLIT_RATIO_DEFAULT } from './sql-pane-layout.ts'
 import { MaintenanceToggle } from './maintenance-toggle.tsx'
 import { ResultExportButtons } from './results.tsx'
-import { unavailableMaintenanceCapability, type MaintenanceCapability } from '../shared/maintenance-capability.ts'
 
 export function SqlWorkspaceTab({
   bridge, connection, schema, schemas, cache, initialSql, tabId, tabName, savedExperience, templateReloadKey, active = true, onStatus, onSql, onSavedExperience, onSavedToLibrary, onSchemaChange,
@@ -48,12 +49,9 @@ export function SqlWorkspaceTab({
   useEffect(() => { setSql(initialSql) }, [tabId])
   const [selection, setSelection] = useState('')
   const cursorRef = useRef(0)
-  const [busy, setBusy] = useState(false)
   const [pane, setPane] = useState<'result' | 'message'>('message')
-  const [steps, setSteps] = useState<SqlStep[]>([])
-  const [activeStep, setActiveStep] = useState(0)
   const [message, setMessage] = useState('')
-  const [resultOpen, setResultOpen] = useState(false)
+  const [resultOpen, setResultOpen] = useState(true)
   const [ratio, setRatio] = useState(SQL_SPLIT_RATIO_DEFAULT)
   const tabRef = useRef<HTMLDivElement>(null)
   const [picked, setPicked] = useState('')
@@ -63,13 +61,9 @@ export function SqlWorkspaceTab({
   const [saveBusy, setSaveBusy] = useState(false)
   const [saveSuccess, setSaveSuccess] = useState('')
   const [dirty, setDirty] = useState(!savedExperience)
-  const running = useRef<AbortController | null>(null)
   const onSqlRef = useRef(onSql)
   onSqlRef.current = onSql
   const writable = isWritableEnvironment(connection.environment)
-  const [maintenance, setMaintenance] = useState(false)
-  const [capability, setCapability] = useState<MaintenanceCapability>()
-  const [capabilityBusy, setCapabilityBusy] = useState(false)
   const [changed, setChanged] = useState<Record<string, Record<string, string | null>>>({})
   const [draftRows, setDraftRows] = useState<{ id: string; values: Record<string, string | null> }[]>([])
   const [editing, setEditing] = useState<{ row: number; col: number }>()
@@ -78,22 +72,13 @@ export function SqlWorkspaceTab({
   const { saving, confirmWrite, setConfirmWrite, saveOps, uncertainSave, unknownWrite } = gridSave
   const lastRun = useRef('')
   const verificationRead = useRef<{ sql: string; schema: string }>()
-  const runSeq = useRef(0)
-  const viewIdentity = JSON.stringify([connection.id, connection.generation, schema, tabId, active])
-  const viewRef = useRef(viewIdentity)
-  const capabilitySeq = useRef(0)
-  const [resultSnapshot, setResultSnapshot] = useState<SqlRunSnapshot>()
-  const snapshotRef = useRef<SqlRunSnapshot>()
-  if (viewRef.current !== viewIdentity) {
-    viewRef.current = viewIdentity; runSeq.current += 1; capabilitySeq.current += 1
-    running.current?.abort()
-  }
-  const mounted = useRef(true)
-  useEffect(() => { mounted.current = true; return () => { mounted.current = false; runSeq.current += 1 } }, [])
-  const ownsSnapshot = (snapshot?: SqlRunSnapshot): boolean => ownsSqlRun(snapshot, viewRef.current, runSeq.current, mounted.current)
-  const staleResult = !!resultSnapshot && !ownsSnapshot(resultSnapshot)
+  // A hidden tab keeps its execution identity until its target changes or it closes.
+  const viewIdentity = JSON.stringify([connection.id, connection.generation, schema, tabId])
+  const { busy, setBusy, steps, setSteps, activeStep, setActiveStep, running, runSeq, viewRef, mounted,
+    resultSnapshot, setResultSnapshot, snapshotRef, ownsSnapshot, staleResult, applyBatch } = useTabExecution(viewIdentity, onStatus)
+  const { maintenance, setMaintenance, capability, setCapability, capabilityBusy, detectEditable: checkEditable, invalidateCapability } = useQueryMaintenance(bridge, connection, viewIdentity, ownsSnapshot)
   useEffect(() => {
-    setMaintenance(false); setCapability(undefined); setCapabilityBusy(false); setBusy(false)
+    setBusy(false)
     setEditing(undefined); setConfirmWrite(false)
   }, [viewIdentity])
   const result = steps[activeStep]?.result
@@ -112,10 +97,6 @@ export function SqlWorkspaceTab({
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [active, sql, saveBusy])
-  useEffect(() => {
-    if (!active) running.current?.abort()
-    return () => { running.current?.abort() }
-  }, [active])
   const pickTable = (name: string) => {
     setPicked(name)
     setShowStructure(!!name)
@@ -125,37 +106,9 @@ export function SqlWorkspaceTab({
     if (!chunk) return
     setSql(prev => (prev.trim() ? `${prev.replace(/\s+$/, '')}\n${chunk}` : chunk))
   }
-  const detectEditable = async (runText: string, next: Result, target = schema, snapshot = snapshotRef.current) => {
-    if (!ownsSnapshot(snapshot)) return
-    const check = ++capabilitySeq.current
-    setCapabilityBusy(true)
-    try {
-      const value = await bridge.maintenance!(connection, { kind: 'capability', source: 'query', schema: target, sql: runText, resultColumns: next.columns })
-      if (!ownsSnapshot(snapshot) || check !== capabilitySeq.current) return
-      setCapability(value as MaintenanceCapability)
-    } catch (error) {
-      if (!ownsSnapshot(snapshot) || check !== capabilitySeq.current) return
-      setCapability(unavailableMaintenanceCapability('query', error instanceof Error ? error.message : '无法检查维护能力。'))
-    } finally {
-      if (ownsSnapshot(snapshot) && check === capabilitySeq.current) setCapabilityBusy(false)
-    }
-  }
+  const detectEditable = (text: string, result: Result, target = schema, snapshot = snapshotRef.current) => checkEditable(text, result, target, snapshot)
   const runSql = async (text: string, signal: AbortSignal, target = schema) => {
     return (bridge.executeManual || bridge.execute)({ ...connection, database: target }, text, signal)
-  }
-  const applyBatch = (next: SqlStep[], seq: number, current = 0) => {
-    if (seq !== runSeq.current) return
-    setSteps(next)
-    setActiveStep(Math.min(Math.max(0, current), Math.max(0, next.length - 1)))
-    const summary = formatSqlBatchStatus(next, next.some(step => step.status === 'running'))
-    const failed = next.some(step => step.status === 'failed')
-    const lastOk = [...next].reverse().find(step => step.status === 'ok')
-    onStatus({
-      rows: lastOk?.result?.affectedRows ?? lastOk?.result?.rows.length,
-      elapsedMs: next.reduce((sum, step) => sum + (step.result?.elapsedMs ?? 0), 0),
-      failed,
-      message: summary,
-    })
   }
   const runBatch = async (nextSteps: SqlStep[], opts?: { from?: number; only?: number; explain?: boolean; target?: string; verifyUnknown?: boolean }) => {
     if (!nextSteps.length) return
@@ -167,7 +120,7 @@ export function SqlWorkspaceTab({
     const controller = new AbortController(); running.current = controller
     const seq = ++runSeq.current
     const snapshot = { identity: viewRef.current, schema: target, seq, connectionId: connection.id, generation: connection.generation, statements: nextSteps.map(step => step.sql) }
-    snapshotRef.current = snapshot; setResultSnapshot(snapshot); capabilitySeq.current += 1
+    snapshotRef.current = snapshot; setResultSnapshot(snapshot); invalidateCapability()
     setBusy(true)
     setSteps(nextSteps)
     setActiveStep(opts?.only ?? opts?.from ?? 0)

@@ -1,3 +1,5 @@
+import { validExecutionReply, validSteps } from './execution-reply.ts'
+import { executeKnowledgeRequest } from './knowledge-sql-request.ts'
 import type { CatalogResult, Connection, ConnectionTest, ConnectionWorkbench, DatabaseWorkspaceSnapshot, MaintenanceResult, Result, WorkspaceBridge } from '../shared/workbench.ts'
 import { ConnectionRequestError, inferConnectionErrorCode, transportRequestError } from '../shared/connection-errors.ts'
 import { DEFAULT_QUERY_PAGE_SIZE } from '../shared/limits.ts'
@@ -24,8 +26,17 @@ export function connectionBridge(conversationId: string, base: WorkspaceBridge, 
     if (!response.ok) {
       const trustedReceipt = typeof value.error === 'string' && ['none', 'unknown', 'committed'].includes(value.effect || '')
         && ['check', 'execute', 'commit', 'receipt'].includes(value.phase || '') && validSteps(value.steps)
-      if (executing && !trustedReceipt) throw transportRequestError('HTTP 错误缺少可信执行回执，请求结果未知。', connectionId, 'response')
-      const message = value.error
+      const reported = typeof value.error === 'string' ? value.error.trim() : ''
+      if (executing && !trustedReceipt) {
+        if (!reported) throw transportRequestError('HTTP 错误缺少可信执行回执，请求结果未知。', connectionId, 'response')
+        const code = value.code || inferConnectionErrorCode(reported)
+        throw Object.assign(new ConnectionRequestError(reported, code, connectionId), {
+          trustedReceipt: false, requestPhase: 'response', effect: 'unknown', phase: 'receipt', category: value.category, databaseCode: value.databaseCode,
+          executionId: value.executionId, executionStatus: value.status, generation: value.generation, schema: value.schema, context: value.context,
+          documentText: value.documentText, executedSql: value.executedSql, queryRevision: value.queryRevision, initiator: value.initiator,
+        })
+      }
+      const message = reported
         || (response.status === 401 || response.status === 403 ? '需要通过 DSH 认证访问，请刷新工作台。' : '')
         || (response.status === 404 ? '当前对话已失效，请刷新工作台。' : '')
         || `连接服务不可用（${response.status}），请刷新工作台。`
@@ -42,6 +53,9 @@ export function connectionBridge(conversationId: string, base: WorkspaceBridge, 
     request({ action, id: connection.id, generation: connection.generation, input }, signal)
   return { ...base, conversationId,
     sourceRequest,
+    executeKnowledge: (connection, sql, options) => connection.live
+      ? executeKnowledgeRequest(endpoint, request, connection, sql, options)
+      : (base.executeManual || base.execute)(connection, sql, options.stopSignal),
     executeText: (connection, text, context = {}, signal) => sourceRequest(connection, 'source-execute', { text, context }, signal),
     explorer: (connection, action, input, signal) => sourceRequest(connection, action === 'list' ? 'explorer-list' : 'explorer-read', input, signal) as Promise<any>,
     catalog: (connection, input, signal) => sourceRequest(connection, 'catalog', input, signal) as Promise<CatalogResult>,
@@ -53,7 +67,25 @@ export function connectionBridge(conversationId: string, base: WorkspaceBridge, 
     executeManual: (connection, sql, signal) => connection.live
       ? sourceRequest(connection, 'manual-query', { sql, schema: connection.database, limit: DEFAULT_QUERY_PAGE_SIZE }, signal) as Promise<Result>
       : (base.executeManual || base.execute)(connection, sql, signal),
-    testConnection: (input, id) => request({ action: 'test', input, ...(id ? { id } : {}) }) as Promise<ConnectionTest>,
+    testConnection: (input, id, signal) => request({ action: 'test', input, ...(id ? { id } : {}) }, signal) as Promise<ConnectionTest>,
+    startConnection: async (input, operationId, id) => {
+      try {
+        const reply = await request({ action: 'connection-start', input, operationId, ...(id ? { id } : {}) }) as import('../shared/connection-lifecycle.ts').ConnectionStart
+        if (typeof reply.connectionId !== 'string' || !reply.connectionId || reply.operationId !== operationId) throw transportRequestError('缺少可信的连接接受回执，请核对连接状态。', id, 'response')
+        return reply
+      }
+      catch (error) {
+        if ((error as { requestPhase?: string }).requestPhase !== 'fetch' && (error as { effect?: string }).effect !== 'unknown') throw error
+        // A lost acceptance response must not create a second attempt/profile.
+        try {
+          const snapshot = await request() as DatabaseWorkspaceSnapshot
+          const accepted = snapshot.connections.find(row => row.lifecycle?.operationId === operationId)
+          if (accepted) return { connectionId: accepted.id, operationId }
+        } catch { /* Keep the nonce for reconciliation after an uncertain acceptance. */ }
+        throw Object.assign(error as Error, { acceptanceUnknown: true })
+      }
+    },
+    cancelConnection: async (id, operationId) => { await request({ action: 'connection-cancel', id, operationId }) },
     connect: input => request({ action: 'connect', input }) as Promise<Connection>,
     updateConnection: (id, input) => request({ action: 'update', id, input }) as Promise<Connection>,
     duplicateConnection: id => request({ action: 'duplicate', id }) as Promise<Connection>,
@@ -66,26 +98,4 @@ export function connectionBridge(conversationId: string, base: WorkspaceBridge, 
     executions: (action, body, signal) => request({ action, ...body }, signal),
     templates: (action, body, signal) => request({ action, ...body }, signal),
   }
-}
-
-function validExecutionReply(value: object, action?: string): boolean {
-  const reply = value as Record<string, unknown>
-  const sql = Array.isArray(reply.columns) && reply.columns.every(item => typeof item === 'string')
-    && Array.isArray(reply.rows) && reply.rows.every(row => Array.isArray(row))
-    && typeof reply.truncated === 'boolean' && typeof reply.elapsedMs === 'number'
-  const payload = !!reply.result && typeof reply.result === 'object' && !Array.isArray(reply.result)
-    || action === 'source-execute' && typeof reply.kind === 'string'
-  return validSteps(reply.steps) && (sql || payload && typeof reply.executionId === 'string' && ['succeeded', 'failed', 'unknown', 'cancelled'].includes(String(reply.executionStatus ?? reply.status)))
-}
-
-function validSteps(value: unknown): boolean {
-  if (value === undefined) return true
-  if (!Array.isArray(value)) return false
-  const indexes = new Set<number>()
-  return value.every(step => {
-    if (!step || typeof step !== 'object' || !Number.isSafeInteger(step.index) || step.index < 0 || indexes.has(step.index)
-      || typeof step.sql !== 'string' || !['succeeded', 'failed', 'unknown', 'not-run'].includes(step.status)
-      || step.affectedRows !== undefined && (typeof step.affectedRows !== 'number' || !Number.isFinite(step.affectedRows))) return false
-    indexes.add(step.index); return true
-  })
 }

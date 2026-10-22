@@ -1,7 +1,7 @@
 import type { Connection, Dialect, SqlDialect } from '../shared/workbench.ts'
 
 /** Which tool family a call may bind to. SQL covers MySQL and Oracle. */
-export type AiConnectionFamily = 'sql' | 'redis' | 'kafka'
+export type AiConnectionFamily = 'sql' | 'redis' | 'kafka' | 'nacos'
 
 export interface AiConnectionSummary {
   connectionId: string
@@ -31,6 +31,7 @@ const STATUS_TOOL: Record<AiConnectionFamily, string> = {
   sql: 'database_status',
   redis: 'redis_status',
   kafka: 'kafka_status',
+  nacos: 'nacos_status',
 }
 
 function inFamily(connection: Connection, family: AiConnectionFamily): boolean {
@@ -39,9 +40,16 @@ function inFamily(connection: Connection, family: AiConnectionFamily): boolean {
 }
 
 function familyLabel(family: AiConnectionFamily): string {
-  if (family === 'sql') return 'SQL'
-  if (family === 'redis') return 'Redis'
-  return 'Kafka'
+  switch (family) {
+    case 'sql': return 'SQL'
+    case 'redis': return 'Redis'
+    case 'kafka': return 'Kafka'
+    case 'nacos': return 'Nacos'
+    default: {
+      const unreachable: never = family
+      return unreachable
+    }
+  }
 }
 
 export function aiConnectionHeal(family: AiConnectionFamily, error: string, connections: readonly AiConnectionSummary[]): AiConnectionHeal {
@@ -63,7 +71,8 @@ function summaries(connections: readonly Connection[]): AiConnectionSummary[] {
 
 /**
  * Bind a tool call to one live connection.
- * A missing id is filled only when that family has exactly one live connection.
+ * A missing id uses lastActiveId when that connection is live in this family.
+ * Otherwise it is filled only when the family has exactly one live connection.
  * A missing generation uses the connection's current one. A stale generation is
  * never replaced; the caller gets the live list instead.
  */
@@ -74,6 +83,8 @@ export function resolveAiConnection<F extends AiConnectionFamily, Live extends b
   generation: unknown
   /** Templates may target a saved connection that is not logged in. Default true. */
   requireLive?: Live
+  /** Used only when connectionId is omitted. Ignored when it is not a live connection in this family. */
+  lastActiveId?: unknown
 }): AiConnectionResolved<F, Live> {
   const requireLive = input.requireLive !== false
   const familyAll = input.connections.filter(item => inFamily(item, input.family))
@@ -91,6 +102,12 @@ export function resolveAiConnection<F extends AiConnectionFamily, Live extends b
   }
 
   if (id === undefined) {
+    const activeId = typeof input.lastActiveId === 'string' && input.lastActiveId !== '' ? input.lastActiveId : undefined
+    const active = activeId === undefined ? undefined : live.find(item => item.id === activeId)
+    if (active !== undefined) {
+      if (generation !== undefined && active.generation !== generation) return reject('generation 已过期。')
+      return accept(active)
+    }
     if (live.length === 1) {
       const only = live[0]
       if (only === undefined) return reject('请先连接。')

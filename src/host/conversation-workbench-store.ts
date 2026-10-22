@@ -7,6 +7,8 @@ import { redisCommandTextMayContainCredential } from '../shared/redis-command.ts
 
 export type ConversationLayout = {
   workbenches: Record<string, ConnectionWorkbench>
+  /** Undefined means legacy layout; null records an explicitly empty selection. */
+  lastActiveId?: string | null
 }
 
 const MAX_CACHED_SESSIONS = 200
@@ -59,7 +61,7 @@ export class ConversationWorkbenchStore {
       return structuredClone(empty)
     }
     try {
-      const parsed = JSON.parse(readFileSync(path, 'utf8')) as { version?: number; workbenches?: unknown }
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as { version?: number; workbenches?: unknown; lastActiveId?: unknown }
       if (parsed.version !== 1 && parsed.version !== 2) throw new Error()
       if (parsed.version === 1 && !existsSync(`${path}.v1.bak`)) copyFileSync(path, `${path}.v1.bak`)
       const workbenches: Record<string, ConnectionWorkbench> = {}
@@ -74,6 +76,7 @@ export class ConversationWorkbenchStore {
         }
       }
       const layout: ConversationLayout = { workbenches }
+      if (Object.hasOwn(parsed, 'lastActiveId')) layout.lastActiveId = typeof parsed.lastActiveId === 'string' ? parsed.lastActiveId.slice(0, 160) : null
       this.remember(owner, layout)
       return structuredClone(layout)
     } catch {
@@ -97,7 +100,8 @@ export class ConversationWorkbenchStore {
       try { const previous = JSON.parse(readFileSync(path, 'utf8')); if (previous.version === 1) copyFileSync(path, `${path}.v1.bak`) }
       catch { if (!existsSync(`${path}.corrupt.bak`)) copyFileSync(path, `${path}.corrupt.bak`) }
     }
-    try { writeJsonFile(path, { version: 2, workbenches }); this.storageDegraded = false }
+    const lastActiveId = layout.lastActiveId && knownIds.has(layout.lastActiveId) ? layout.lastActiveId : null
+    try { writeJsonFile(path, { version: 2, workbenches, ...(layout.lastActiveId !== undefined ? { lastActiveId } : {}) }); this.storageDegraded = false }
     catch (error) { this.storageDegraded = true; throw error }
     // 调用方不能通过引用修改权威缓存。
     this.remember(owner, layout)

@@ -134,6 +134,10 @@ try {
   await service.dispose()
   service = new ConnectionService(() => true, root, undefined, memoryPasswordProtector)
   await service.restoreRemembered('owner')
+  const restoreDeadline = Date.now() + 15000
+  while (!service.list('owner').some(item => item.id === saved.id && item.live) && Date.now() < restoreDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
   if (!service.list('owner').some(item => item.id === saved.id && item.live)) throw new Error('Kafka SCRAM 保存连接恢复异常。')
   const acl = async args => docker(['exec', id, '/opt/kafka/bin/kafka-acls.sh', '--bootstrap-server', 'localhost:9096', ...args])
   const deniedGroup = ['--deny-principal', 'User:reader', '--operation', 'READ', '--group', 'dsh-peek-', '--resource-pattern-type', 'prefixed']

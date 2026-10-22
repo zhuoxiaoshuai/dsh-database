@@ -1,7 +1,11 @@
+import {MenuSurface} from './workspace/parts/overlay/menu.tsx'
+import type {MenuAnchor} from './workspace/parts/overlay/floating-surface.tsx'
+import {copyText} from './workspace/parts/feedback/clipboard.ts'
 import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { ResourceError } from './workspace/parts/feedback/resource-error.tsx'
 import { isBinaryCell, type DataGridHandle } from './data-grid.tsx'
 import { UnknownGridNotice } from './sql/unknown-grid-notice.tsx'
-import { QueryResultFrame } from './workspace/source/query-result-frame.tsx'
+import { QueryResultFrame } from './workspace/parts/layout/query-result-frame.tsx'
 import { QueryResultGrid } from './query-result-grid.tsx'
 import { ConfirmWriteDialog } from './confirm-write-dialog.tsx'
 import { executeDmlOp, type DmlOp } from './execute-dml.ts'
@@ -40,6 +44,7 @@ export function ObjectWorkspace({
   const [metaBusy, setMetaBusy] = useState(false)
   const [error, setError] = useState('')
   const [hint, setHint] = useState('')
+  const [fieldMenu,setFieldMenu]=useState<MenuAnchor&{name:string}>()
   const [maintenance, setMaintenance] = useState(false)
   const [capability, setCapability] = useState<MaintenanceCapability>()
   const [capabilityBusy, setCapabilityBusy] = useState(false)
@@ -51,7 +56,9 @@ export function ObjectWorkspace({
   const [dataPane, setDataPane] = useState<'result' | 'message'>('result')
   const running = useRef<AbortController | null>(null)
   const requestSequence = useRef(0)
-  const viewIdentity = JSON.stringify([connection.id, connection.generation, schema, table, active])
+  // Visibility changes do not change the owner of a result or an in-flight read.
+  const viewIdentity = JSON.stringify([connection.id, connection.generation, schema, table])
+  const autoLoadIdentity = useRef<string>()
   const viewRef = useRef(viewIdentity)
   const viewEpoch = useRef(0)
   const mounted = useRef(true)
@@ -166,13 +173,15 @@ export function ObjectWorkspace({
     return () => { alive = false }
   }, [active, bridge, capabilityEpoch, connection, detail, schema, table])
   useEffect(() => {
-    if (!active || !connection.live) {
-      running.current?.abort()
-      return
-    }
+    // Load on first activation of a target; later activations reuse its snapshot.
+    if (!active || !connection.live || autoLoadIdentity.current === viewIdentity) return
+    autoLoadIdentity.current = viewIdentity
     void loadData()
-    return () => running.current?.abort()
   }, [active, connection.id, connection.generation, connection.live, schema, table])
+  useEffect(() => {
+    if (!connection.live) running.current?.abort()
+    return () => running.current?.abort()
+  }, [connection.id, connection.generation, connection.live, schema, table])
   useEffect(() => {
     if (!active || !connection.live) return
     if (sub === 'indexes') void loadIndexes()
@@ -194,7 +203,7 @@ export function ObjectWorkspace({
   }
   const turnPage = (delta: number) => { if (guardUnsaved()) return; const next = { ...applied, page: Math.max(1, applied.page + delta) }; setApplied(next); void loadData(next) }
   const refreshData = () => { if (guardUnsaved()) return; void loadData(applied, { keepScroll: true }) }
-  const copy = async (text: string) => { try { await navigator.clipboard.writeText(text) } catch { setHint('复制失败，请选中文字复制') } }
+  const copy=async(text:string)=>setHint(await copyText(text)?'已复制':'复制失败，请选中文字复制')
   const enable = async () => {
     if (!ownsResult()) { setHint('原结果已失效，请在当前目标重新查询。'); return }
     const epoch = resultEpoch.current
@@ -277,6 +286,7 @@ export function ObjectWorkspace({
   }).join('\n')
   const indexes = indexRowsFromCatalog(detail)
   return <div className="db-object-tab">
+    {fieldMenu&&<MenuSurface anchor={fieldMenu} close={()=>setFieldMenu(undefined)} label="字段操作"><button role="menuitem" onClick={()=>void copy(fieldMenu.name)}>复制字段名</button></MenuSurface>}
     {unknownWrite && <UnknownGridNotice snapshot={unknownWrite} connection={connection} onOpenTarget={() => onSub('data')} onRefresh={discardEdits} />}
     <div className="db-object-head"><strong>{table}</strong>
       <div className="db-result-tabs">
@@ -285,7 +295,7 @@ export function ObjectWorkspace({
         {!viewOnly && <button className={sub === 'indexes' ? 'is-active' : ''} onClick={() => onSub('indexes')}>索引</button>}
       </div>
     </div>
-    {error && sub !== 'data' && <p className="db-error" role="alert">{error}</p>}
+    {error && sub !== 'data' && <ResourceError message={error}/>}
     {hint && sub !== 'data' && <p className="db-info-note" role="status">{hint}</p>}
     {sub === 'data' && <>
       <form className="db-catalog-tools" onSubmit={e => { e.preventDefault(); query() }}>
@@ -361,7 +371,7 @@ export function ObjectWorkspace({
       {metaBusy && <p className="db-info-note" role="status">正在读取字段…</p>}
       <div className="db-grid-scroll"><table className="db-grid"><thead><tr><th>字段</th><th>类型</th><th>NULL</th><th>KEY</th><th>默认值</th><th>Extra</th></tr></thead>
         <tbody>{(detail?.columns || []).map(column => <tr key={String(column.name)}>
-          <td><button className="db-text-button" onContextMenu={event => { event.preventDefault(); void copy(String(column.name)) }}>{String(column.name)}</button></td>
+          <td><button className="db-text-button" onContextMenu={event=>{event.preventDefault();setFieldMenu({element:event.currentTarget,...(event.clientX||event.clientY?{x:event.clientX,y:event.clientY}:{}),name:String(column.name)})}} onKeyDown={event=>{if(event.key==='ContextMenu'||(event.shiftKey&&event.key==='F10')){event.preventDefault();setFieldMenu({element:event.currentTarget,name:String(column.name)})}}}>{String(column.name)}</button></td>
           <td>{String(column.type || '')}</td><td>{String(column.nullable ?? '')}</td><td>{String(column.key || column.columnKey || '')}</td>
           <td>{column.defaultValue === undefined || column.defaultValue === null ? 'NULL' : String(column.defaultValue)}</td>
           <td>{String(column.extra || '')}</td>

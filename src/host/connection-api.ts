@@ -5,6 +5,7 @@ import type { CatalogRequest } from '../shared/workbench.ts'
 import { parseBrowserQueryInitiator } from './sql-browser-request.ts'
 import { httpStatusForConnectionError, inferConnectionErrorCode } from '../shared/connection-errors.ts'
 import { CONNECTION_API_ACTIONS, type ConnectionApiAction, type ServiceRequestAction } from '../shared/database-actions.ts'
+import { knowledgeExecutionApi } from './knowledge-execution-api.ts'
 
 const CONNECTION_API_ACTION_SET = new Set<string>(CONNECTION_API_ACTIONS)
 
@@ -55,15 +56,19 @@ export async function connectionApi(service: ConnectionService, executions: Exec
         service.request(owner, id, input.generation, action, input.input as CatalogRequest, signal)))
     }
     const openConnection = (test: boolean): ActionHandler => async input => {
-      const result = await service.open(owner, input.input, test, test && typeof input.id === 'string' ? input.id : undefined)
-      if (res.destroyed && 'id' in result) await service.remove(owner, result.id).catch(() => {})
+      const result = test
+        ? await withResponseAbort(res, signal => service.open(owner, input.input, true, typeof input.id === 'string' ? input.id : undefined, signal))
+        : await service.open(owner, input.input, false)
       send(200, result)
     }
     const handlers = {
       'execution-list': async () => { send(200, { revision: executions.revision(owner), items: executions.list(owner) }) },
       'execution-get': async input => {
-        if (typeof input.executionId !== 'string') { unsupported(); return }
-        const record = executions.get(owner, input.executionId, true)
+        if (typeof input.executionId !== 'string' && !(typeof input.requestId === 'string' && typeof input.id === 'string'
+          && typeof input.generation === 'string' && typeof input.schema === 'string')) { unsupported(); return }
+        const record = typeof input.executionId === 'string' ? executions.get(owner, input.executionId, true)
+          : typeof input.requestId === 'string' && typeof input.id === 'string' && typeof input.generation === 'string' && typeof input.schema === 'string'
+            ? executions.knowledgeRequest(owner, input.requestId, input.id, input.generation, input.schema) : undefined
         if (!record) { send(404, { error: '执行记录不存在。' }); return }
         send(200, record)
       },
@@ -97,6 +102,7 @@ export async function connectionApi(service: ConnectionService, executions: Exec
       catalog: serviceRequest('catalog'),
       query: serviceRequest('query'),
       'manual-query': serviceRequest('manual-query'),
+      'sql-knowledge-run': async input => { await knowledgeExecutionApi(service, executions, owner, input, res) },
       browse: serviceRequest('browse'),
       maintenance: serviceRequest('maintenance'),
       'redis-command': async input => { const id = requireId(input); if (id !== undefined) send(200, await withResponseAbort(res, signal => service.redisRequest(owner, id, input.generation, 'redis-command', input.input, signal))) },
@@ -218,6 +224,16 @@ export async function connectionApi(service: ConnectionService, executions: Exec
         if (id === undefined) return
         send(200, await service.duplicate(owner, id))
       },
+      'connection-start': async input => {
+        if (typeof input.operationId !== 'string' || input.id !== undefined && typeof input.id !== 'string') { unsupported(); return }
+        send(202, service.startConnection(owner, input.input, input.operationId, typeof input.id === 'string' ? input.id : undefined))
+      },
+      'connection-cancel': async input => {
+        const id = requireId(input)
+        if (id === undefined || typeof input.operationId !== 'string') { unsupported(); return }
+        await service.cancelConnection(owner, id, input.operationId)
+        send(200, { cancelled: true })
+      },
       test: openConnection(true),
       connect: openConnection(false),
     } satisfies Record<ConnectionApiAction, ActionHandler>
@@ -237,11 +253,12 @@ export async function connectionApi(service: ConnectionService, executions: Exec
     const code = error && typeof error === 'object' && 'code' in error && typeof (error as { code?: unknown }).code === 'string'
       ? (error as { code: string }).code
       : inferConnectionErrorCode(message)
-    const outcome = error as { effect?: string; phase?: string; category?: string; databaseCode?: string; steps?: unknown; batch?: unknown; executionId?: string; executionStatus?: string;
+    const outcome = error as { effect?: string; phase?: string; category?: string; databaseCode?: string; steps?: unknown; batch?: unknown; sourceResult?: unknown; executionId?: string; executionStatus?: string;
       kind?: 'query' | 'write' | 'explain'; identity?: unknown; connectionId?: string; generation?: string; schema?: string; context?: Record<string, string>; documentText?: string; executedSql?: string; queryRevision?: number; initiator?: 'user' | 'ai' }
     send(httpStatusForConnectionError(code), { error: message, ...(code ? { code } : {}),
       ...(outcome.effect ? { effect: outcome.effect } : {}), ...(outcome.phase ? { phase: outcome.phase } : {}),
       ...(outcome.category ? { category: outcome.category } : {}), ...(outcome.databaseCode ? { databaseCode: outcome.databaseCode } : {}),
+      ...(outcome.sourceResult ? { sourceResult: outcome.sourceResult } : {}),
       ...(outcome.executionId ? { executionId: outcome.executionId, status: outcome.executionStatus, connectionId: outcome.connectionId,
         generation: outcome.generation, schema: outcome.schema, context: outcome.context, documentText: outcome.documentText,
         executedSql: outcome.executedSql, queryRevision: outcome.queryRevision, initiator: outcome.initiator,

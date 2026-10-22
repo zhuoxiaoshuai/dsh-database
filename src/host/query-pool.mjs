@@ -17,11 +17,14 @@ export function shouldRetryReadonlySelect(error, flags = {}) {
 
 export function createReadonlyQueryPool({
   size = 3,
+  operationTimeoutMs = 10_000,
+  connectTimeoutMs = 15_000,
   create,
   prepare,
   reset,
   destroy,
   watchConnection,
+  onStall,
   isFatal = (error, flags) => isFatalSessionError(error, flags),
 } = {}) {
   const idle = []
@@ -34,24 +37,47 @@ export function createReadonlyQueryPool({
   const failWaiters = error => {
     while (waiters.length) waiters.shift().reject(error)
   }
+  const stalled = error => { closed = true; failWaiters(error); onStall?.(error) }
+
+  function deadline(work, ms, signal) {
+    return new Promise((resolve, reject) => {
+      let settled = false
+      const finish = (error, value) => {
+        if (settled) return
+        settled = true; clearTimeout(timer); signal?.removeEventListener('abort', abort)
+        error ? reject(error) : resolve(value)
+      }
+      const abort = () => finish(cancelledError())
+      const timer = setTimeout(() => finish(Object.assign(new Error('连接会话操作超时。'), { code: 'ETIMEDOUT' })), ms)
+      signal?.addEventListener('abort', abort, { once: true })
+      Promise.resolve(work).then(value => finish(undefined, value), error => finish(error))
+      if (signal?.aborted) abort()
+    })
+  }
+
+  function pump() {
+    while (!closed && waiters.length && (idle.length || live + creating < size)) {
+      const waiter = waiters.shift()
+      void take(waiter.signal).then(waiter.resolve, waiter.reject)
+    }
+  }
 
   async function retire(conn) {
     const state = tracked.get(conn)
     if (!state) return
     tracked.delete(conn)
     state.detach?.()
-    live = Math.max(0, live - 1)
-    try { await destroy(conn) } catch { /* ignore */ }
-    while (!closed && waiters.length && live + creating < size) {
-      const waiter = waiters.shift()
-      void take().then(waiter.resolve, waiter.reject)
-    }
+    const closing = Promise.resolve().then(() => destroy(conn))
+    const release = () => { live = Math.max(0, live - 1); pump() }
+    try { await deadline(closing, operationTimeoutMs) }
+    catch (error) { if (error?.code === 'ETIMEDOUT') stalled(error) }
+    finally { void closing.then(release, release) }
   }
 
   function give(conn) {
     if (closed || tracked.get(conn)?.lost) return void retire(conn)
-    if (waiters.length) waiters.shift().resolve(conn)
-    else idle.push(conn)
+    idle.push(conn)
+    pump()
   }
 
   async function take(signal) {
@@ -60,10 +86,15 @@ export function createReadonlyQueryPool({
     if (idle.length) return idle.pop()
     if (live + creating < size) {
       creating += 1
+      let opening
+      try { opening = Promise.resolve(create()) }
+      catch (error) { creating--; pump(); throw error }
+      // An abandoned native create owns its reservation until its connection is destroyed.
+      let pending = true
+      const releaseOpening = () => { if (pending) { pending = false; creating--; pump() } }
       try {
-        const conn = await create()
+        const conn = await deadline(opening, connectTimeoutMs, signal)
         if (closed || signal?.aborted) {
-          await destroy(conn).catch(() => {})
           throw closed ? new Error('连接池已关闭。') : cancelledError()
         }
         live += 1
@@ -74,9 +105,17 @@ export function createReadonlyQueryPool({
           const index = idle.indexOf(conn)
           if (index >= 0) { idle.splice(index, 1); void retire(conn) }
         })
+        releaseOpening()
         return conn
-      } finally {
-        creating -= 1
+      } catch (error) {
+        if (error?.code === 'ETIMEDOUT') stalled(error)
+        void opening.then(async conn => {
+          const closing = Promise.resolve().then(() => destroy(conn))
+          try { await deadline(closing, operationTimeoutMs) }
+          catch (error) { if (error?.code === 'ETIMEDOUT') stalled(error) }
+          finally { void closing.then(releaseOpening, releaseOpening) }
+        }, releaseOpening)
+        throw error
       }
     }
     return await new Promise((resolve, reject) => {
@@ -86,6 +125,7 @@ export function createReadonlyQueryPool({
         reject(cancelledError())
       }
       const waiter = {
+        signal,
         resolve: value => {
           signal?.removeEventListener('abort', onAbort)
           if (signal?.aborted) { give(value); reject(cancelledError()); return }
@@ -115,7 +155,7 @@ export function createReadonlyQueryPool({
         try {
           if (signal?.aborted) throw cancelledError()
           if (tracked.get(conn)?.lost) throw new Error('Connection lost before query preparation')
-          await prepare(conn, schema)
+          await deadline(prepare(conn, schema), operationTimeoutMs, signal)
           if (tracked.get(conn)?.lost) throw new Error('Connection lost during query preparation')
           let done = false
           const finish = async work => {
@@ -128,7 +168,7 @@ export function createReadonlyQueryPool({
             async release() {
               await finish(async () => {
                 try {
-                  await reset(conn)
+                  await deadline(reset(conn), operationTimeoutMs)
                   give(conn)
                 } catch {
                   await retire(conn)

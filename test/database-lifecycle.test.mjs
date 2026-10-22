@@ -113,19 +113,19 @@ test('worker structured error codes survive Host dispatch without message infere
   }
 })
 
-test('query tabs stay per conversation; visible schemas and last active are shared', async t => {
+test('query tabs and active connection stay per conversation; visible schemas are shared', async t => {
   const { service, directory } = setup(t, owner => owner === 'owner-a' || owner === 'owner-b')
   const connected = await service.open('owner-a', input, false)
   service.activate('owner-a', connected.id)
   service.saveWorkbench('owner-a', connected.id, { queryTabs: [{ id: 'a', name: 'A', sql: 'SELECT a' }], visibleSchemas: ['app'] })
   const other = service.snapshot('owner-b')
   assert.equal(Object.hasOwn(other, 'openIds'), false)
-  assert.equal(other.lastActiveId, connected.id)
+  assert.equal(other.lastActiveId, undefined)
   assert.equal(other.connections[0].workbench?.queryTabs, undefined)
   assert.deepEqual(other.connections[0].workbench?.visibleSchemas, ['app'])
   assert.equal(service.snapshot('owner-a').connections[0].workbench?.queryTabs?.[0].sql, 'SELECT a')
   const disk = JSON.parse(readFileSync(join(directory, 'database-workspace.json'), 'utf8'))
-  assert.equal(disk.lastActiveId, connected.id)
+  assert.equal(disk.lastActiveId, undefined)
   assert.equal(disk.openIds, undefined)
   assert.deepEqual(disk.connections[0].visibleSchemas, ['app'])
   assert.equal(disk.connections[0].workbench, undefined)
@@ -304,7 +304,7 @@ test('idle revive restores health without changing generation', async t => {
   assert.fail(`expected revive to ready, last health=${service.list('owner-a')[0].health}`)
 })
 
-test('failed revive stops after four attempts and does not take down another connection', async t => {
+test('non-network revive failure stops recovery and does not take down another connection', async t => {
   const directory = temporaryDirectory(t, 'database-lifecycle-')
   const moduleUrl = pathToFileURL(join(process.cwd(), 'test/fixtures/session-revive-worker.mjs'))
   moduleUrl.searchParams.set('failRevive', '1')

@@ -1,6 +1,8 @@
 import { createElement as h, useSyncExternalStore } from 'react'
 import { Database } from 'lucide-react'
 import { DatabaseWorkspace } from './workspace/shell/database-workspace.tsx'
+import { useWorkbenchTheme } from './workspace/parts/theme/use-workbench-theme.ts'
+import { databaseCss } from './style-css.ts'
 import { getUiSession, type UiCurrentSnapshot } from './current-resolver.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
@@ -45,6 +47,7 @@ export function apply(ctx: unknown): void {
       h('path', { d: 'M2.8 8c0 1 2.3 1.8 5.2 1.8s5.2-.8 5.2-1.8', stroke: 'currentColor', strokeWidth: 1.2, fill: 'none' }))
     const uiCurrent = getUiSession(ctx)?.adapter.current
     const LiveWorkspaceBody = (props: { fallbackSessionId?: string; visible?: boolean }) => {
+      const theme = useWorkbenchTheme()
       const sessions = useSyncExternalStore(fn => context.sessions.list.subscribe(fn), () => context.sessions.list.getSnapshot())
       const uiSnapshot = useSyncExternalStore(
         fn => uiCurrent?.subscribe(fn) ?? (() => {}),
@@ -52,7 +55,7 @@ export function apply(ctx: unknown): void {
       const rawUiKey = uiSnapshot.key
       const uiKey = typeof rawUiKey === 'string' && rawUiKey.trim() ? rawUiKey.trim() : ''
       const conversationId = sessions.current || props.fallbackSessionId || uiKey || ''
-      if (!conversationId) return h('div', { style: { padding: 16, color: 'var(--dsw-alias-label-secondary, var(--db-muted, #91a2ba))' } }, '请先选择或开始一个 DSH 对话')
+      if (!conversationId) return h('div', {className:'db-workbench db-entry-empty',...theme.attributes,style:theme.style},h('style',null,databaseCss), '请先选择或开始一个 DSH 对话')
       return h('div', { style: { height: '100%', minHeight: 0 } },
         h(DatabaseWorkspace, { conversationId, visible: props.visible !== false, onActive: () => {}, onDialogChange: () => {} }))
     }

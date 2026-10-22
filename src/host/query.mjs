@@ -9,11 +9,12 @@ import { getDataSource } from './data-sources/sql-registry.mjs'
 export const MYSQL_TABLE_TYPE_SQL = getDialect('mysql').sql.writableObjectStatement('', '').sql
 export const ORACLE_OBJECT_TYPE_SQL = getDialect('oracle').sql.writableObjectStatement('', '').sql
 
-export function createDatabaseQueryPool(credentials) {
+export function createDatabaseQueryPool(credentials, {onStall} = {}) {
   const source = getDataSource(credentials.dialect)
   const dialect = source.driver
   return createQueryPool({
     size: SESSION_QUOTA.query,
+    onStall,
     async create() {
       return dialect.openQuery(credentials)
     },
@@ -215,7 +216,7 @@ export async function executeDml(input, credentials, signal, authorized) {
     if (signal?.aborted) throw cancelledError('执行已取消。')
     await dialect.prepareWrite(db, input.schema)
     if (signal?.aborted) throw cancelledError('执行已取消。')
-    await dialect.verifyWritableTargets(db, policy.targets, assertWritableTargets)
+    if (policy.targets?.length) await dialect.verifyWritableTargets(db, policy.targets, assertWritableTargets)
     if (signal?.aborted) throw cancelledError('执行已取消。')
     writeStarted = true
     const affected = await dialect.executeWrite(db, policy.sql)
@@ -224,7 +225,9 @@ export async function executeDml(input, credentials, signal, authorized) {
     if (error instanceof Error && error.message.startsWith('数据库实例或账号')) throw Object.assign(error, { effect: 'none', phase: 'check' })
     if (error instanceof Error && /视图只读|同义词不支持|无法确认写入目标/.test(error.message)) throw Object.assign(error, { effect: 'none', phase: 'check' })
     const effect = writeStarted ? error?.effect || 'unknown' : 'none'
-    const failure = effect === 'unknown' ? new Error('写入结果未知，请核验数据库实际状态，不要直接重试。') : error
+    const native = error instanceof Error ? error.message.trim() : ''
+    const note = '写入结果未知，请核验数据库实际状态，不要直接重试。'
+    const failure = effect === 'unknown' ? new Error(native && native !== note ? `${native} ${note}` : note) : error
     throw Object.assign(failure, { effect, phase: writeStarted ? 'execute' : 'check', category: error?.category || (writeStarted ? 'transport-or-interruption' : 'validation'), databaseCode: error?.databaseCode, cancelled: !!signal?.aborted })
   } finally {
     signal?.removeEventListener('abort', abort)

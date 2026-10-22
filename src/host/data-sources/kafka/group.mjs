@@ -33,7 +33,7 @@ export function lagBetween(end, current) {
   const lo = decimalText(current)
   if (hi == null || lo == null) return null
   const diff = BigInt(hi) - BigInt(lo)
-  return (diff < 0n ? 0n : diff).toString()
+  return diff < 0n ? null : diff.toString()
 }
 
 export function unionTopicNames(assigned, committed) {
@@ -53,22 +53,24 @@ function partitionId(value) {
  * @param {{ committed?: { partition: unknown, offset: unknown }[], assignment?: { partition: unknown, consumer?: string }[], ends?: { partition: unknown, high: unknown }[] | null }} input
  * ends === null means the end-offset read failed: End and Lag stay unknown.
  */
-export function groupTopicRows({ committed = [], assignment = [], ends = null }) {
+export function groupTopicRows({ committed = [], assignment = [], ends = null, committedKnown = true }) {
   const current = new Map()
   const consumer = new Map()
   const end = new Map()
   const ids = new Set()
+  const unreadable = new Set()
   for (const item of committed) {
     const id = partitionId(item.partition)
     if (id === null) continue
     ids.add(id)
     current.set(id, committedOffset(item.offset))
+    if (item.unreadable || (committedOffset(item.offset) === null && ![-1, '-1', -1n].includes(item.offset))) unreadable.add(id)
   }
   for (const item of assignment) {
     const id = partitionId(item.partition)
     if (id === null) continue
     ids.add(id)
-    if (!consumer.has(id) && item.consumer) consumer.set(id, item.consumer)
+    if (!consumer.has(id)) consumer.set(id, item)
   }
   const endsOk = ends != null
   if (endsOk) {
@@ -76,18 +78,38 @@ export function groupTopicRows({ committed = [], assignment = [], ends = null })
       const id = partitionId(item.partition)
       if (id === null) continue
       ids.add(id)
-      end.set(id, decimalText(item.high))
+      end.set(id, { high: decimalText(item.high), low: decimalText(item.low) })
     }
   }
   return [...ids].sort((left, right) => left - right).map(id => {
     const currentOffset = current.has(id) ? current.get(id) : null
-    const endOffset = endsOk ? (end.has(id) ? end.get(id) : null) : null
+    const endOffset = endsOk ? (end.get(id)?.high ?? null) : null
+    const earliest = endsOk ? (end.get(id)?.low ?? null) : null
+    const status = !committedKnown || endOffset == null || unreadable.has(id) ? 'unreadable' : currentOffset == null ? 'uncommitted'
+      : BigInt(currentOffset) > BigInt(endOffset) ? 'beyond-end'
+      : earliest != null && BigInt(currentOffset) < BigInt(earliest) ? 'before-earliest' : 'normal'
+    const owner = consumer.get(id)
     return {
       partition: id,
       current: currentOffset,
       end: endOffset,
-      lag: endsOk ? lagBetween(endOffset, currentOffset) : null,
-      consumer: consumer.get(id) || null,
+      earliest,
+      status,
+      lag: status === 'normal' ? lagBetween(endOffset, currentOffset) : null,
+      consumer: owner?.consumer || null,
+      consumerId: owner?.consumerId || null,
+      clientId: owner?.clientId || null,
+      host: owner?.host || null,
     }
   })
+}
+
+export function summarizePartitions(partitions, complete = true) {
+  const known = partitions.filter(row => row.lag != null)
+  const knownLag = known.reduce((sum, row) => sum + BigInt(row.lag), 0n).toString()
+  return { totalLag: complete && known.length === partitions.length ? knownLag : null, knownLag,
+    knownPartitions: known.length, partitionCount: partitions.length, complete: complete && known.length === partitions.length,
+    abnormalPartitions: partitions.filter(row => (row.lag != null && BigInt(row.lag) > 0n)
+      || ['before-earliest', 'beyond-end', 'unreadable'].includes(row.status)).length,
+    uncommittedPartitions: partitions.filter(row => row.status === 'uncommitted').length }
 }

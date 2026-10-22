@@ -1,5 +1,6 @@
 import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete'
 import { REDIS_HELP, REDIS_OPTION_HELP, REDIS_SUBCOMMAND_HELP } from './help.ts'
+import { displayBytes, isBytesString } from '../../shared/redis-bytes.ts'
 
 type CommandSpec = { usage: string; subcommands?: readonly string[]; optionsFrom?: number; options?: readonly string[] }
 
@@ -127,16 +128,19 @@ export function redisKeySlot(text: string, pos: number): { prefix: string; from:
   return isKey ? { prefix: slot.typed, from: slot.from, to: slot.to } : null
 }
 
+/** Key 名转成命令台可回写的字面量：不可打印字节写成 \xNN，必要时加引号。 */
 export function encodeRedisKey(key: string): string | null {
-  if (!key || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/.test(key)) return null
-  if (!/[\s"'\\]/.test(key)) return key
-  return '"' + key.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t') + '"'
+  if (!key || !isBytesString(key)) return null
+  const text = displayBytes(key)
+  if (!/[\s"']/.test(text)) return text
+  return '"' + text.replace(/"/g, '\\"') + '"'
 }
 
 function keyOptions(keys: readonly string[], prefix: string, cached: boolean): Completion[] {
-  return [...new Set(keys)].filter(key => key.startsWith(prefix)).slice(0, 30).flatMap(key => {
+  return [...new Set(keys)].filter(key => displayBytes(key).startsWith(prefix)).slice(0, 30).flatMap(key => {
     const apply = encodeRedisKey(key)
-    return apply === null ? [] : [{ label: key, apply, type: 'key', detail: cached ? '本页已扫描' : '本次限量扫描', info: '这是 Redis Key 名称。选中后只填写命令参数，不会执行命令。', boost: cached ? 10 : 0 }]
+    const label = displayBytes(key)
+    return apply === null ? [] : [{ label, apply, type: 'key', detail: cached ? '本页已扫描' : '本次限量扫描', info: '这是 Redis Key 名称。选中后只填写命令参数，不会执行命令。', boost: cached ? 10 : 0 }]
   })
 }
 

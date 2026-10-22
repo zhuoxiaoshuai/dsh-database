@@ -25,7 +25,8 @@ export function KnowledgeItemList({ items, selectedId, busy, empty, archiveLabel
   </>
 }
 
-export function KnowledgeMetadataFields({ title, summary, tags, onTitle, onSummary, onTags }: {
+export function KnowledgeMetadataFields({ title, summary, tags, onTitle, onSummary, onTags, disabled = false }: {
+  disabled?: boolean
   title: string
   summary: string
   tags: string
@@ -34,8 +35,8 @@ export function KnowledgeMetadataFields({ title, summary, tags, onTitle, onSumma
   onTags(value: string): void
 }): React.ReactElement {
   return <div className="db-template-meta-inline">
-    <label className="db-form-label">标题<input value={title} onChange={event => onTitle(event.target.value)} maxLength={240} /></label>
-    <label className="db-form-label">简介<input value={summary} onChange={event => onSummary(event.target.value)} maxLength={240} /></label>
-    <label className="db-form-label">标签<input value={tags} onChange={event => onTags(event.target.value)} placeholder="用逗号分隔" /></label>
+    <label className="db-form-label">标题<input disabled={disabled} value={title} onChange={event => onTitle(event.target.value)} maxLength={240} /></label>
+    <label className="db-form-label">简介<input disabled={disabled} value={summary} onChange={event => onSummary(event.target.value)} maxLength={240} /></label>
+    <label className="db-form-label">标签<input disabled={disabled} value={tags} onChange={event => onTags(event.target.value)} placeholder="用逗号分隔" /></label>
   </div>
 }

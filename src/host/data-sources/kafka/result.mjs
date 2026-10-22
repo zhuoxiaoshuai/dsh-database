@@ -54,9 +54,11 @@ export function limitKafkaResult(input) {
   const result = structuredClone(input)
   result.truncated = true
   result.resultTruncated = true
+  result.complete = false
+  if ('totalLag' in result) result.totalLag = null
   while (kafkaResultBytes(result) > PAYLOAD_BYTES) {
     const candidates = []
-    for (const key of ['messages', 'members', 'partitions']) {
+    for (const key of ['messages', 'members', 'partitions', 'associations', 'topics']) {
       if (Array.isArray(result[key]) && result[key].length) candidates.push({ size: kafkaResultBytes(result[key]), trim: () => { result[key] = result[key].slice(0, Math.floor(result[key].length / 2)) } })
     }
     if (!candidates.length) throw new Error('Kafka 详情超出结果大小限制。')

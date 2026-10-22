@@ -83,10 +83,10 @@ export function useDocumentResultBus({ bridge, connection, document, unsaved = f
     if (recovering.current?.key === requestKey) return recovering.current.promise
     const promise = (async () => {
       try {
-        const latest = await bridge.executions!('execution-latest', { id: connection.id }) as { execution?: ExecutionRecord & { result?: unknown } }
+        const latest = await bridge.executions!('execution-latest', { id: connection.id }) as { execution?: ExecutionRecord & { result?: unknown; resultEnvelope?: { payload: unknown } } }
         if (keyRef.current !== requestKey || accepted.current !== acceptance) return
         const record = latest.execution
-        if (record) accept({ identity: record.identity, executionId: record.executionId, result: record.result, kind: record.type, message: record.message })
+        if (record) accept({ identity: record.identity, executionId: record.executionId, result: record.resultEnvelope?.payload ?? record.result, kind: record.type, message: record.message })
       } catch { /* recovery remains best effort */ }
     })().finally(() => { if (recovering.current?.promise === promise) recovering.current = undefined })
     recovering.current = { key: requestKey, promise }; return promise

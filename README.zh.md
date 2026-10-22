@@ -26,7 +26,7 @@
 
 SQL、Redis、Kafka 共享查询、AI Query、历史和经验入口。Nacos 通过资源页面复用连接外壳、页签、编辑器、列表和操作记录，不创建 SQL/命令文档或经验库。
 
-Nacos 2.4.3 支持配置编辑、历史/Diff、监听者、服务和实例查询。人工在所有环境预览确认后可写；AI 仅 SIT 可写，局部修改保留敏感值。详见 [Nacos 指南](docs/datasource/nacos.md)。
+Nacos 2.4.3 支持配置编辑、历史/Diff、监听者、服务和实例查询。人工在所有环境预览确认后可写；AI 仅 SIT 可写，局部修改保留敏感值。发布支持 YAML/JSON/Properties/XML/HTML 校验，在主题一致的对比框中显示错误并阻止提交；Text 明确不校验。XML/HTML 支持 SIT AI 安全局部修改。详见 [Nacos 指南](docs/datasource/nacos.md)。
 
 ## 安装
 
@@ -60,15 +60,29 @@ dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/r
 
 插件是同一份，只是 profile 不同。`--profile web` 不会装进桌面应用。
 
-上述下载链接指向 `alpha.12.15` 发布包。本地源码当前为 `alpha.12.32`；包名以 `npm pack` 的输出为准，打包时会自动构建。发布包与本地源码的验收记录应分别核对。
+上述下载链接指向 `alpha.12.15` 发布包。本地源码当前为 `alpha.12.47`；包名以 `npm pack` 的输出为准，打包时会自动构建。发布包与本地源码的验收记录应分别核对。
 
 ## 首次使用
 
 1. 安装并重启对应 profile 后，打开会话右侧的「数据库」页签。
 2. 点击「我的连接」旁的 **＋**，选择数据源，填写地址、账号及目标库／Service Name／DB 或 Broker 列表，选择 SIT、UAT 或 PVT。
-3. 可先点击「测试连接」检查配置，再点击「连接」。测试成功本身不会把连接加入列表。
+3. 可先点击「测试连接」检查配置，再点击「连接」。提交后窗口关闭，连接在后台建立；连接行显示进度，可取消或在失败后编辑配置。测试成功本身不会把连接加入列表。
 4. SQL 选择目标库／Schema 后，在查询页执行 MySQL 的 `SELECT 1;` 或 Oracle 的 `SELECT 1 FROM DUAL;`；Redis 执行 `PING`；Kafka 执行 `TOPICS`。
 5. 需要 AI 协作时，打开 **AI Query**，在对话中说明连接、目标和任务，例如“查看当前 SQL，解释它的作用”。执行前核对当前目标与权限。
+
+SQL 查询和 AI Query 的「格式化全文」在有选区时变为「格式化选中」，只替换选区，支持一次撤销／重做。选中 `A001 A002`、多行编号或 `(001 002)` 后格式化，会自动变为 `'A001', 'A002'` 或 `('001', '002')`，方便构造 IN 条件。空格、换行、Tab 和英文逗号可混用；原有括号、顺序、重复项及前导零会保留。
+
+自动转换仅适用于至少两个由字母、数字、中文或下划线组成的非关键字裸值，且至少一对值之间缺少逗号。已有完整逗号列表（如 `1, 2`）、引号、表达式及复杂符号按 SQL 排版；无选区时只排版全文。独立选区 `a b` 按两个值转换；UUID、日期、邮箱等不自动转换。空白选区不处理，截断词元、字符串或注释的选区会提示重新选择。AI Query 中纯排版保持控制权，自动构造字符串列表及撤销／重做按人工编辑接管；格式化不会执行 SQL。
+
+## 连接生命周期与隔离
+
+连接的建立、目录加载、失败和恢复按连接独立管理。A 正在连接时仍可连接、查询或断开 B；后台完成不会切换当前工作区。每个连接同时只接受一个生命周期操作，重复操作 ID 不会重复派发；编辑使用候选 Worker，失败或取消保留原配置与在线登录。关闭表单、切换对话或 HTTP 回执丢失不会撤销已接受的后台连接，显式取消、断开、删除或卸载会终止它。
+
+成功登录后的网络故障按 0.5、1、2、5、15、30、60 秒退避，随后每 60 秒恢复一次，加入 ±20% 抖动。认证、证书或配置错误停止自动恢复；首次登录失败保留离线条目，需修正配置后再连接。主动断开和停止恢复会持久保存离线意图，AI 状态查询只返回当前状态并触发符合该意图的后台恢复。Worker 丢失且无可复用凭据时需重新登录；密码和自定义 CA 仍只按既有加密保存选项保存。
+
+最多 20 个活动或待连接的逻辑连接；建连及测试总并发 6，后台恢复最多占 4 个。查询每连接最多 3 个、AI 最多 2 个，全局最多 16 个、AI 最多 14 个。目录预加载总并发 4、每连接最多 1 个，前台优先并按连接轮转。取消或超时后底层请求须结束，否则回收对应 Worker；旧连接代次的目录任务与结果会失效。恢复不重放结果未知的写入。导入或复制的配置默认离线；旧文件缺少离线意图时按原有可复用登录规则兼容。
+
+受控生命周期回归和真实工作台组件验收使用模拟数据库 Worker。真实数据库断网与恢复、安装版 Desktop 验收仍需单独执行，未执行项为 `NOT_RUN`。
 
 ## AI 协作与权限
 
@@ -86,7 +100,7 @@ dsh plugin --profile desktop add https://github.com/zhuoxiaoshuai/dsh-database/r
 
 **UAT／PVT 不会阻止人工 SQL 或人工 Redis 命令写入。** 需要禁止写入时，请使用只读数据库账号或 Redis ACL。SIT 的 AI SQL 查询结果按原值返回给模型；普通人工查询不会因此自动发送结果给模型。
 
-导入连接时，`dev`／`test` 归为 SIT，`staging` 归为 UAT，`prod` 归为 PVT，其他未知写法按 UAT 处理。密码默认只保留在 Host 内存；Windows 可选「记住密码」，使用当前用户 DPAPI 加密保存。详见 [SECURITY.md](SECURITY.md)。
+导入连接时，`dev`／`test` 归为 SIT，`staging` 归为 UAT，`prod` 归为 PVT，其他未知写法按 UAT 处理。密码默认只在当前登录期间保留于内存；Windows 可选「记住密码」，使用当前用户 DPAPI 加密保存。详见 [SECURITY.md](SECURITY.md)。
 
 写操作中断或丢失回执时，结果可能标为「未知」：数据可能已经写入。先核对实际状态，再决定下一步；系统不会自动重放未知写入。重连会使旧请求与执行目标失效。
 
@@ -154,7 +168,7 @@ PEEK "orders" PARTITION 0 FROM LATEST LIMIT 20
 
 ## AI 工具
 
-`database_status` 不传 topic 时返回已登录连接，以及带 `connectionId`、`generation` 的下一步参数。传 topic 才加载某一节用法。缺连接或 generation 过期时，工具返回当前连接列表。该数据源只有一条已登录连接时，可以省略 `connectionId` 和 `generation`。
+`database_status` 不传 topic 时返回已登录的 SQL 连接，以及带 `connectionId`、`generation` 的下一步参数。Redis、Kafka、Nacos 用各自的 `*_status`。传 topic 才加载某一节用法。缺连接或 generation 过期时，工具返回当前连接列表。该数据源只有一条已登录连接时，可以省略 `connectionId` 和 `generation`。`database_execute_sql` 传入 `sql` 就会执行，即使同时带了 `action=read`。`action=read` 且没有 `sql` 时读取最近活动的 SQL 连接的当前语句；工作台没有语句时返回 `empty`，不回空 `sql`。列表和结构用 `database_catalog`，不要 `SHOW TABLES`。
 
 `kafka_scan` 与 `kafka_set_group_offsets` 的 `spec`、`kafka_produce` 的 `headers` 是对象，`kafka_produce_batch` 的 `messages` 是数组。`kafka_peek` 的 `from` 取 `BEGINNING`、`LATEST` 或 `OFFSET`。
 
@@ -163,13 +177,13 @@ PEEK "orders" PARTITION 0 FROM LATEST LIMIT 20
 
 | 工具 | 说明 |
 | --- | --- |
-| `database_status` | 已登录连接，以及可直接套用的下一步参数。传 topic 只返回那一节用法 |
+| `database_status` | 已登录 SQL 连接，以及可直接套用的下一步参数。传 topic 只返回那一节用法 |
 | `database_catalog` | `schemas` / `tables` / `table`。不要用 SQL 去查 `information_schema` |
 | `database_execute_sql` | `action=read` 读取当前 AI Query 文本；带上 `sql` 则执行；UAT／PVT 只读，SIT 可写 |
 | `database_templates` | 保存和搜索文本，不会执行 |
 | `database_read_collab` | 当前打开的查询页签 |
 | `database_import_connections` | 登记主机，不接收密码 |
-| `redis_status` `redis_keys` `redis_value` | SCAN、类型、TTL、值 |
+| `redis_status` `redis_keys` `redis_value` | 已登录 Redis 连接；SCAN、类型、TTL、值 |
 | `redis_execute` | 仅 SIT，一次一条命令 |
 | `kafka_status` `kafka_topics` `kafka_describe` | Topic、分区、水位 |
 | `kafka_peek` | peek 一个分区。`from` 为 `BEGINNING`、`LATEST` 或 `OFFSET`。接管编辑器后会拒绝 |
@@ -251,3 +265,6 @@ POSIX Shell 使用 `DSH_DESKTOP_APP="/path/to/install" npm run test:host`。测�
 ## 许可证
 
 [MIT](LICENSE)
+
+
+打包统一使用公共安装器流程，默认只打包；安装需显式指定 `-Install`。参见[打包与独立运行验收](docs/packaging.md)。

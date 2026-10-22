@@ -31,6 +31,7 @@ async function waitFor(check) {
   while (!check()) { assert.ok(Date.now() < until); await new Promise(done => setTimeout(done, 5)) }
 }
 const cases = [
+  ['kafka_topic_groups', { topic: 'orders' }, 'kafka_topic-groups'],
   ['kafka_groups', {}, 'kafka_groups'], ['kafka_group', { groupId: 'billing' }, 'kafka_group'],
   ['kafka_group_topics', { groupId: 'billing' }, 'kafka_group-topics'], ['kafka_group_topic', { groupId: 'billing', topic: 'orders' }, 'kafka_group-topic'],
 ]
@@ -42,6 +43,10 @@ test('Kafka publish uses one SIT lifecycle, while UAT rejects AI and manual send
   assert.equal(result.baseOffset, '42')
   const record = sit.executions.get('owner', result.executionId)
   assert.equal(record.operation, 'kafka_produce')
+  const restored = sit.executions.latestDisplay('owner', sit.connection.id)
+  assert.equal(restored.executionId, record.executionId)
+  assert.equal(restored.resultEnvelope.sourceId, 'kafka')
+  assert.equal(restored.resultEnvelope.payload.baseOffset, '42')
   assert.equal(record.events.filter(event => event.kind === 'dispatched').length, 1)
   assert.equal(sit.events.filter(event => event.type === 'EXECUTION_FINISHED' && event.executionId === result.executionId).length, 1)
   assert.equal(sit.dispatched().filter(item => item.action === 'kafka-produce').length, 1)
@@ -66,6 +71,19 @@ test('Kafka send cancelled after dispatch remains unknown and is not replayed', 
   assert.equal(record.status, 'unknown')
   assert.equal(f.dispatched().filter(item => item.action === 'kafka-produce').length, 1)
 })
+test('Kafka unknown batch keeps confirmed receipts with the one authoritative execution', async t => {
+  const f = await fixture(t)
+  await assert.rejects(f.service.executeText('owner', f.connection.id, f.connection.generation,
+    'PRODUCE_BATCH {"topic":"demo","messages":[{"value":"a"},{"value":"b"}]}'), error => {
+    assert.equal(error.executionStatus, 'unknown')
+    assert.equal(error.sourceResult.receipts[0].baseOffset, '42')
+    assert.equal(error.sourceResult.executionStatus, 'unknown')
+    return true
+  })
+  assert.equal(f.dispatched().filter(item => item.action === 'kafka-produce-batch').length, 1)
+  const records = f.executions.list('owner').filter(item => item.operation === 'kafka_produce-batch')
+  assert.equal(records.length, 1); assert.equal(records[0].status, 'unknown')
+})
 for (const [tool, args, operation] of cases) for (const change of ['takeover', 'text', 'generation', 'cancel']) test(`queued ${tool} rejects ${change} with no dispatch or duplicate lifecycle`, async t => {
   const f = await fixture(t)
   const blockers = Array.from({ length: 3 }, () => f.service.executeText('owner', f.connection.id, f.connection.generation, 'DESCRIBE "BLOCK"').catch(error => error))
@@ -76,9 +94,9 @@ for (const [tool, args, operation] of cases) for (const change of ['takeover', '
   await waitFor(() => f.executions.list('owner').some(record => record.operation === operation))
   if (change === 'takeover') f.service.controlExecutionDocument('owner', f.connection.id, 'user', undefined, f.connection.generation, f.service.getExecutionDocument('owner', f.connection.id).revision)
   if (change === 'text') f.service.updateExecutionDocument('owner', f.connection.id, 'TOPICS', 'ai', f.service.getExecutionDocument('owner', f.connection.id).revision, f.connection.generation)
-  if (change === 'generation') await f.service.open('owner', f.input, false, f.connection.id)
+  const updating = change === 'generation' ? f.service.open('owner', f.input, false, f.connection.id) : undefined
   if (change === 'cancel') abort.abort()
-  f.release(); await Promise.allSettled(blockers); await rejected
+  f.release(); await Promise.allSettled(blockers); await updating; await rejected
   const records = f.executions.list('owner').filter(record => record.operation === operation)
   assert.equal(records.length, 1); assert.ok(['failed', 'cancelled', 'unknown'].includes(records[0].status))
   assert.equal(records[0].events.filter(event => event.kind === 'dispatched').length, 0)
@@ -96,6 +114,6 @@ for (const environment of ['sit', 'uat', 'pvt']) test(`Kafka group tools in ${en
     assert.equal(event.length, 1); assert.equal(event[0].status, record.status)
     assert.equal(event[0].generation, f.connection.generation)
   }
-  assert.equal(f.executions.list('owner').length, 4)
+  assert.equal(f.executions.list('owner').length, 5)
   assert.ok(!readFileSync(join(f.directory, 'ai-executions.json'), 'utf8').includes('PRIVATE_PAYLOAD'))
 })

@@ -1,7 +1,7 @@
 import {toolOwner, type ToolExecution} from './ai-tool-context.ts'
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import { redactQueryResult, type RedactionRule } from './ai-redaction.ts'
-import type { ConnectionService } from './connection-service.ts'
+import type { SqlAiPort } from './ai-service-ports.ts'
 import type { ExecutionStore } from './execution-store.ts'
 import { isWritableEnvironment } from '../shared/connection-permission.ts'
 import { runLocalAiOperation } from './local-ai-operation.ts'
@@ -16,14 +16,60 @@ const PLUGIN_VERSION = typeof __PLUGIN_VERSION__ === 'string' ? __PLUGIN_VERSION
 
 const sessionId = toolOwner
 
-function resolveSql<Live extends boolean = true>(service: ConnectionService, session: string, connectionId: unknown, generation: unknown, requireLive: Live = true as Live) {
+function resolveSql<Live extends boolean = true>(service: SqlAiPort, session: string, connectionId: unknown, generation: unknown, requireLive: Live = true as Live, lastActiveId?: unknown) {
   return resolveAiConnection({
     connections: service.list(session),
     family: 'sql',
     connectionId,
     generation,
     requireLive,
+    lastActiveId,
   })
+}
+
+function resolveKnowledge(service: SqlAiPort, session: string, connectionId: unknown, generation?: unknown) {
+  const connections = service.list(session)
+  if (typeof connectionId === 'string' && connectionId.trim()) {
+    const hinted = connections.find(item => item.id === connectionId)
+    if (hinted?.dialect === 'nacos') throw new Error('Nacos 没有经验库。')
+    const family = hinted?.dialect === 'redis' ? 'redis' : hinted?.dialect === 'kafka' ? 'kafka' : 'sql'
+    return resolveAiConnection({ connections, family, connectionId, generation, requireLive: false })
+  }
+  for (const family of ['sql', 'redis', 'kafka'] as const) {
+    const resolved = resolveAiConnection({ connections, family, connectionId, generation, requireLive: false })
+    if (resolved.ok) return resolved
+  }
+  return resolveSql(service, session, connectionId, generation, false)
+}
+
+function isCommandKnowledge(dialect: Connection['dialect']): dialect is 'redis' | 'kafka' {
+  return dialect === 'redis' || dialect === 'kafka'
+}
+
+function defaultMysqlSchema(connection: Connection): string | undefined {
+  if (connection.dialect !== 'mysql') return
+  const schema = connection.workbench?.schema || connection.database
+  if (typeof schema !== 'string' || schema === '') return
+  if (['mysql', 'information_schema', 'performance_schema', 'sys'].includes(schema.toLowerCase())) return
+  return schema
+}
+
+function catalogInsteadOfSql(sql: string): { ok: false; error: string; help: string } | undefined {
+  const text = sql.replace(/^\s+/, '')
+  if (/^show\s+(full\s+)?tables\b/i.test(text) || /^show\s+(databases|schemas)\b/i.test(text)) {
+    return {
+      ok: false,
+      error: '列表和库结构用 database_catalog，不要 SHOW TABLES / SHOW DATABASES。',
+      help: '列库：database_catalog kind=schemas。列表：kind=tables。列：kind=table 加 table。',
+    }
+  }
+  if (/^show\s+(full\s+)?columns\b/i.test(text) || /^desc(?:ribe)?\s+/i.test(text) || /information_schema\.(tables|columns|schemata)\b/i.test(text)) {
+    return {
+      ok: false,
+      error: '表结构用 database_catalog，不要 DESC / SHOW COLUMNS / information_schema。',
+      help: 'database_catalog kind=table，传 schema 和 table。',
+    }
+  }
 }
 
 function clipName(value: unknown, max = 40): string {
@@ -36,9 +82,11 @@ function queryDraft(sql?: string): Record<string, unknown> | undefined {
   return sql?.trim() ? { kind: 'query', sql } : undefined
 }
 
-export function registerAiTools(ctx: { tools: { register(tool: unknown): void } }, service: ConnectionService, executions: ExecutionStore, validOwner: (id: string) => boolean, rules: RedactionRule[] = []): void {
+export function registerAiTools(ctx: { tools: { register(tool: unknown): void } }, service: SqlAiPort, executions: ExecutionStore, validOwner: (id: string) => boolean, rules: RedactionRule[] = []): void {
   const json = (value: unknown) => JSON.stringify(value)
-  const liveSummaries = (session: string) => service.list(session).filter(item => item.live).map(item => {
+  const liveSummaries = (session: string) => service.list(session).filter(item =>
+    item.live && (item.dialect === 'mysql' || item.dialect === 'oracle')
+  ).map(item => {
     const query = item.workbench?.sharedQuery
     return {
       connectionId: item.id,
@@ -81,10 +129,9 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
           published: service.templates.list().filter(item => !item.unpublished && !item.archived).length,
           tool: 'database_templates',
         },
-        note: '查库用 database_*。当前 SQL、这个 SQL 用 database_execute_sql action=read。',
         next: connections.length ? connections.flatMap(item => [
-          { tool: 'database_execute_sql', args: { action: 'read', connectionId: item.connectionId, generation: item.generation } },
           { tool: 'database_catalog', args: { connectionId: item.connectionId, generation: item.generation, kind: 'schemas' } },
+          { tool: 'database_execute_sql', args: { action: 'read', connectionId: item.connectionId, generation: item.generation } },
           { tool: 'database_templates', args: { action: 'search', connectionId: item.connectionId } },
         ]) : [
           { tool: 'database_import_connections', args: { connections: [] } },
@@ -153,11 +200,11 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
   }))
   ctx.tools.register(defineTool({
     name: 'database_catalog',
-    description: '表/列/库结构，MySQL Oracle。勿用 information_schema。',
+    description: '表/列/库结构，MySQL Oracle。勿用 SHOW TABLES 或 information_schema。',
     parameters: {
       connectionId: { type: 'string', description: '来自 database_status.connections。唯一已登录 SQL 连接可省略。' },
       generation: { type: 'string', description: '来自 database_status.connections。省略则用当前 generation。' },
-      kind: { type: 'string', enum: ['schemas', 'tables', 'table'], required: true, description: 'schemas 可分页；tables 必须 schema；table 必须 schema 和 table。' },
+      kind: { type: 'string', enum: ['schemas', 'tables', 'table'], required: true, description: 'schemas 可分页；tables 省略 schema 则用当前库；table 必须 table。' },
       schema: { type: 'string' },
       table: { type: 'string' },
       search: { type: 'string' },
@@ -169,8 +216,11 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
       const resolved = resolveSql(service, session, args.connectionId, args.generation)
       if (!resolved.ok) return json(resolved)
       const connection = resolved.connection
-      return json(await service.executeCatalogTool(session, connection.id, connection.generation, args,
-        execution.signal, execution.callId, execution.rootCallId))
+      const schema = args.schema || defaultMysqlSchema(connection)
+      return json(await service.executeCatalogTool(session, connection.id, connection.generation, {
+        ...args,
+        ...(schema === undefined ? {} : { schema }),
+      }, execution.signal, execution.callId, execution.rootCallId))
     },
   }))
 
@@ -178,11 +228,11 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
     name,
     description,
     parameters: {
-      connectionId: { type: 'string', description: '来自 database_status.connections。action=read 或唯一已登录连接可省略。' },
+      connectionId: { type: 'string', description: '来自 database_status.connections。action=read 省略则读最近活动的 SQL 连接；执行时唯一已登录 SQL 可省略。' },
       generation: { type: 'string', description: '来自 database_status.connections。省略则用当前 generation。' },
       schema: { type: 'string', description: '执行必填。action=read 可不传。' },
-      sql: { type: 'string', description: '要执行的语句。看当前 SQL 时不传，改传 action=read。' },
-      action: { type: 'string', enum: ['read'], description: '当前 SQL、这个 SQL、看数据库 SQL 时传 read。' },
+      sql: { type: 'string', description: '要执行的语句。与 action=read 同时传入时执行本语句。' },
+      action: { type: 'string', enum: ['read'], description: '只看工作台当前语句。有 sql 时仍执行。' },
       purpose: { type: 'string', enum: ['verify', 'result'], description: 'verify 只回给模型；result 发布到工作台。' },
       limit: { type: 'integer' },
     },
@@ -190,15 +240,23 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
     async execute(args: { connectionId?: string; generation?: string; schema?: string; sql?: string; action?: string; purpose?: string; limit?: number }, execution: ToolExecution) {
       const session = sessionId(execution, validOwner)
       const sql = typeof args.sql === 'string' ? args.sql.trim() : ''
-      if (args.action === 'read') {
+      if (args.action === 'read' && !sql) {
         const snap = service.snapshot(session)
-        const live = snap.connections.filter(item => item.live)
-        const item = args.connectionId
-          ? live.find(row => row.id === args.connectionId)
-          : live.find(row => row.id === snap.lastActiveId) || live[0]
-        if (!item) throw new Error('请先连接数据库。')
-        if (args.generation && item.generation !== args.generation) throw new Error('连接已变化或当前对话已失效，请刷新。')
+        const resolved = resolveSql(service, session, args.connectionId, args.generation, true, snap.lastActiveId)
+        if (!resolved.ok) return json(resolved)
+        const item = resolved.connection
         const current = service.getSharedQuery(session, item.id)
+        const text = typeof current.sql === 'string' ? current.sql.trim() : ''
+        if (!text) {
+          return json({
+            action: 'read',
+            empty: true,
+            connectionId: item.id,
+            generation: item.generation,
+            name: item.name,
+            help: '工作台没有当前语句。查库请省略 action，传 sql 和 schema。',
+          })
+        }
         return json({
           action: 'read',
           connectionId: item.id,
@@ -209,10 +267,12 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
           controller: current.controller || 'ai',
           revision: current.revision || 1,
           lastRun: current.lastRun,
-          help: '这是工作台 AI Query 的当前语句。要执行把同一段 sql 连同 connectionId、generation、schema 传回本工具。',
+          help: '这是工作台当前语句。要执行请省略 action，传 sql、schema、connectionId 和 generation。',
         })
       }
       if (!sql) throw new Error('看当前 SQL 请传 action=read；执行请提供 sql。')
+      const listed = catalogInsteadOfSql(sql)
+      if (listed) return json(listed)
       const resolved = resolveSql(service, session, args.connectionId, args.generation)
       if (!resolved.ok) return json(resolved)
       const connection = resolved.connection
@@ -285,34 +345,58 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
       })
     },
   })
-  ctx.tools.register(executeSqlTool('database_execute_sql', '当前 SQL、这个 SQL、看数据库 SQL：action=read。传入 sql 则执行。SIT 可写。'))
+  ctx.tools.register(executeSqlTool('database_execute_sql', '传入 sql 则执行，不要带 action。仅当用户说当前 SQL 时才 action=read。SIT 可写。'))
 
   ctx.tools.register(defineTool({
     name: 'database_templates',
-    description: '经验库：search / get / save。',
+    description: '经验库：libraries / search / get / cluster / propose / save。',
     parameters: {
-      action: { type: 'string', enum: ['search', 'get', 'save'], required: true },
+      action: { type: 'string', enum: ['libraries', 'search', 'get', 'cluster', 'propose', 'save'], required: true },
       query: { type: 'string' },
-      connectionId: { type: 'string' },
+      connectionId: { type: 'string', description: '来自 libraries 或 *_status。整理必填。' },
       dialect: { type: 'string' },
       id: { type: 'string' },
       sql: { type: 'string' },
       title: { type: 'string' },
       summary: { type: 'string' },
       tags: { type: 'array', items: { type: 'string' } },
+      changes: { type: 'array', items: { type: 'object', additionalProperties: true }, description: 'propose：id、kind=update|archive、title、summary、tags、sql、archiveIds。' },
     },
     output: { schema: { type: 'string' }, render: (_args: unknown, value: string) => [{ type: 'text', text: value }] },
-    async execute(args: { action?: string; query?: string; connectionId?: string; dialect?: string; id?: string; sql?: string; title?: string; summary?: string; tags?: string[] }, execution: ToolExecution) {
+    async execute(args: {
+      action?: string; query?: string; connectionId?: string; dialect?: string; id?: string; sql?: string
+      title?: string; summary?: string; tags?: string[]; changes?: unknown[]
+    }, execution: ToolExecution) {
       const session = sessionId(execution, validOwner)
       const action = args.action
-      if (action !== 'search' && action !== 'get' && action !== 'save') throw new Error('action 须为 search、get 或 save。')
+      if (action !== 'libraries' && action !== 'search' && action !== 'get' && action !== 'save' && action !== 'cluster' && action !== 'propose') {
+        throw new Error('action 须为 libraries、search、get、cluster、propose 或 save。')
+      }
+      const bind = (connectionId?: string) => {
+        const resolved = resolveKnowledge(service, session, connectionId)
+        return resolved
+      }
       if (action === 'get') {
         if (!args.id) throw new Error('请提供 id。')
+        const resolved = args.connectionId ? bind(args.connectionId) : undefined
+        if (resolved && !resolved.ok) return json(resolved)
+        const command = resolved?.ok && isCommandKnowledge(resolved.connection.dialect)
         return await runLocalAiOperation(executions, execution, session, undefined, 'database_templates', {
-          title: '读取 SQL 经验原文，仍须通过当前连接策略',
-          reason: '为查看可执行 SQL，仍须通过当前连接策略。',
+          title: command ? '读取经验原文，仍须通过当前连接策略' : '读取 SQL 经验原文，仍须通过当前连接策略',
+          reason: '为查看可执行原文，仍须通过当前连接策略。',
         }, async context => {
           const id = context.executionId
+          if (command && resolved?.ok) {
+            const item = service.templates.getKnowledge(resolved.connection.dialect, args.id || '', resolved.connection.id)
+            if (!item) throw new Error('模板不存在、未发布或已归档。')
+            context.markChecked()
+            context.markRunning()
+            context.annotate({ sql: item.text, draft: queryDraft(item.text) })
+            return { conclusion: `已读取模板「${clipName(item.title)}」。`, value: json({
+              executionId: id, id: item.id, title: item.title, summary: item.summary, tags: item.tags,
+              sourceId: item.sourceId, text: item.text, version: item.version, familyId: item.familyId, archiveGuard: item.archiveGuard, analysis: item.analysis,
+            }) }
+          }
           const item = service.templates.get(args.id || '', true)
           if (!item) throw new Error('模板不存在、未发布或已归档。')
           context.markChecked()
@@ -321,15 +405,69 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
           return { conclusion: `已读取模板「${clipName(item.title)}」。`, value: json({
             executionId: id,
             id: item.id, title: item.title, summary: item.summary, tags: item.tags, dialect: item.dialect,
-            originalSql: item.originalSql, features: item.features, version: item.version, familyId: item.familyId,
+            originalSql: item.originalSql, features: item.features, version: item.version, familyId: item.familyId, archiveGuard: item.archiveGuard,
+          }) }
+        })
+      }
+      if (action === 'libraries') {
+        return await runLocalAiOperation(executions, execution, session, undefined, 'database_templates', {
+          title: '列出可整理的经验库',
+          reason: '供用户选择要整理的连接。',
+        }, async context => {
+          const id = context.executionId
+          context.markChecked()
+          context.markRunning()
+          const libraries = service.list(session).flatMap(item => {
+            if (item.dialect !== 'mysql' && item.dialect !== 'oracle' && item.dialect !== 'redis' && item.dialect !== 'kafka') return []
+            return [{ connectionId: item.id, name: item.name, dialect: item.dialect, count: service.templates.libraryCount(item.id, item.dialect), pending: !!service.templates.getTidy(item.id) }]
+          })
+          const message = libraries.length ? `共 ${libraries.length} 个经验库。` : '没有可整理的经验库。'
+          return { message, conclusion: message, value: json({ executionId: id, libraries, help: '请用户选择 connectionId，或全部。选定后再 cluster 和 propose。' }) }
+        })
+      }
+      if (action === 'propose') {
+        const resolved = bind(args.connectionId)
+        if (!resolved.ok) return json(resolved)
+        const connection = resolved.connection
+        return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
+          title: '提交经验整理，等待经验页审批',
+          reason: '提案先进入待审批，不改正式条目。',
+        }, async context => {
+          const id = context.executionId
+          context.markChecked()
+          context.markRunning()
+          const batch = service.templates.proposeTidy({ connectionId: connection.id, sourceId: connection.dialect, changes: args.changes })
+          const message = `已提交 ${batch.changes.length} 条整理，请到该连接经验页审批。`
+          return { message, conclusion: message, value: json({
+            executionId: id, pending: true, count: batch.changes.length,
+            executableChanged: batch.changes.filter(item => item.risk === 'executable-changed').length, message,
           }) }
         })
       }
       if (action === 'save') {
-        if (!args.sql || !args.title) throw new Error('保存经验需要 title 和 sql。')
-        const resolved = resolveSql(service, session, args.connectionId, undefined, false)
+        if (args.id) throw new Error('整理已有经验请用 propose，到经验页审批。')
+        if (!args.title || !args.sql) throw new Error('保存经验需要 title 和 sql。')
+        const resolved = bind(args.connectionId)
         if (!resolved.ok) return json(resolved)
         const connection = resolved.connection
+        const dialect = connection.dialect
+        if (isCommandKnowledge(dialect)) {
+          const sourceId = dialect
+          return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
+            sql: args.sql,
+            title: `保存经验“${clipName(args.title, 24)}”`,
+            reason: '将稳定可复用的命令写入经验库供后续检索。',
+          }, async context => {
+            const id = context.executionId
+            context.markChecked()
+            context.markRunning()
+            const saved = service.templates.publishKnowledge({
+              sourceId, connectionId: connection.id, text: args.sql || '', title: args.title, summary: args.summary, tags: args.tags,
+            })
+            const message = `已保存经验「${clipName(saved.title)}」。`
+            return { message, conclusion: message, value: json({ executionId: id, id: saved.id, title: saved.title, merged: false, version: saved.version, archiveGuard: saved.archiveGuard, message }) }
+          })
+        }
         return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
           sql: args.sql,
           title: `保存 SQL 经验“${clipName(args.title, 24)}”`,
@@ -339,22 +477,52 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
           context.markChecked()
           context.markRunning()
           const saved = await service.templates.publishFromSql({
-            sql: args.sql || '',
-            dialect: connection.dialect,
-            connectionId: connection.id,
-            title: args.title || '',
-            summary: args.summary,
-            tags: args.tags,
+            sql: args.sql || '', dialect, connectionId: connection.id,
+            title: args.title || '', summary: args.summary, tags: args.tags,
           })
           const message = saved.merged ? `已合并到已有经验「${clipName(saved.title)}」。` : `已保存经验「${clipName(saved.title)}」。`
-          return { message, conclusion: message, value: json({ executionId: id, id: saved.id, title: saved.title, merged: saved.merged, version: saved.version, message }) }
+          return { message, conclusion: message, value: json({ executionId: id, id: saved.id, title: saved.title, merged: saved.merged, version: saved.version, archiveGuard: saved.archiveGuard, message }) }
+        })
+      }
+      if (action === 'cluster') {
+        const resolved = bind(args.connectionId)
+        if (!resolved.ok) return json(resolved)
+        const connection = resolved.connection
+        return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
+          title: '分组当前连接的经验，便于整理说明和去重',
+          reason: '为整理经验库列出结构相同的条目。',
+        }, async context => {
+          const id = context.executionId
+          context.markChecked()
+          context.markRunning()
+          const sourceId = connection.dialect
+          const groups = isCommandKnowledge(sourceId)
+            ? service.templates.clusterKnowledge(sourceId, connection.id)
+            : service.templates.clusterPublished(connection.id, sourceId)
+          return { message: `共 ${groups.length} 组经验。`, conclusion: groups.length ? `共 ${groups.length} 组经验。` : '没有可整理的经验。', value: json({ executionId: id, groups }) }
         })
       }
       let connection: Connection | undefined
       if (args.connectionId) {
-        const resolved = resolveSql(service, session, args.connectionId, undefined, false)
+        const resolved = bind(args.connectionId)
         if (!resolved.ok) return json(resolved)
         connection = resolved.connection
+      }
+      if (connection && isCommandKnowledge(connection.dialect)) {
+        const sourceId = connection.dialect
+        return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
+          title: args.query ? `检索经验“${clipName(args.query, 24)}”，复用已发布写法` : '检索最近经验，复用已发布写法',
+          reason: '为复用已发布的命令写法。',
+        }, async context => {
+          const id = context.executionId
+          context.markChecked()
+          context.markRunning()
+          const items = service.templates.searchKnowledge(sourceId, connection.id, args.query || '').map(item => ({
+            id: item.id, title: item.title, summary: item.summary, tags: item.tags, sourceId: item.sourceId,
+            operation: item.analysis.operation, risk: item.analysis.risk, version: item.version, archiveGuard: item.archiveGuard,
+          }))
+          return { message: `检索到 ${items.length} 条模板。`, conclusion: items.length ? `检索到 ${items.length} 条模板。` : '没有匹配的经验。', value: json({ executionId: id, items }) }
+        })
       }
       const dialect = args.dialect || connection?.dialect
       return await runLocalAiOperation(executions, execution, session, connection, 'database_templates', {
@@ -366,7 +534,7 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
         context.markRunning()
         const items = service.templates.search(args.query || '', dialect, connection?.id).map(item => ({
           id: item.id, title: item.title, summary: item.summary, tags: item.tags, dialect: item.dialect,
-          operation: item.features.operation, tables: item.features.tables, risk: item.features.risk, version: item.version,
+          operation: item.features.operation, tables: item.features.tables, risk: item.features.risk, version: item.version, archiveGuard: item.archiveGuard,
         }))
         return { message: `检索到 ${items.length} 条模板。`, conclusion: items.length ? `检索到 ${items.length} 条模板。` : '没有匹配的 SQL 经验。', value: json({ executionId: id, items }) }
       })

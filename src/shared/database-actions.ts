@@ -25,6 +25,7 @@ export const CONNECTION_API_ACTIONS = [
   'catalog',
   'query',
   'manual-query',
+  'sql-knowledge-run',
   'browse',
   'maintenance',
   'redis-command',
@@ -43,6 +44,8 @@ export const CONNECTION_API_ACTIONS = [
   'duplicate',
   'test',
   'connect',
+  'connection-start',
+  'connection-cancel',
 ] as const
 export type ConnectionApiAction = typeof CONNECTION_API_ACTIONS[number]
 

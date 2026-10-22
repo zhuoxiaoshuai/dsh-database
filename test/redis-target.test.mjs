@@ -54,10 +54,10 @@ for (const operation of ['redis_keys', 'redis_value']) for (const change of ['ta
   if (change === 'takeover') f.service.controlExecutionDocument('owner', f.connection.id, 'user', undefined, f.connection.generation, f.service.getExecutionDocument('owner', f.connection.id).revision)
   if (change === 'text') f.service.updateExecutionDocument('owner', f.connection.id, 'GET other', 'ai', f.service.getExecutionDocument('owner', f.connection.id).revision, f.connection.generation)
   if (change === 'database') f.service.patchExecutionDocumentContext('owner', f.connection.id, '1', f.connection.generation, f.service.getExecutionDocument('owner', f.connection.id).revision)
-  if (change === 'generation') await f.service.open('owner', connectionInput({ dialect: 'redis', database: '1', port: 6379 }), false, f.connection.id)
+  const updating = change === 'generation' ? f.service.open('owner', connectionInput({ dialect: 'redis', database: '1', port: 6379 }), false, f.connection.id) : undefined
   if (change === 'cancel') abort.abort()
   f.releaseBlocks()
-  await Promise.allSettled(blockers); await rejected
+  await Promise.allSettled(blockers); await updating; await rejected
   const records = f.executions.list('owner').filter(item => item.operation === operation)
   assert.equal(records.length, 1)
   assert.ok(['failed', 'cancelled'].includes(records[0].status))
@@ -101,7 +101,7 @@ for (const operation of ['redis_keys', 'redis_value']) test(`${operation} cancel
   const f = await readFixture(t)
   const input = selector => operation === 'redis_keys' ? { match: selector } : { key: selector }
   const abort = new AbortController()
-  const pending = f.invoke(operation, input('fixture:hang'), abort.signal)
+  const pending = f.invoke(operation, input('fixture:delay'), abort.signal)
   const rejected = assert.rejects(pending)
   await waitFor(() => f.dispatched().length === 1)
   abort.abort(); await rejected
@@ -152,9 +152,10 @@ for (const actor of ['ai', 'user']) for (const change of ['takeover', 'text', 'd
   if (change === 'takeover') service.controlExecutionDocument('owner', id, actor === 'ai' ? 'user' : 'ai', undefined, generation, service.getExecutionDocument('owner', id).revision)
   if (change === 'text') service.updateExecutionDocument('owner', id, 'GET other', 'user', document.revision, generation)
   if (change === 'database') service.patchExecutionDocumentContext('owner', id, '1', generation, document.revision)
-  if (change === 'generation') await service.open('owner', connectionInput({ dialect: 'redis', port: 6379, database: '1', redisMode: 'standalone' }), false, id)
+  const updating = change === 'generation' ? service.open('owner', connectionInput({ dialect: 'redis', port: 6379, database: '1', redisMode: 'standalone' }), false, id) : undefined
   try { worker.postMessage({ fixtureRelease: true }) } catch { /* old generation terminated */ }
   await Promise.allSettled(blockers)
+  await updating
   await rejected
   const dispatched = readFileSync(marker, 'utf8').trim().split('\n').map(line => JSON.parse(line))
   assert.equal(dispatched.filter(item => item.input?.args?.[0] === 'PING').length, 0)
@@ -276,11 +277,16 @@ test('Redis tools return live connections when the handle is missing, stale, or 
   ]
   const service = {
     list: () => connections,
+    restoreRemembered: async () => {},
     getExecutionDocument: () => ({ controller: 'ai', revision: 1, text: '' }),
     executeRedisReadTool: async (_session, id, generation) => ({ id, generation, keys: [] }),
   }
   registerRedisAiTools({ tools: { register(tool) { tools.set(tool.name, tool) } } }, service, {}, id => id === 'owner')
   const execution = { agent: { session: { id: 'owner' } }, callId: 'c', rootCallId: 'r', signal: new AbortController().signal }
+  assert.match(tools.get('redis_status').description, /缓存/)
+  const listed = JSON.parse(await tools.get('redis_status').execute({}, execution))
+  assert.equal(listed.next[0].tool, 'redis_keys')
+  assert.equal(listed.next[0].args.connectionId, 'r1')
   const ambiguous = JSON.parse(await tools.get('redis_keys').execute({}, execution))
   assert.equal(ambiguous.ok, false)
   assert.equal(ambiguous.connections.length, 2)

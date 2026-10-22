@@ -29,6 +29,8 @@ export function sameWorkspaceConnection(a: Connection, b: Connection): boolean {
     && a.generation === b.generation
     && a.live === b.live
     && a.health === b.health
+    && a.desiredState === b.desiredState
+    && JSON.stringify(a.lifecycle) === JSON.stringify(b.lifecycle)
     && a.version === b.version
     && a.database === b.database
     && a.name === b.name

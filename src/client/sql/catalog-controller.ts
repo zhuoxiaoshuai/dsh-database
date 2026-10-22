@@ -18,6 +18,7 @@ export function useSqlCatalogController(host: WorkspaceBridge, connection: Conne
   const stableCatalog=useCallback((item:Connection,input:Parameters<NonNullable<WorkspaceBridge['catalog']>>[1],signal?:AbortSignal)=>catalogRef.current!(item,input,signal),[])
   const cache=useMemo(()=>new SchemaCache(stableCatalog),[stableCatalog,host.conversationId])
   useEffect(()=>cache.subscribe(()=>setCacheTick(v=>v+1)),[cache])
+  useEffect(()=>()=>cache.cancelPending(),[cache])
   const onSchema=useCallback((value:SetStateAction<string>)=>update('schema',value),[update])
   const onTreeBusy=useCallback((value:SetStateAction<boolean>)=>update('treeBusy',value),[update])
   const onTreeFocus=useCallback((value:SetStateAction<TreeFocus|undefined>)=>update('treeFocus',value),[update])

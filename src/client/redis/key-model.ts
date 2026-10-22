@@ -1,5 +1,6 @@
 import type { RedisValue } from '../../shared/redis-result.ts'
 import { formatValue } from '../workspace/parts/formatted-cell-value.ts'
+import { displayBytes, isBytesString, toBytesString } from '../../shared/redis-bytes.ts'
 
 export type ViewKind = 'string' | 'table' | 'stream' | 'bitmap' | 'card' | 'raw'
 export type StringEncoding = 'text' | 'json' | 'hex' | 'binary'
@@ -43,7 +44,13 @@ export function tableColumns(keyType: string): KeyColumn[] {
 export function filterRows(rows: KeyRow[], columns: KeyColumn[], keyword: string): KeyRow[] {
   const needle = keyword.trim().toLocaleLowerCase()
   if (!needle) return rows
-  return rows.filter(row => [row.id, ...columns.map(column => row.cells[column.key] ?? '')].join('\n').toLocaleLowerCase().includes(needle))
+  return rows.filter(row => [row.id, ...columns.map(column => displayCell(row.cells[column.key]))].join('\n').toLocaleLowerCase().includes(needle))
+}
+
+/** 单元格渲染：driver 返回的是 latin1 字节串，编码值回退路径可能已是普通文本，两种都兼容。 */
+export function displayCell(value: string | undefined): string {
+  const text = value ?? ''
+  return isBytesString(text) ? displayBytes(text) : text
 }
 
 export function filterTime(rows: KeyRow[], from: string, to: string): KeyRow[] {
@@ -88,11 +95,11 @@ const COPY_COLUMN: Record<string, string> = {
 
 export function rowCopyText(keyType: string, row: KeyRow): string {
   const key = COPY_COLUMN[keyType]
-  return key ? (row.cells[key] ?? '') : Object.values(row.cells).join('\t')
+  return displayCell(key ? row.cells[key] : Object.values(row.cells).join('\t'))
 }
 
 export function rowPreview(row: KeyRow): string {
-  return Object.entries(row.cells).map(([key, value]) => `${key}: ${value}`).join('\n')
+  return Object.entries(row.cells).map(([key, value]) => `${key}: ${displayCell(value)}`).join('\n')
 }
 
 export function presentEncoding(encoding: StringEncoding, value: string, binary?: { base64: string; length: number }): { text: string; editable: boolean; invalidJson: boolean } {
@@ -174,7 +181,8 @@ function rowsFromEncoded(keyType: string, value: RedisValue | undefined, offset:
 
 function redisText(value: RedisValue | undefined): string {
   if (!value || value.type === 'nil' || value.type === 'truncated') return ''
-  if (value.type === 'binary') return `(binary, ${value.length} bytes)`
+  // 二进制值转成 \xNN 展示，既看得见字节也能原样回写（旧写法 "(binary, N bytes)" 无法回写）。
+  if (value.type === 'binary') return displayBytes(toBytesString(bytesFromBase64(value.value)))
   if ('value' in value && typeof value.value === 'string') return value.value
   return ''
 }

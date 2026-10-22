@@ -14,7 +14,8 @@ const packed = spawnSync(command, [...(npmCli ? [npmCli] : []), 'pack', '--dry-r
 if (packed.status !== 0) throw new Error(`npm pack --dry-run failed: ${packed.stderr}`)
 const manifest = JSON.parse(packed.stdout)[0]
 const files = new Set(manifest.files.map(file => file.path))
-for (const required of ['lib/index.js', 'lib/client.js', 'lib/kafka-worker.mjs', 'lib/nacos-worker.mjs', 'lib/data-sources/kafka/driver.mjs']) {
+// The plugin manifest excludes standalone launchers and preview artifacts.
+for (const required of ['lib/index.js', 'lib/client.js', 'lib/connection-worker.mjs', 'lib/redis-worker.mjs', 'lib/kafka-worker.mjs', 'lib/nacos-worker.mjs', 'lib/connection-failure.mjs', 'lib/query-pool.mjs', 'lib/session-manager.mjs', 'lib/data-sources/kafka/driver.mjs']) {
   assert.ok(files.has(required), `published tarball is missing ${required}`)
 }
 for (const path of files) {

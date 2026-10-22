@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PaneGutter } from '../shell/pane-gutter.tsx'
-import { useDragResize } from '../parts/use-drag-resize.ts'
+import { useDragResize } from '../parts/hooks/use-drag-resize.ts'
 import { DockSplitContext } from '../../dock-split-context.ts'
 import { clampSplitRatio, ratioAfterDrag, splitGridRows, stealEditorPixels, SQL_PANE_GUTTER, SQL_SPLIT_RATIO_DEFAULT } from '../../sql-pane-layout.ts'
+import { usePanelSize } from '../parts/hooks/use-panel-size.ts'
 
 /** The editor and result renderer belong to the source; split, resize and collapse belong here. */
 export function ExecutionWorkbench({ className = '', toolbar, editor, result, rail, resultOpen: controlledResultOpen,
@@ -22,7 +23,10 @@ export function ExecutionWorkbench({ className = '', toolbar, editor, result, ra
   onRatioChange?(ratio: number): void
 }): React.ReactElement {
   const splitRef = useRef<HTMLDivElement>(null)
-  const [localResultOpen, setLocalResultOpen] = useState(false)
+  const size = usePanelSize(splitRef)
+  const compact = size.width > 0 && (size.width < 480 || size.height < 420)
+  const [compactView, setCompactView] = useState<'editor'|'result'>('editor')
+  const [localResultOpen, setLocalResultOpen] = useState(true)
   const [localEditorOpen, setLocalEditorOpen] = useState(true)
   const [localRatio, setLocalRatio] = useState(SQL_SPLIT_RATIO_DEFAULT)
   const [splitHeight, setSplitHeight] = useState(0)
@@ -35,7 +39,10 @@ export function ExecutionWorkbench({ className = '', toolbar, editor, result, ra
     if (!resultKey || resultKey === seenResult.current) return
     seenResult.current = resultKey
     setResultOpen(true)
+    setCompactView('result')
   }, [resultKey])
+  const previousResultOpen = useRef(resultOpen)
+  useEffect(() => { if (resultOpen && !previousResultOpen.current) setCompactView('result'); previousResultOpen.current = resultOpen }, [resultOpen])
   const setEditorOpen = (next: boolean) => { onEditorOpenChange?.(next); if (controlledEditorOpen === undefined) setLocalEditorOpen(next) }
   const setRatio = (next: number) => {
     const available = Math.max(0, (splitRef.current?.clientHeight || splitHeight) - SQL_PANE_GUTTER)
@@ -66,9 +73,10 @@ export function ExecutionWorkbench({ className = '', toolbar, editor, result, ra
   const collapseEditor = () => { if (!resultOpen) setResultOpen(true); setEditorOpen(false) }
   const collapseResult = () => { if (!editorOpen) setEditorOpen(true); setResultOpen(false) }
   return <DockSplitContext.Provider value={dockSplit}>
-    <div className={`${className}${resultOpen ? ' is-result-open' : ' is-result-collapsed'}${editorOpen ? '' : ' is-editor-collapsed'}`}>
+    <div className={`${className}${resultOpen ? ' is-result-open' : ' is-result-collapsed'}${editorOpen ? '' : ' is-editor-collapsed'}${compact ? ` is-compact-view showing-${compactView}` : ''}`}>
+      {compact && <div className="db-execution-view-switch" role="tablist" aria-label="编辑与结果"><button type="button" role="tab" aria-selected={compactView==='editor'} onClick={()=>{setEditorOpen(true);setCompactView('editor')}}>编辑</button><button type="button" role="tab" aria-selected={compactView==='result'} onClick={()=>{setResultOpen(true);setCompactView('result')}}>结果</button></div>}
       {editorOpen && toolbar}
-      <div className="db-sql-split" ref={splitRef} style={{ gridTemplateRows: splitGridRows(editorOpen, resultOpen, ratio, splitHeight) }}>
+      <div className="db-sql-split" ref={splitRef} style={{ gridTemplateRows: compact ? 'minmax(0,1fr)' : splitGridRows(editorOpen, resultOpen, ratio, splitHeight) }}>
         <div className="db-sql-editor-row" style={editorOpen ? undefined : { display: 'none' }}>{typeof editor === 'function' ? editor(editorOpen) : editor}</div>
         {!editorOpen && <PaneGutter axis="y" collapsed collapsedEdge="start" onExpand={() => setEditorOpen(true)} start={rail} />}
         {editorOpen && resultOpen && <PaneGutter axis="y" onCollapseStart={collapseEditor} onCollapseEnd={collapseResult} onResize={onHandle} />}

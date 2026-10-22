@@ -24,16 +24,28 @@ function fixture() {
       return { kind: 'topics', topics: ['demo'], executionId: 'execution-1' }
     },
   }
-  const executions = { emitWorkbench: (_session, event) => events.push(event) }
+  const executions = {
+    emitWorkbench: (_session, event) => events.push(event),
+    create: () => ({ executionId: 'status-1' }),
+    complete: () => {},
+  }
   registerKafkaAiTools({ tools: { register: tool => tools.set(tool.name, tool) } }, service, executions, id => id === 'owner')
   const execution = { callId: 'call-1', agent: { session: { id: 'owner' } } }
   return { tools, events, service, execution, connection, connections, get document() { return document }, set document(value) { document = value },
     get dispatched() { return dispatched } }
 }
 
+test('kafka_status points at kafka_topics for live connections', async () => {
+  const state = fixture()
+  assert.match(state.tools.get('kafka_status').description, /消息/)
+  const listed = JSON.parse(await state.tools.get('kafka_status').execute({}, state.execution))
+  assert.equal(listed.next[0].tool, 'kafka_topics')
+  assert.equal(listed.next[0].args.connectionId, 'k1')
+})
+
 test('Kafka AI publishes the exact read command and returns one execution ID', async () => {
   const state = fixture()
-  assert.deepEqual([...state.tools.keys()], ['kafka_status', 'kafka_topics', 'kafka_describe', 'kafka_peek', 'kafka_groups', 'kafka_group', 'kafka_group_topics', 'kafka_group_topic',
+  assert.deepEqual([...state.tools.keys()], ['kafka_status', 'kafka_topic_groups', 'kafka_topics', 'kafka_describe', 'kafka_peek', 'kafka_groups', 'kafka_group', 'kafka_group_topics', 'kafka_group_topic',
     'kafka_topic_config', 'kafka_time_offsets', 'kafka_scan', 'kafka_produce', 'kafka_produce_batch', 'kafka_tombstone', 'kafka_create_topic', 'kafka_set_group_offsets'])
   const reply = JSON.parse(await state.tools.get('kafka_topics').execute({ connectionId: 'k1', generation: 'g1' }, state.execution))
   assert.equal(state.document.text, 'TOPICS')

@@ -200,10 +200,14 @@ test('SQL AI pressure leaves the reserved manual slot usable', async t => {
   const deadline = Date.now() + 1000
   while (executions.list('owner').filter(row => row.events.some(event => event.kind === 'dispatched')).length < 2 && Date.now() < deadline) await new Promise(done => setTimeout(done, 10))
   assert.equal(executions.list('owner').filter(row => row.events.some(event => event.kind === 'dispatched')).length, 2)
-  await assert.rejects(ai(), /已为人工查询保留通道/)
+  const controller = new AbortController()
+  const queued = service.runSharedQuery('owner', { connectionId: connection.id, generation: connection.generation,
+    schema: 'app', sql: document.text, revision: document.revision, initiator: 'ai', purpose: 'verify' }, controller.signal)
+  const cancelled = assert.rejects(queued)
   const manual = await service.request('owner', connection.id, connection.generation, 'query', { sql: 'SELECT 2', schema: 'app' })
   assert.ok(manual.rows.length)
   assert.equal(executions.list('owner').filter(row => row.status === 'running').length, 2, 'manual query finishes while both AI requests are still dispatched')
+  controller.abort(); await cancelled
   await Promise.all(active)
 })
 
@@ -229,7 +233,7 @@ for (const source of ['mysql', 'oracle']) for (const stage of ['open', 'prepare'
     verifyWritableTargets: async () => { calls.push('verify'); if (stage === 'verify') abort.abort() },
     cancel: () => calls.push('cancel'), executeWrite: async () => { calls.push('write'); return 1 }, destroy: async db => { assert.equal(db, connection); calls.push('destroy') } }
   const run = new Function('getDialect', 'isWritableEnvironment', 'authorizeStatement', 'cancelledError', 'assertWritableTargets', functionText + '; return executeDml')(
-    () => driver, () => true, async () => ({ kind: 'write', sql: 'UPDATE records SET id=2', targets: [] }), message => new Error(message), () => {})
+    () => driver, () => true, async () => ({ kind: 'write', sql: 'UPDATE records SET id=2', targets: [{ schema: 'app', name: 'records' }] }), message => new Error(message), () => {})
   await assert.rejects(run({ lane: 'manual', sql: 'UPDATE records SET id=2', schema: 'app' }, { dialect: source }, abort.signal), error => error.effect === 'none' && error.cancelled)
   assert.ok(!calls.includes('write')); assert.equal(calls.at(-1), 'destroy')
 })
