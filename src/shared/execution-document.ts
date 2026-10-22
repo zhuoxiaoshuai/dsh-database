@@ -11,6 +11,11 @@ export type ExecutionDocument = {
 
 function textLimit(sourceId: DataSourceId): number { return sourceId === 'kafka' ? 512 * 1024 : 65536 }
 
+/** Shallow equality for document context maps; key order is irrelevant. */
+export function sameStringMap(a: Record<string, string>, b: Record<string, string>): boolean {
+  return Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(key => a[key] === b[key])
+}
+
 export function emptyExecutionDocument(sourceId: DataSourceId, context: Record<string, string> = {}): ExecutionDocument {
   return { sourceId, text: '', context, revision: 1, controller: 'ai' }
 }

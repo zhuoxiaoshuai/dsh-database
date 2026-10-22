@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { controlExecutionDocument, emptyExecutionDocument, updateExecutionDocument, withExecutionDocumentContext } from '../src/shared/execution-document.ts'
+import { controlExecutionDocument, emptyExecutionDocument, sameStringMap, updateExecutionDocument, withExecutionDocumentContext } from '../src/shared/execution-document.ts'
 import { matchesResultOwner, ownsDocumentResult, sameDocumentResultTarget } from '../src/shared/query-sync.ts'
 import { catalogToolFailure } from '../src/host/sql-catalog-operation.ts'
 
@@ -87,4 +87,12 @@ test('local tool failures share one classification ladder', () => {
   assert.deepEqual(catalogToolFailure(new Error('写入 timeout 了'), lifecycle(false, false)), { status: 'unknown', message: '写入 timeout 了', event: 'timeout' })
   assert.deepEqual(catalogToolFailure(new Error('连接已关闭'), lifecycle(false, true)), { status: 'unknown', message: '连接已关闭', event: 'disconnect' })
   assert.deepEqual(catalogToolFailure('boom', lifecycle(false, false)), { status: 'failed', message: '操作失败' })
+})
+
+test('document context comparison ignores key order but not shape', () => {
+  assert.equal(sameStringMap({ schema: 'app', database: '1' }, { database: '1', schema: 'app' }), true)
+  assert.equal(sameStringMap({}, {}), true)
+  assert.equal(sameStringMap({ schema: 'app' }, { schema: 'app', database: '1' }), false)
+  assert.equal(sameStringMap({ schema: 'app', database: '1' }, { schema: 'app' }), false)
+  assert.equal(sameStringMap({ schema: 'app' }, { schema: 'other' }), false)
 })

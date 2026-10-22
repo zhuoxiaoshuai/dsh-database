@@ -1,7 +1,7 @@
 import { isDataSourceId } from './data-sources/registry.ts'
 import type { Result, SharedQuery } from './workbench.ts'
 import type { DisplayResult, DocumentExecutionIdentity, DocumentExecutionResult } from './execution.ts'
-import type { ExecutionDocument } from './execution-document.ts'
+import { sameStringMap, type ExecutionDocument } from './execution-document.ts'
 
 export type ResultIdentity = {
   conversationId?: string; connectionId?: string; generation?: string; schema?: string
@@ -42,8 +42,7 @@ export function sameDocumentResultTarget(identity: DocumentExecutionIdentity, ow
 }): boolean {
   return identity.connectionId === owner.connectionId && identity.generation === owner.generation
     && identity.sourceId === owner.document.sourceId && (!owner.conversationId || identity.conversationId === owner.conversationId)
-    && Object.keys(identity.context).length === Object.keys(owner.document.context).length
-    && Object.keys(owner.document.context).every(key => identity.context[key] === owner.document.context[key])
+    && sameStringMap(identity.context, owner.document.context)
 }
 
 export function ownsDocumentResult(identity: DocumentExecutionIdentity, owner: {
@@ -66,8 +65,7 @@ export function sqlDisplay(value: DocumentExecutionResult | undefined): DisplayR
 export function matchesResultOwner(result: ResultIdentity, owner: ResultOwner): boolean {
   return typeof result.generation === 'string' && typeof owner.generation === 'string'
     && result.connectionId === owner.connectionId && result.generation === owner.generation
-    && (owner.context ? !!result.context && Object.keys(result.context).length === Object.keys(owner.context).length
-      && Object.keys(owner.context).every(key => result.context![key] === owner.context![key])
+    && (owner.context ? !!result.context && sameStringMap(result.context, owner.context)
       : typeof result.schema === 'string' && result.schema === (owner.schema ?? ''))
     && result.queryRevision === owner.queryRevision && typeof result.documentText === 'string'
     && result.documentText === owner.sql

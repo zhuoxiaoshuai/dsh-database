@@ -26,7 +26,7 @@ import { nativeErrorText } from './connect-error.mjs'
 import { CONNECTION_ERROR_CODES, ServiceError, type ConnectionErrorCode } from '../shared/connection-errors.ts'
 import type { ServiceRequestAction } from '../shared/database-actions.ts'
 import { DEFAULT_QUERY_PAGE_SIZE } from '../shared/limits.ts'
-import type { ExecutionDocument } from '../shared/execution-document.ts'
+import { sameStringMap, type ExecutionDocument } from '../shared/execution-document.ts'
 import { ExecutionDocumentService } from './execution-document-service.ts'
 import { runOperation } from './operation-runtime.ts'
 import { assertRedisClusterDatabase, assertRedisDatabaseId, redisPreparedInput } from './redis-request.ts'
@@ -346,8 +346,7 @@ export class ConnectionService {
       if (input.context !== undefined) {
         const binding = this.#entry(id)?.connection || this.list(session).find(item => item.id === id)!
         const context = hostModules.get(previous.sourceId).execution!.normalizeContext(input.context, binding)
-        if (Object.keys(context).length !== Object.keys(previous.context).length
-          || Object.keys(context).some(key => context[key] !== previous.context[key])) throw new Error('格式化不能改变执行目标。')
+        if (!sameStringMap(context, previous.context)) throw new Error('格式化不能改变执行目标。')
       }
       const kind = validateBrowserFormat(this.getSharedQuery(session, id), { sql: input.text }, previous.sourceId, input.revision as number, input.formatRange)
       source = kind === 'values' ? 'user' : 'system'
