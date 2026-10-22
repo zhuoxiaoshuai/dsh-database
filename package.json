@@ -62,7 +62,6 @@
     "lib/dml-plan.mjs",
     "lib/ddl-plan.mjs",
     "lib/primary-keys.mjs",
-    "lib/oracle-temporal.mjs",
     "lib/request-timeouts.mjs",
     "lib/cell-value.mjs",
     "lib/dialects",

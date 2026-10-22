@@ -30,7 +30,7 @@ function verifyStandaloneDependencies(result) {
 await build({ entryPoints: ['src/index.ts'], bundle: true, platform: 'node', format: 'esm', packages: 'external', outfile: 'lib/index.js', define: { __PLUGIN_VERSION__: JSON.stringify(pkg.version) } })
 // Database drivers belong to source workers, not the always-loaded Host entry.
 if (/\b(?:from|require\()\s*['"](?:redis|mysql2(?:\/[^'"]*)?|oracledb|kafkajs)['"]/.test(await readFile('lib/index.js', 'utf8'))) throw new Error('Database driver leaked into Host entry')
-for (const file of ['redis-worker.mjs', 'kafka-worker.mjs', 'connection-worker.mjs', 'connect-error.mjs', 'connection-failure.mjs', 'catalog.mjs', 'query.mjs', 'query-pool.mjs', 'session-manager.mjs', 'query-policy.mjs', 'browse.mjs', 'maintenance.mjs', 'maintenance-capability.mjs', 'dml-plan.mjs', 'ddl-plan.mjs', 'primary-keys.mjs', 'oracle-temporal.mjs', 'request-timeouts.mjs', 'cell-value.mjs']) {
+for (const file of ['redis-worker.mjs', 'kafka-worker.mjs', 'connection-worker.mjs', 'connect-error.mjs', 'connection-failure.mjs', 'catalog.mjs', 'query.mjs', 'query-pool.mjs', 'session-manager.mjs', 'query-policy.mjs', 'browse.mjs', 'maintenance.mjs', 'maintenance-capability.mjs', 'dml-plan.mjs', 'ddl-plan.mjs', 'primary-keys.mjs', 'request-timeouts.mjs', 'cell-value.mjs']) {
   await copyFile('src/host/' + file, 'lib/' + file)
 }
 await rm('lib/dialects', { recursive: true, force: true })
