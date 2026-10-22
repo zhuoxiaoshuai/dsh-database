@@ -5,6 +5,8 @@ import { resolve, sep } from 'node:path'
 import { builtinModules } from 'node:module'
 const generated = spawnSync(process.execPath, ['scripts/gen-database-css.cjs'], { stdio: 'inherit' })
 if (generated.status !== 0) process.exit(generated.status ?? 1)
+// Every shipped file is generated here; a stale lib must never reach the tarball.
+await rm('lib', { recursive: true, force: true })
 await mkdir('lib/preview', { recursive: true })
 await mkdir('lib/shared', { recursive: true })
 await mkdir('lib/dialects', { recursive: true })
