@@ -33,7 +33,7 @@ if (/\b(?:from|require\()\s*['"](?:redis|mysql2(?:\/[^'"]*)?|oracledb|kafkajs)['
 for (const file of ['redis-worker.mjs', 'kafka-worker.mjs', 'connection-worker.mjs', 'connect-error.mjs', 'connection-failure.mjs', 'catalog.mjs', 'query.mjs', 'query-pool.mjs', 'session-manager.mjs', 'query-policy.mjs', 'browse.mjs', 'maintenance.mjs', 'maintenance-capability.mjs', 'dml-plan.mjs', 'ddl-plan.mjs', 'primary-keys.mjs', 'oracle-temporal.mjs', 'request-timeouts.mjs', 'cell-value.mjs']) {
   await copyFile('src/host/' + file, 'lib/' + file)
 }
-for (const file of ['types.mjs', 'mysql.mjs', 'oracle.mjs', 'registry.mjs']) {
+for (const file of ['registry.mjs']) {
   await copyFile('src/host/dialects/' + file, 'lib/dialects/' + file)
 }
 const providerOutput = resolve('lib/data-sources'), libRoot = resolve('lib')
