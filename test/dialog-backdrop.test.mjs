@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { shouldDismissBackdrop } from '../src/client/workspace/parts/dialog.ts'
+import { shouldDismissBackdrop } from '../src/client/workspace/parts/overlay/dialog.ts'
 
 test('backdrop click closes only when the press started on the dimmed area', () => {
   const overlay = { id: 'overlay' }

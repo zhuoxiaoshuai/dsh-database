@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isHostDark } from '../src/client/workspace/parts/host-theme.ts'
+import { isHostDark } from '../src/client/workspace/parts/theme/host-theme.ts'
 import { themeVariables, workbenchThemes } from '../src/client/workspace/parts/theme-tokens.ts'
 
 test('explicit host light defeats system dark and stale dark class', () => {
