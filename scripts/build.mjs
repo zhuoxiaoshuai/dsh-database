@@ -50,7 +50,7 @@ await copyFile('src/shared/limits.mjs', 'lib/shared/limits.mjs')
 // A raw copy of nacos-worker.mjs cannot import src/shared from lib/. Bundle the HTTP client and endpoint helpers into the worker.
 await build({ entryPoints: ['src/host/nacos-worker.mjs'], bundle: true, platform: 'node', format: 'esm', packages: 'external', outfile: 'lib/nacos-worker.mjs' })
 if (/\.\.\/shared\//.test(await readFile('lib/nacos-worker.mjs', 'utf8'))) throw new Error('Nacos worker import escaped the package')
-await build({ entryPoints: ['src/client/index.tsx'], bundle: true, platform: 'browser', format: 'cjs', external: ['react', 'react-dom', 'react/jsx-runtime'], outfile: 'lib/client.js', loader: { '.png': 'dataurl' }, define: { __DATABASE_CSS__: JSON.stringify(css) } })
+await build({ entryPoints: ['src/client/index.tsx'], bundle: true, platform: 'browser', format: 'cjs', external: ['react', 'react-dom', 'react/jsx-runtime'], outfile: 'lib/client.js', loader: { '.png': 'dataurl' } })
 const client = await readFile('lib/client.js', 'utf8')
 await writeFile('lib/client.js', `window.__ModuleLoader__.load({id:"dsh-database",factory:(require)=>{var module={exports:{}};var exports=module.exports;\n${client}\nreturn module.exports;}});\n`)
 await build({ entryPoints: ['preview/index.tsx'], bundle: true, platform: 'browser', format: 'esm', outfile: 'lib/preview/preview.js', loader: { '.png': 'dataurl' } })
