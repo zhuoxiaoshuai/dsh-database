@@ -1,5 +1,5 @@
 // Test-only source. This module is registered only in an isolated acceptance bundle.
-export const mockRuntime = { id: 'mock-source', workerEntry: 'connection-worker.mjs', actions: ['mock-read'], documentKind: 'command', textExecution: true, requiresPassword: false, usesCustomCa: () => false }
+export const mockRuntime = { id: 'mock-source', workerEntry: 'connection-worker.mjs', actions: ['mock-read'], documentKind: 'command', requiresPassword: false, usesCustomCa: () => false }
 export const mockDescriptor = { id: 'mock-source', family: 'kafka', displayName: '模拟源', badge: 'TEST', showsSchemaTree: false }
 export const mockPolicy = { id: 'mock-source', analyze(text) {
   if (!/^READ [a-z]+$/.test(text)) throw new Error('模拟源只允许 READ 对象。')
