@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { controlExecutionDocument, emptyExecutionDocument, sameStringMap, updateExecutionDocument, withExecutionDocumentContext } from '../src/shared/execution-document.ts'
+import { EXECUTION_TYPES, isDisplayHistoryExecution, isInternalExecutionType, isUserVisibleQueryType } from '../src/shared/execution.ts'
 import { matchesResultOwner, ownsDocumentResult, sameDocumentResultTarget } from '../src/shared/query-sync.ts'
 import { catalogToolFailure } from '../src/host/sql-catalog-operation.ts'
 
@@ -95,4 +96,16 @@ test('document context comparison ignores key order but not shape', () => {
   assert.equal(sameStringMap({ schema: 'app' }, { schema: 'app', database: '1' }), false)
   assert.equal(sameStringMap({ schema: 'app', database: '1' }, { schema: 'app' }), false)
   assert.equal(sameStringMap({ schema: 'app' }, { schema: 'other' }), false)
+})
+
+test('execution type partition covers exactly EXECUTION_TYPES', () => {
+  assert.deepEqual(EXECUTION_TYPES.filter(isUserVisibleQueryType), ['query', 'write', 'explain'])
+  assert.deepEqual(EXECUTION_TYPES.filter(isInternalExecutionType), ['verify', 'catalog', 'tool'])
+  for (const type of EXECUTION_TYPES) assert.equal(isUserVisibleQueryType(type) !== isInternalExecutionType(type), true, type)
+  for (const type of ['query', 'write', 'explain']) assert.equal(isDisplayHistoryExecution({ type, operation: 'x', status: 'succeeded' }), true, type)
+  for (const type of ['verify', 'catalog', 'tool']) assert.equal(isDisplayHistoryExecution({ type, operation: 'x', status: 'succeeded' }), false, type)
+  // Awaiting confirmation is always history-visible; an unknown legacy type is not user-visible.
+  assert.equal(isDisplayHistoryExecution({ type: 'legacy', operation: 'x', status: 'awaiting_confirmation' }), true)
+  assert.equal(isUserVisibleQueryType('legacy'), false)
+  assert.equal(isInternalExecutionType('legacy'), false)
 })

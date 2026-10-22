@@ -90,6 +90,24 @@ export interface ExecutionEvent {
 export const EXECUTION_TYPES = ['query', 'verify', 'write', 'explain', 'catalog', 'tool'] as const
 export type ExecutionType = typeof EXECUTION_TYPES[number]
 
+const USER_VISIBLE_QUERY_TYPES: readonly string[] = ['query', 'write', 'explain']
+const INTERNAL_EXECUTION_TYPES: readonly string[] = ['verify', 'catalog', 'tool']
+
+/** Query, write and explain show a SQL result to the user. */
+export function isUserVisibleQueryType(type: string): boolean {
+  return USER_VISIBLE_QUERY_TYPES.includes(type)
+}
+
+/**
+ * Verify, catalog and tool are internal steps.
+ *
+ * The complement, not `!isUserVisibleQueryType`: legacy callers still treat a
+ * record whose persisted type is unknown as an active execution.
+ */
+export function isInternalExecutionType(type: string): boolean {
+  return INTERNAL_EXECUTION_TYPES.includes(type)
+}
+
 export interface ExecutionRecord {
   identity?: DocumentExecutionIdentity
   context?: Record<string, string>
@@ -179,7 +197,7 @@ export function isDisplayHistoryExecution(record: Pick<ExecutionRecord, 'type' |
   if (record.operation === 'knowledge_sql_execute') return false
   const type = record.type || inferExecutionType(record.operation)
   if (record.status === 'awaiting_confirmation') return true
-  return type === 'query' || type === 'write' || type === 'explain'
+  return isUserVisibleQueryType(type)
 }
 
 export function historyItemsForConnection(items: ExecutionRecord[], connectionId?: string, legacyVisible?: (record: ExecutionRecord) => boolean): ExecutionRecord[] {

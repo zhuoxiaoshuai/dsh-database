@@ -6,7 +6,7 @@ import { databaseWorkspaceRoot } from './dsh-home.ts'
 import type { Result } from '../shared/workbench.ts'
 import type { ExecutionResultEnvelope } from '../shared/execution-result.ts'
 import {
-  canTransition, clipSql, clipResultPreview, clipNarrative, EXECUTION_REASON_MAX, EXECUTION_TITLE_MAX, inferExecutionType, isTerminalStatus, publicExecution, summarizeParams,
+  canTransition, clipSql, clipResultPreview, clipNarrative, EXECUTION_REASON_MAX, EXECUTION_TITLE_MAX, inferExecutionType, isTerminalStatus, isUserVisibleQueryType, publicExecution, summarizeParams,
   type ExecutionEventKind, type ExecutionRecord, type ExecutionStatus, type ExecutionType, type WorkbenchEvent, type DocumentExecutionIdentity,
 } from '../shared/execution.ts'
 
@@ -191,7 +191,7 @@ export class ExecutionStore {
       const type = row.type || inferExecutionType(row.operation)
       return row.connectionId === connectionId
         && row.operation !== 'knowledge_sql_execute'
-        && (type === 'query' || type === 'write' || type === 'explain' || this.#nativeResults.has(row.executionId))
+        && (isUserVisibleQueryType(type) || this.#nativeResults.has(row.executionId))
         && isTerminalStatus(row.status)
         && (row.resultPersisted || !!row.resultMeta || this.#nativeResults.has(row.executionId))
     })

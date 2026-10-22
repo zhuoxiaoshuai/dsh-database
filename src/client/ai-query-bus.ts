@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { Connection, WorkspaceBridge, WorkspaceStorageStatus } from '../shared/workbench.ts'
 import { sameDocumentResultTarget, documentResult, ownsDocumentResult, preferLiveGrid, sqlDisplay } from '../shared/query-sync.ts'
 import type { ExecutionDocument } from '../shared/execution-document.ts'
-import { inferExecutionType, type DocumentExecutionResult, type DisplayResult, type ExecutionRecord, type WorkbenchEvent } from '../shared/execution.ts'
+import { inferExecutionType, isInternalExecutionType, type DocumentExecutionResult, type DisplayResult, type ExecutionRecord, type WorkbenchEvent } from '../shared/execution.ts'
 
 type ExecutionPage = { revision?: number; items: ExecutionRecord[]; events?: WorkbenchEvent[]; gap?: boolean; storage?: WorkspaceStorageStatus }
 type ExecutionListener = (page: ExecutionPage, error: string) => void
@@ -126,6 +126,6 @@ export function activeExecution(items: ExecutionRecord[], connectionId?: string)
     if (connectionId && item.connectionId !== connectionId) return false
     if (item.status !== 'preparing' && item.status !== 'checking' && item.status !== 'running') return false
     const type = item.type || inferExecutionType(item.operation)
-    return type !== 'verify' && type !== 'catalog' && type !== 'tool'
+    return !isInternalExecutionType(type)
   })
 }

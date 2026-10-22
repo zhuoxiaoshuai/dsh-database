@@ -20,7 +20,7 @@ import type { PasswordProtector } from '../password-protector.ts'
 import type { ExecutionStore } from './execution-store.ts'
 import { authorizeStatement, splitStatements } from './query-policy.mjs'
 import { catalogSchemaName, coerceVisibleSchemas, connectionOwnsSchema, sharedQuerySurface } from '../shared/workbench.ts'
-import { inferExecutionType } from '../shared/execution.ts'
+import { inferExecutionType, isUserVisibleQueryType } from '../shared/execution.ts'
 import { HOST_TIMEOUTS, connectTimeoutMessage, hostDeadlineFor, hostTimeoutMessage } from './request-timeouts.mjs'
 import { nativeErrorText } from './connect-error.mjs'
 import { CONNECTION_ERROR_CODES, ServiceError, type ConnectionErrorCode } from '../shared/connection-errors.ts'
@@ -317,7 +317,7 @@ export class ConnectionService {
     const d = this.getExecutionDocument(session, id)
     const record = this.#executions?.list(session).find(r => r.connectionId === id && r.generation === this.#entry(id)?.connection.generation
       && r.queryRevision === d.revision && r.documentText === d.text && r.schema === (d.context.schema || '')
-      && ['query', 'write', 'explain'].includes(r.type || '') && !(r.initiator === 'ai' && d.controller === 'user'))
+      && isUserVisibleQueryType(r.type || '') && !(r.initiator === 'ai' && d.controller === 'user'))
     const result = record && this.#executions?.get(session, record.executionId, true)?.result
     return { sql: d.text, schema: d.context.schema || '', revision: d.revision, controller: d.controller, controllerReason: d.controllerReason,
       ...(record ? { lastExecutionId: record.executionId, lastRun: { executionId: record.executionId, columns: result?.columns || [], rowCount: result?.rows.length || 0,
