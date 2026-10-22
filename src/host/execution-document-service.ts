@@ -1,8 +1,7 @@
 import type { Connection } from '../shared/workbench.ts'
 import { emptyExecutionDocument, updateExecutionDocument, controlExecutionDocument, type ExecutionDocument } from '../shared/execution-document.ts'
 import { sanitizeConversationWorkbench, type ConversationLayout } from './conversation-workbench-store.ts'
-import { getSourceRuntime } from './data-sources/runtime-registry.mjs'
-import { hostModules } from './data-sources/modules.ts'
+import { hostModules, getSourceRuntime } from './data-sources/modules.ts'
 
 export interface ExecutionDocumentPort {
   binding(owner: string, id: string, generation?: unknown): Connection

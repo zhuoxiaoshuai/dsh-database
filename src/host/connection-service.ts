@@ -28,7 +28,6 @@ import type { ServiceRequestAction } from '../shared/database-actions.ts'
 import { DEFAULT_QUERY_PAGE_SIZE } from '../shared/limits.ts'
 import type { ExecutionDocument } from '../shared/execution-document.ts'
 import { ExecutionDocumentService } from './execution-document-service.ts'
-import { getSourceRuntime } from './data-sources/runtime-registry.mjs'
 import { runOperation } from './operation-runtime.ts'
 import { assertRedisClusterDatabase, assertRedisDatabaseId, redisPreparedInput } from './redis-request.ts'
 import { TextOperationRunner } from './text-operation-runner.ts'
@@ -39,7 +38,7 @@ import { prepareCatalogTool, catalogToolFailure, type CatalogToolInput } from '.
 import { prepareRedisReadOperation, type RedisReadTool } from './data-sources/redis/read-operation.ts'
 import { unwrapExplainSql } from '../shared/sql-text.ts'
 import { parseBrowserQueryUpdate, validateBrowserFormat } from './sql-browser-request.ts'
-import { hostModules } from './data-sources/modules.ts'
+import { hostModules, getSourceRuntime } from './data-sources/modules.ts'
 export { connectionFingerprint, validateConnection } from '../shared/connection-input.ts'
 
 const MAX_LIVE = 20
