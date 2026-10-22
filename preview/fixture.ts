@@ -1,4 +1,4 @@
-import { selectTable, type Connection, type Table, type WorkspaceBridge } from '../src/workbench.ts'
+import { selectTable, type Connection, type Table, type WorkspaceBridge } from '../src/shared/workbench.ts'
 
 export const connections: Connection[] = [
   { id: 'preview-mysql', name: '电商开发库', dialect: 'mysql', database: 'commerce_dev', environment: 'sit', version: '8.x · 演示' },

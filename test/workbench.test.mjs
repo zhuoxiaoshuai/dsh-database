@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { exportResult, quoteIdentifier, selectTable, visibleTables, unavailableBridge } from '../src/workbench.ts'
+import { exportResult, quoteIdentifier, selectTable, visibleTables, unavailableBridge } from '../src/shared/workbench.ts'
 import { previewBridge } from '../preview/fixture.ts'
 const result = { columns: ['id', 'note'], rows: [['9007199254740993', '客户, "备注"'], [null, '=1+1']], elapsedMs: 1, truncated: true }
 test('CSV escapes separators/quotes and neutralizes formulas without losing large integer digits', () => {
