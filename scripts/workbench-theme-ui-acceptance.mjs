@@ -10,8 +10,8 @@ await mkdir(out, { recursive: true })
 await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
   import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
   import {StandardSourceMount} from './src/client/workspace-sources.tsx';import {clientModules} from './src/client/data-sources/registry.ts';
-  import {useWorkbenchTheme} from './src/client/workspace/parts/use-workbench-theme.ts';
-  import {setWorkbenchTheme} from './src/client/workspace/parts/workbench-theme.ts';import {workbenchThemes} from './src/client/workspace/parts/theme-tokens.ts';
+  import {useWorkbenchTheme} from './src/client/workspace/parts/theme/use-workbench-theme.ts';
+  import {setWorkbenchTheme} from './src/client/workspace/parts/theme/workbench-theme.ts';import {workbenchThemes} from './src/client/workspace/parts/theme/theme-tokens.ts';
   import './src/client/style.css';
   const calls=[],data={content:'port: 8080\\nname: app\\n',md5:'baseline',type:'yaml'},documents={};let source='kafka';
   const connections=Object.fromEntries(['kafka','redis','nacos'].map(dialect=>[dialect,{id:dialect,generation:'g1',name:dialect,dialect,environment:'sit',database:dialect==='redis'?'0':'',live:true,health:'ready'}]));

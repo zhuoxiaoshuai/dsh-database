@@ -10,8 +10,8 @@ await mkdir(out, { recursive: true })
 await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
   import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
   import {StandardSourceMount} from './src/client/workspace-sources.tsx';import {clientModules} from './src/client/data-sources/registry.ts';
-  import {useWorkbenchTheme} from './src/client/workspace/parts/use-workbench-theme.ts';
-  import {setWorkbenchTheme} from './src/client/workspace/parts/workbench-theme.ts';import {workbenchThemes} from './src/client/workspace/parts/theme-tokens.ts';
+  import {useWorkbenchTheme} from './src/client/workspace/parts/theme/use-workbench-theme.ts';
+  import {setWorkbenchTheme} from './src/client/workspace/parts/theme/workbench-theme.ts';import {workbenchThemes} from './src/client/workspace/parts/theme/theme-tokens.ts';
   import './src/client/style.css';
   import {WorkbenchShell} from './src/client/workspace/shell/workbench-shell.tsx';
   import {ConnectionForm} from './src/client/workspace/connection/connection-form.tsx';

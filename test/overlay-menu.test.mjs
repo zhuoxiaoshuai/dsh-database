@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { defaultThemeCss } from '../src/client/workspace/parts/theme-tokens.ts'
+import { defaultThemeCss } from '../src/client/workspace/parts/theme/theme-tokens.ts'
 
 const css = readFileSync(new URL('../src/client/style.css', import.meta.url), 'utf8')
 test('overlay menus and autocomplete consume the shared semantic palette', () => {
