@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { startPreview } from './preview.mjs'
-import { ConnectionService } from '../src/connection-service.ts'
+import { ConnectionService } from '../src/host/connection-service.ts'
 
 /** Invoked only by owned-container acceptance; never prints or stores credentials. */
 export async function checkConnectionFlow(input) {

@@ -5,7 +5,7 @@ import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readFile } from 'node:fs/promises'
-import { ConnectionService } from './connection-service.ts'
+import { ConnectionService } from './host/connection-service.ts'
 import { connectionApi } from './host/connection-api.ts'
 import { ExecutionStore } from './host/execution-store.ts'
 
