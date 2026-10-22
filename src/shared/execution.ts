@@ -72,6 +72,19 @@ export function executionStop(input: { aborted: boolean; dispatched: boolean; me
   return { status: 'failed', message }
 }
 
+export type ClassifiedFailure = { status: 'cancelled' | 'unknown' | 'failed'; message: string; event?: 'timeout' | 'disconnect' }
+
+/** Shared timeout/disconnect ladder for local tool failures. */
+export function classifyOperationFailure(error: unknown, lifecycle: { aborted: boolean; dispatched: boolean }): ClassifiedFailure {
+  const message = error instanceof Error ? error.message : '操作失败'
+  const stop = executionStop({ ...lifecycle, message })
+  if (isHostQueryTimeout(message)) return { status: 'failed', message }
+  if (stop.status !== 'failed') return stop
+  if (/超时|timeout/i.test(message)) return { status: 'unknown', message, event: 'timeout' }
+  if (/连接已关闭|连接已变化/.test(message)) return { status: 'unknown', message, event: 'disconnect' }
+  return { status: 'failed', message }
+}
+
 export function canTransition(from: ExecutionStatus, to: ExecutionStatus): boolean {
   if (from === to) return true
   if (isTerminalStatus(from)) return false
