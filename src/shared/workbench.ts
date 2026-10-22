@@ -257,6 +257,7 @@ export interface CatalogSection<T> { status: 'actual' | 'omitted' | 'unavailable
 export interface CatalogIndex extends Record<string, unknown> { name: string; unique: boolean; type: string; columns: string[] }
 export interface CatalogConstraint extends Record<string, unknown> { name: string; type: 'primary' | 'unique' | 'foreign' | 'check'; columns: string[]; status?: string; referencedOwner?: unknown; referencedConstraint?: unknown; deleteRule?: unknown; expression?: unknown }
 
+/** Quote only. Host-side identifier validation and driver quoting live in host/query-policy.mjs. */
 export function quoteIdentifier(dialect: Dialect, name: string): string {
   const quote = dialectCapabilities(dialect).identifierQuote
   return quote + name.replaceAll(quote, quote + quote) + quote
