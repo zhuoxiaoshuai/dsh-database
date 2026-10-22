@@ -1,21 +1,14 @@
 import { isDataSourceId } from './data-sources/registry.ts'
 import type { Result, SharedQuery } from './workbench.ts'
-import type { DisplayResult, WorkbenchEvent, DocumentExecutionIdentity, DocumentExecutionResult } from './execution.ts'
+import type { DisplayResult, DocumentExecutionIdentity, DocumentExecutionResult } from './execution.ts'
 import type { ExecutionDocument } from './execution-document.ts'
-
-export function displayKindOf(event: Pick<WorkbenchEvent, 'kind' | 'executedSql' | 'sql'>): DisplayResult['kind'] {
-  if (event.kind === 'explain' || event.kind === 'write' || event.kind === 'query') return event.kind
-  const sql = event.executedSql || event.sql || ''
-  if (/^explain\b/i.test(sql.trim())) return 'explain'
-  return 'query'
-}
 
 export type ResultIdentity = {
   conversationId?: string; connectionId?: string; generation?: string; schema?: string
   context?: Record<string, string>
   queryRevision?: number; documentText?: string; executedSql?: string; initiator?: 'ai' | 'user'
 }
-export type ResultOwner = {
+type ResultOwner = {
   conversationId?: string; connectionId: string; generation?: string; schema?: string
   context?: Record<string, string>
   queryRevision: number; sql: string; controller?: SharedQuery['controller']
@@ -83,12 +76,6 @@ export function matchesResultOwner(result: ResultIdentity, owner: ResultOwner): 
     && !(result.initiator === 'ai' && owner.controller === 'user')
 }
 
-export function displayMatchingEditor(current: DisplayResult | undefined, editorSql: string): DisplayResult | undefined {
-  if (!current) return
-  if (current.documentText === editorSql) return current
-  return undefined
-}
-
 function gridRicher(current: Result, incoming: Result): boolean {
   return current.columns.length > incoming.columns.length || current.rows.length > incoming.rows.length
     || (current.steps?.length || 0) > (incoming.steps?.length || 0) || (current.batch?.length || 0) > (incoming.batch?.length || 0)
@@ -99,55 +86,4 @@ export function preferLiveGrid(current: DisplayResult | undefined, incoming: Dis
   if (!current || current.executionId !== incoming.executionId) return incoming
   if (!gridRicher(current.result, incoming.result)) return incoming
   return { ...incoming, result: current.result }
-}
-
-export function keepHydratedDisplay(current: DisplayResult | undefined, next: DisplayResult | undefined, editorSql: string): DisplayResult | undefined {
-  if (next) return preferLiveGrid(current, next)
-  return displayMatchingEditor(current, editorSql)
-}
-
-export function applyExecutionResult(
-  current: DisplayResult | undefined,
-  event: WorkbenchEvent,
-  opts: { connectionId: string; controller: SharedQuery['controller']; sql: string; queryRevision: number; schema?: string; generation?: string; conversationId?: string },
-): DisplayResult | undefined {
-  if (event.type !== 'EXECUTION_FINISHED' && event.type !== 'EXECUTION_FAILED') return current
-  if (event.connectionId !== opts.connectionId || !event.executionId) return current
-  if (!matchesResultOwner(event, opts)) return current && matchesResultOwner(current, opts) ? current : undefined
-  const kind = displayKindOf(event)
-  const failed = event.type === 'EXECUTION_FAILED'
-  const message = event.message || (event.result as Result | undefined)?.message || (failed ? '执行失败' : undefined)
-  const result = event.result || (failed
-    ? { columns: [], rows: [], truncated: false, elapsedMs: 0, ...(message ? { message } : {}) }
-    : undefined)
-  if (!result) return current
-  return preferLiveGrid(current, {
-    connectionId: event.connectionId,
-    executionId: event.executionId,
-    queryRevision: event.queryRevision!, generation: event.generation, schema: event.schema, documentText: event.documentText, initiator: event.initiator, conversationId: event.conversationId, context: event.context,
-    executedSql: event.executedSql!,
-    result: { ...result, ...(message ? { message } : {}) } as Result,
-    kind,
-  })
-}
-
-export function displayFromLatest(
-  connectionId: string,
-  query: SharedQuery,
-  latest?: { executionId?: string; connectionId?: string; queryRevision?: number; executedSql?: string; sql?: string; type?: string; result?: Result; generation?: string; schema?: string; message?: string; documentText?: string; initiator?: 'ai' | 'user'; conversationId?: string; context?: Record<string, string> } | null,
-  generation?: string,
-): DisplayResult | undefined {
-  if (!latest?.executionId) return
-  if (!matchesResultOwner(latest, { connectionId, generation, schema: query.schema, queryRevision: query.revision, sql: query.sql, controller: query.controller })) return
-  const executedSql = latest.executedSql || latest.sql || ''
-  if (latest.type && latest.type !== 'query' && latest.type !== 'write' && latest.type !== 'explain') return
-  if (!latest.result) return
-  return {
-    connectionId,
-    executionId: latest.executionId,
-    queryRevision: latest.queryRevision!, generation: latest.generation, schema: latest.schema, documentText: latest.documentText, initiator: latest.initiator, conversationId: latest.conversationId, context: latest.context,
-    executedSql,
-    result: latest.result,
-    kind: latest.type === 'explain' ? 'explain' : latest.type === 'write' ? 'write' : 'query',
-  }
 }
