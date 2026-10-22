@@ -3,12 +3,11 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { AiDocumentPort } from '../../ai-service-ports.ts'
 import type { ExecutionStore } from '../../execution-store.ts'
 import { nativeErrorText } from '../../connect-error.mjs'
-import { formatKafkaCommand, parseKafkaCommand } from './command.mjs'
+import { formatKafkaCommand, isKafkaWrite, parseKafkaCommand } from './command.mjs'
 import { resolveAiConnection } from '../../ai-connection-resolve.ts'
 
 type Selection = { connectionId?: string; generation?: string }
 const output = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] }
-const writeKinds = new Set(['produce', 'produce-batch', 'tombstone', 'create-topic', 'set-group-offsets'])
 const asObject = (raw: unknown, label: string): Record<string, unknown> => {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) throw new Error(`${label} 必须是对象。`)
   return raw as Record<string, unknown>
@@ -36,7 +35,7 @@ export function registerKafkaAiTools(ctx: { tools: { register(tool: unknown): vo
     const resolved = selected(session, args)
     if (!resolved.ok) return JSON.stringify(resolved)
     const connection = resolved.connection
-    if (writeKinds.has(String(operation.kind)) && connection.environment !== 'sit') throw new Error('Kafka 写操作仅在 SIT 开放。')
+    if (isKafkaWrite(String(operation.kind)) && connection.environment !== 'sit') throw new Error('Kafka 写操作仅在 SIT 开放。')
     const command = formatKafkaCommand(operation)
     parseKafkaCommand(command)
     const before = service.getExecutionDocument(session, connection.id, connection.generation)

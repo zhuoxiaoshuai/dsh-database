@@ -1,9 +1,7 @@
-import { parseKafkaCommand } from './command.mjs'
+import { isKafkaWrite, parseKafkaCommand } from './command.mjs'
 import type { PreparedTextOperation } from '../module-types.ts'
 import type { Connection } from '../../../shared/workbench.ts'
 import { limitKafkaResult } from './result.mjs'
-
-const writeKinds = new Set(['produce', 'produce-batch', 'tombstone', 'create-topic', 'set-group-offsets'])
 
 export const kafkaExecution = {
   normalizeContext(raw: unknown) {
@@ -15,7 +13,7 @@ export const kafkaExecution = {
     if (actor !== 'user' && actor !== 'ai') throw new Error('执行身份无效。')
     const verified = kafkaExecution.prepareText(prepared.text)
     if (verified.action !== prepared.action || verified.operation !== prepared.operation) throw new Error('Kafka 操作与已解析命令不匹配。')
-    if (writeKinds.has(verified.operation.slice('kafka_'.length)) && binding.environment !== 'sit') throw new Error('Kafka 写操作仅在 SIT 开放。')
+    if (isKafkaWrite(verified.operation.slice('kafka_'.length)) && binding.environment !== 'sit') throw new Error('Kafka 写操作仅在 SIT 开放。')
   },
   prepareText(text: unknown) {
     const operation = parseKafkaCommand(text) as { kind: 'topics' | 'topic-groups' | 'describe' | 'peek' | 'groups' | 'group' | 'group-topics' | 'group-topic' | 'produce' | 'topic-config' | 'time-offsets' | 'scan' | 'produce-batch' | 'tombstone' | 'create-topic' | 'set-group-offsets'; topic?: string; partition?: number; groupId?: string; replayFrom?: { topic: string; partition: number; offset: string } }
@@ -59,7 +57,7 @@ export const kafkaExecution = {
         return operation.kind === 'produce-batch' && partial?.kind === 'produce-batch' && Array.isArray(partial.receipts)
           ? limitKafkaResult({ ...partial, status: 'unknown' }) : undefined
       },
-      ...(writeKinds.has(operation.kind) ? {
+      ...(isKafkaWrite(operation.kind) ? {
         classifyInterruption: (error: unknown, lifecycle: { aborted: boolean; dispatched: boolean }) =>
           (error as { effect?: string } | undefined)?.effect === 'none' ? (lifecycle.aborted ? 'cancelled' as const : 'failed' as const)
             : lifecycle.dispatched || (error as { effect?: string } | undefined)?.effect === 'unknown' ? 'unknown' as const : 'failed' as const,
