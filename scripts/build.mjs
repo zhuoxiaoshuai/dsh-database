@@ -47,6 +47,8 @@ await build({entryPoints:['src/host/data-sources/kafka/command.mjs'],bundle:true
 await build({entryPoints:['src/host/data-sources/nacos/http-client.mjs'],bundle:true,platform:'node',format:'esm',packages:'external',outfile:'lib/data-sources/nacos/http-client.mjs'})
 // Provider output omits src/host: bundle shared source imports rather than copying escaping paths.
 for(const file of ['configuration-service.mjs','config-protection.mjs','markup-protection.mjs'])await build({entryPoints:['src/host/data-sources/nacos/'+file],bundle:true,platform:'node',format:'esm',packages:'external',outfile:'lib/data-sources/nacos/'+file})
+await build({entryPoints:['src/host/data-sources/sql-policy-common.mjs'],bundle:true,platform:'node',format:'esm',packages:'external',outfile:'lib/data-sources/sql-policy-common.mjs'})
+if (/\.\.\/shared\//.test(await readFile('lib/data-sources/sql-policy-common.mjs', 'utf8'))) throw new Error('SQL policy import escaped the package')
 await copyFile('src/shared/connection-permission.mjs', 'lib/shared/connection-permission.mjs')
 await copyFile('src/shared/limits.mjs', 'lib/shared/limits.mjs')
 // A raw copy of nacos-worker.mjs cannot import src/shared from lib/. Bundle the HTTP client and endpoint helpers into the worker.

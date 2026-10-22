@@ -96,3 +96,76 @@ export function locateStatement(sql: string, offset: number, dialect: Dialect = 
   const point = Math.max(0, Math.min(offset, sql.length))
   return ranges.find(range => point >= range.start && point <= range.end) || ranges.at(-1) || { start: 0, end: sql.length, sql }
 }
+
+function leadKind(sql: string): string {
+  let text = sql.trim()
+  for (;;) {
+    const next = text.replace(/^--[^\n]*(?:\r?\n|$)/, '').replace(/^#[^\n]*(?:\r?\n|$)/, '').replace(/^\/\*[\s\S]*?\*\//, '').trim()
+    if (next === text) return text
+    text = next
+  }
+}
+
+/**
+ * Split a script into the statements the Host policy authorizes.
+ *
+ * Deliberately not `enumerateStatements`: it keeps the historical Host region
+ * rules (`--` and `#` always open a comment, backslash escapes only single
+ * quotes, no q-quotes) so the statement count reaching authorization never
+ * changes. Comment-only segments are dropped and leading comments stay attached.
+ */
+export function splitStatements(sql: string): string[] {
+  const text = String(sql || '')
+  const parts: string[] = []
+  let i = 0, start = 0, started = false
+  const n = text.length
+  const emit = (end: number) => {
+    if (!started) return
+    const part = text.slice(start, end).trim().replace(/;\s*$/, '')
+    if (part && leadKind(part)) parts.push(part)
+    started = false
+  }
+  while (i < n) {
+    const ch = text[i]
+    if (ch === '-' && text[i + 1] === '-') {
+      i += 2
+      while (i < n && text[i] !== '\n') i += 1
+      continue
+    }
+    if (ch === '#') {
+      while (i < n && text[i] !== '\n') i += 1
+      continue
+    }
+    if (ch === '/' && text[i + 1] === '*') {
+      i += 2
+      while (i + 1 < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1
+      i += 2
+      continue
+    }
+    if (ch === '\'' || ch === '"' || ch === '`') {
+      const quote = ch
+      started = true
+      i += 1
+      while (i < n) {
+        if (quote === '\'' && text[i] === '\\') { i += 2; continue }
+        if (text[i] === quote) {
+          if (text[i + 1] === quote) { i += 2; continue }
+          break
+        }
+        i += 1
+      }
+      i += 1
+      continue
+    }
+    if (ch === ';') {
+      emit(i)
+      i += 1
+      start = i
+      continue
+    }
+    if (!/\s/.test(ch)) started = true
+    i += 1
+  }
+  emit(n)
+  return parts
+}
