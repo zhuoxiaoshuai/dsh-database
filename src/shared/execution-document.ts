@@ -16,6 +16,16 @@ export function sameStringMap(a: Record<string, string>, b: Record<string, strin
   return Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(key => a[key] === b[key])
 }
 
+/** 文档修订号：安全整数且 >= 1。 */
+export function isDocumentRevision(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 1
+}
+
+/** 仅当携带修订号且与当前文档不一致时拒绝。 */
+export function assertDocumentRevision(current: Pick<ExecutionDocument, 'revision'>, expected: number | undefined, message: string): void {
+  if (expected !== undefined && expected !== current.revision) throw new Error(message)
+}
+
 export function emptyExecutionDocument(sourceId: DataSourceId, context: Record<string, string> = {}): ExecutionDocument {
   return { sourceId, text: '', context, revision: 1, controller: 'ai' }
 }
@@ -33,7 +43,7 @@ export function sanitizeExecutionDocument(value: unknown, sourceId: DataSourceId
 
 /** 目标也是可执行文档的一部分；切换目标保留控制权。 */
 export function withExecutionDocumentContext(previous: ExecutionDocument, patch: Record<string, string>, expectedRevision?: number): ExecutionDocument {
-  if (expectedRevision !== undefined && expectedRevision !== previous.revision) throw new Error('AI Query 已变化，请重新读取后再试。')
+  assertDocumentRevision(previous, expectedRevision, 'AI Query 已变化，请重新读取后再试。')
   const context = { ...previous.context }
   let changed = false
   for (const [key, value] of Object.entries(patch)) {
@@ -47,7 +57,7 @@ export function withExecutionDocumentContext(previous: ExecutionDocument, patch:
 }
 
 export function updateExecutionDocument(previous: ExecutionDocument, text: string, source: 'ai' | 'user' | 'system', expectedRevision?: number, context?: Record<string, string>): ExecutionDocument {
-  if (expectedRevision !== undefined && expectedRevision !== previous.revision) throw new Error('AI Query 已变化，请重新读取后再试。')
+  assertDocumentRevision(previous, expectedRevision, 'AI Query 已变化，请重新读取后再试。')
   if (source === 'ai' && previous.controller !== 'ai') throw new Error('用户已接管 AI Query，无法覆盖编辑器。')
   const clipped = text.slice(0, textLimit(previous.sourceId))
   const target = context === undefined ? previous : withExecutionDocumentContext(previous, context)

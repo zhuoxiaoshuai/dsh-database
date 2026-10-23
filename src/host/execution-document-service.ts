@@ -1,5 +1,5 @@
 import type { Connection } from '../shared/workbench.ts'
-import { emptyExecutionDocument, updateExecutionDocument, controlExecutionDocument, type ExecutionDocument } from '../shared/execution-document.ts'
+import { assertDocumentRevision, emptyExecutionDocument, isDocumentRevision, updateExecutionDocument, controlExecutionDocument, type ExecutionDocument } from '../shared/execution-document.ts'
 import { sanitizeConversationWorkbench, type ConversationLayout } from './conversation-workbench-store.ts'
 import { hostModules, getSourceRuntime } from './data-sources/modules.ts'
 
@@ -33,16 +33,16 @@ export class ExecutionDocumentService {
     return document
   }
   update(owner: string, id: string, text: string, source: 'ai' | 'user' | 'system', expectedRevision?: number, generation?: unknown, context?: unknown): ExecutionDocument {
-    if (!Number.isSafeInteger(expectedRevision) || !expectedRevision) throw new Error('缺少有效文档修订，请刷新。')
+    if (!isDocumentRevision(expectedRevision)) throw new Error('缺少有效文档修订，请刷新。')
     const previous = this.read(owner, id, generation)
     const normalized = context === undefined ? undefined : hostModules.get(previous.sourceId).execution!.normalizeContext(context, this.port.binding(owner, id))
     const next = updateExecutionDocument(previous, text, source, expectedRevision, normalized)
     return next === previous ? previous : this.commit(owner, id, next)
   }
   control(owner: string, id: string, controller: 'ai' | 'user', reason: string, generation?: unknown, revision?: number): ExecutionDocument {
-    if (!Number.isSafeInteger(revision) || !revision) throw new Error('缺少有效文档修订，请刷新。')
+    if (!isDocumentRevision(revision)) throw new Error('缺少有效文档修订，请刷新。')
     const previous = this.read(owner, id, generation)
-    if (revision !== previous.revision) throw new Error('AI Query 已变化，请刷新后再试。')
+    assertDocumentRevision(previous, revision, 'AI Query 已变化，请刷新后再试。')
     const next = controlExecutionDocument(previous, controller, reason)
     return next === previous ? previous : this.commit(owner, id, next)
   }

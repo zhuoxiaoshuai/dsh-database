@@ -5,6 +5,7 @@ import type { ExecutionStore } from '../../execution-store.ts'
 import { nativeErrorText } from '../../connect-error.mjs'
 import { formatKafkaCommand, isKafkaWrite, parseKafkaCommand } from './command.mjs'
 import { resolveAiConnection } from '../../ai-connection-resolve.ts'
+import { assertDocumentRevision } from '../../../shared/execution-document.ts'
 
 type Selection = { connectionId?: string; generation?: string }
 const output = { schema: { type: 'string' as const }, render: (_args: unknown, value: string) => [{ type: 'text' as const, text: value }] }
@@ -42,7 +43,8 @@ export function registerKafkaAiTools(ctx: { tools: { register(tool: unknown): vo
     if (before.controller !== 'ai') throw new Error('用户已接管 AI Query，无法继续操作 Kafka。')
     const published = service.updateExecutionDocument(session, connection.id, command, 'ai', before.revision, connection.generation)
     const current = service.getExecutionDocument(session, connection.id, connection.generation)
-    if (current.controller !== 'ai' || current.revision !== published.revision || current.text !== command) throw new Error('AI Query 已被修改，操作没有执行。')
+    assertDocumentRevision(current, published.revision, 'AI Query 已被修改，操作没有执行。')
+    if (current.controller !== 'ai' || current.text !== command) throw new Error('AI Query 已被修改，操作没有执行。')
     try {
       const result = await service.executeText(session, connection.id, connection.generation, command, execution.signal, 'ai', execution.callId, published.revision, execution.rootCallId, undefined, { type: 'tool' })
       return JSON.stringify(result)

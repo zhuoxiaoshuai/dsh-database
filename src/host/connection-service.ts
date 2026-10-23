@@ -26,7 +26,7 @@ import { nativeErrorText } from './connect-error.mjs'
 import { CONNECTION_ERROR_CODES, ServiceError, type ConnectionErrorCode } from '../shared/connection-errors.ts'
 import type { ServiceRequestAction } from '../shared/database-actions.ts'
 import { DEFAULT_QUERY_PAGE_SIZE } from '../shared/limits.ts'
-import { sameStringMap, type ExecutionDocument } from '../shared/execution-document.ts'
+import { assertDocumentRevision, isDocumentRevision, sameStringMap, type ExecutionDocument } from '../shared/execution-document.ts'
 import { ExecutionDocumentService } from './execution-document-service.ts'
 import { runOperation } from './operation-runtime.ts'
 import { assertRedisClusterDatabase, assertRedisDatabaseId, redisPreparedInput } from './redis-request.ts'
@@ -331,9 +331,9 @@ export class ConnectionService {
     return this.documents.update(session, id, text, source, expectedRevision, generation, context)
   }
   assertBrowserDocumentRequest(session: string, id: string, generation: unknown, revision: unknown): void {
-    if (!Number.isSafeInteger(revision) || (revision as number) < 1) throw new Error('缺少有效文档修订，请刷新。')
+    if (!isDocumentRevision(revision)) throw new Error('缺少有效文档修订，请刷新。')
     const document = this.getExecutionDocument(session, id, generation)
-    if (document.revision !== revision) throw new Error('AI Query 已变化，请刷新后再试。')
+    assertDocumentRevision(document, revision, 'AI Query 已变化，请刷新后再试。')
     if (this.#hasEntry(id) && typeof generation !== 'string') throw new Error('缺少连接代次，请刷新。')
   }
   updateExecutionDocumentFromBrowser(session: string, id: string, input: Record<string, unknown>): ExecutionDocument {
@@ -396,7 +396,7 @@ export class ConnectionService {
     const id = input.connectionId, document = this.getExecutionDocument(session, id, input.generation)
     const connection = this.#entry(id)?.connection
     if (!connection?.live || getSourceRuntime(document.sourceId).documentKind !== 'sql') throw new Error('请先连接数据库。')
-    if (input.revision !== undefined && input.revision !== document.revision) throw new Error('AI Query 已变化，请重新读取后再试。')
+    assertDocumentRevision(document, input.revision, 'AI Query 已变化，请重新读取后再试。')
     if (document.controller !== input.initiator) throw new Error(input.initiator === 'ai' ? '用户已接管 AI Query。' : '请先接管 AI Query。')
     const sql = input.sql || document.text, schema = input.schema || document.context.schema || connection.database
     if (input.initiator === 'user' && !document.text.includes(unwrapExplainSql(sql))) throw new Error('执行文本不属于当前文档。')
@@ -411,7 +411,7 @@ export class ConnectionService {
   }
   async explainPlan(session: string, id: string, generation: unknown, input: { schema: string; sql: string; revision?: number; initiator?: 'ai' | 'user'; callId?: string; rootCallId?: string }, signal?: AbortSignal): Promise<Result & { executionId?: string }> {
     const d = this.getExecutionDocument(session, id, generation)
-    if (input.revision !== undefined && input.revision !== d.revision) throw new Error('AI Query 已变化，请刷新。')
+    assertDocumentRevision(d, input.revision, 'AI Query 已变化，请刷新。')
     const result = await this.executeText(session, id, generation, input.sql, signal, input.initiator || 'ai', input.callId, d.revision, input.rootCallId, { schema: input.schema },
       { type: 'explain', sql: { sourceKind: 'sql', entry: 'explain', input: { sql: input.sql, schema: input.schema, limit: DEFAULT_QUERY_PAGE_SIZE } } })
     return { ...(result.result as Result), executionId: result.executionId as string }
@@ -921,7 +921,7 @@ export class ConnectionService {
     const prepared = prepareRedisReadOperation(operation, input, document.context, connection)
     const response = await runOperation(this.#executions, sqlOperationBinding(session, connection), { operation, title: prepared.title, initiator: 'ai', callId, rootCallId, type: 'tool' },
       (workSignal, onDispatched) => this.#withReadonly(id, () => this.#dispatch(session, id, generation, prepared.action, prepared.input as ServiceRequest, workSignal, undefined, {
-        beforeDispatch: () => { const current = this.getExecutionDocument(session, id, generation); if (current.controller !== 'ai' || current.revision !== document.revision) throw new Error('AI Query 已变化。') }, onDispatched,
+        beforeDispatch: () => { const current = this.getExecutionDocument(session, id, generation); assertDocumentRevision(current, document.revision, 'AI Query 已变化。'); if (current.controller !== 'ai') throw new Error('AI Query 已变化。') }, onDispatched,
       }), 'ai', workSignal) as Promise<Record<string, unknown>>, prepared.summarize, signal, prepared.classifyResult,
       { classifyInterruption: (_error, lifecycle) => lifecycle.aborted ? 'cancelled' : 'failed', summarizeFailure: prepared.summarizeFailure })
     const { executionStatus: _status, ...result } = response
