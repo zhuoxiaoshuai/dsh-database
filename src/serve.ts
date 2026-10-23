@@ -2,10 +2,11 @@ import { randomBytes } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDirectRun } from './host/is-direct-run.ts'
 import { readFile } from 'node:fs/promises'
-import { ConnectionService } from './connection-service.ts'
+import { ConnectionService } from './host/connection-service.ts'
 import { connectionApi } from './host/connection-api.ts'
 import { ExecutionStore } from './host/execution-store.ts'
 
@@ -130,15 +131,7 @@ export async function startStandalone(options: StandaloneOptions = {}): Promise<
   }
 }
 
-function isDirectRun(): boolean {
-  const entry = process.argv[1]
-  if (!entry) return false
-  const left = resolve(entry)
-  const right = fileURLToPath(import.meta.url)
-  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
-}
-
-if (isDirectRun()) {
+if (isDirectRun(import.meta.url)) {
   const started = await startStandalone()
   console.log(`访问地址：${started.url}`)
   const shutdown = () => { void started.close().finally(() => process.exit(0)) }

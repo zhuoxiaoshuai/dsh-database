@@ -72,6 +72,19 @@ export function executionStop(input: { aborted: boolean; dispatched: boolean; me
   return { status: 'failed', message }
 }
 
+export type ClassifiedFailure = { status: 'cancelled' | 'unknown' | 'failed'; message: string; event?: 'timeout' | 'disconnect' }
+
+/** Shared timeout/disconnect ladder for local tool failures. */
+export function classifyOperationFailure(error: unknown, lifecycle: { aborted: boolean; dispatched: boolean }): ClassifiedFailure {
+  const message = error instanceof Error ? error.message : '操作失败'
+  const stop = executionStop({ ...lifecycle, message })
+  if (isHostQueryTimeout(message)) return { status: 'failed', message }
+  if (stop.status !== 'failed') return stop
+  if (/超时|timeout/i.test(message)) return { status: 'unknown', message, event: 'timeout' }
+  if (/连接已关闭|连接已变化/.test(message)) return { status: 'unknown', message, event: 'disconnect' }
+  return { status: 'failed', message }
+}
+
 export function canTransition(from: ExecutionStatus, to: ExecutionStatus): boolean {
   if (from === to) return true
   if (isTerminalStatus(from)) return false
@@ -89,6 +102,24 @@ export interface ExecutionEvent {
 
 export const EXECUTION_TYPES = ['query', 'verify', 'write', 'explain', 'catalog', 'tool'] as const
 export type ExecutionType = typeof EXECUTION_TYPES[number]
+
+const USER_VISIBLE_QUERY_TYPES: readonly string[] = ['query', 'write', 'explain']
+const INTERNAL_EXECUTION_TYPES: readonly string[] = ['verify', 'catalog', 'tool']
+
+/** Query, write and explain show a SQL result to the user. */
+export function isUserVisibleQueryType(type: string): boolean {
+  return USER_VISIBLE_QUERY_TYPES.includes(type)
+}
+
+/**
+ * Verify, catalog and tool are internal steps.
+ *
+ * The complement, not `!isUserVisibleQueryType`: legacy callers still treat a
+ * record whose persisted type is unknown as an active execution.
+ */
+export function isInternalExecutionType(type: string): boolean {
+  return INTERNAL_EXECUTION_TYPES.includes(type)
+}
 
 export interface ExecutionRecord {
   identity?: DocumentExecutionIdentity
@@ -179,7 +210,7 @@ export function isDisplayHistoryExecution(record: Pick<ExecutionRecord, 'type' |
   if (record.operation === 'knowledge_sql_execute') return false
   const type = record.type || inferExecutionType(record.operation)
   if (record.status === 'awaiting_confirmation') return true
-  return type === 'query' || type === 'write' || type === 'explain'
+  return isUserVisibleQueryType(type)
 }
 
 export function historyItemsForConnection(items: ExecutionRecord[], connectionId?: string, legacyVisible?: (record: ExecutionRecord) => boolean): ExecutionRecord[] {

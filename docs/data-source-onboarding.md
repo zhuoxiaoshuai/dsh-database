@@ -65,8 +65,7 @@ Explorer／Knowledge 的生产入口使用 hostModules。自定义注册工厂�
 |---|---|
 | `src/shared/data-sources/registry.ts` | 纯描述导入、描述数组、支持 ID |
 | `src/client/data-sources/registry.ts` | 客户端模块导入及绑定数组 |
-| `src/host/data-sources/modules.ts` | Host 模块导入及绑定数组 |
-| `src/host/data-sources/runtime-registry.mjs` | runtime 导入及绑定数组 |
+| `src/host/data-sources/modules.ts` | Host 模块导入及绑定数组；runtime 注册由 hostModules 派生（`getSourceRuntime`／`registeredSourceRuntimes`） |
 | `src/host/knowledge-policy-registry.ts` | 非 SQL 经验分析策略及支持 ID；SQL 专属分析仍走原适配 |
 | `scripts/build.mjs` | 新 Worker 复制；源目录 mjs 已递归复制，检查所有外部相对导入 |
 | `package.json` 与锁文件 | 精确驱动版本、Worker 文件清单、专属验收命令；不要静默改变旧命令含义 |

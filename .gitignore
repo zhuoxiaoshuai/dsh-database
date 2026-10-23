@@ -7,3 +7,5 @@ artifacts/
 .npm-cache/
 .cursor/*.log
 打包.cmd
+.trae/
+.workbuddy/

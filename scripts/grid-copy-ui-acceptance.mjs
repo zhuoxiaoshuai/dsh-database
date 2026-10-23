@@ -11,7 +11,7 @@ await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
 import React, { useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryResultGrid } from './src/client/query-result-grid.tsx'
-import { QueryResultFrame } from './src/client/workspace/source/query-result-frame.tsx'
+import { QueryResultFrame } from './src/client/workspace/parts/layout/query-result-frame.tsx'
 import './src/client/style.css'
 window.copied = ''
 Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copied = text } } })

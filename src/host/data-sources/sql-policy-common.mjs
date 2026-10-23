@@ -1,71 +1,10 @@
+import { splitStatements } from '../../shared/sql-lex.ts'
+
+export { splitStatements }
+
 /** Parser could not prove a single read or DML statement. The database decides. */
 export function unverifiedStatement(sql) {
   return { kind: 'write', tables: [], targets: [], references: [], aliases: [], sql: String(sql || '').trim().replace(/;\s*$/, '') }
-}
-
-function leadKind(sql) {
-  let text = sql.trim()
-  for (;;) {
-    const next = text.replace(/^--[^\n]*(?:\r?\n|$)/, '').replace(/^#[^\n]*(?:\r?\n|$)/, '').replace(/^\/\*[\s\S]*?\*\//, '').trim()
-    if (next === text) return text
-    text = next
-  }
-}
-
-export function splitStatements(sql) {
-  const text = String(sql || '')
-  const parts = []
-  let i = 0, start = 0, started = false
-  const n = text.length
-  const emit = end => {
-    if (!started) return
-    const part = text.slice(start, end).trim().replace(/;\s*$/, '')
-    if (part && leadKind(part)) parts.push(part)
-    started = false
-  }
-  while (i < n) {
-    const ch = text[i]
-    if (ch === '-' && text[i + 1] === '-') {
-      i += 2
-      while (i < n && text[i] !== '\n') i += 1
-      continue
-    }
-    if (ch === '#') {
-      while (i < n && text[i] !== '\n') i += 1
-      continue
-    }
-    if (ch === '/' && text[i + 1] === '*') {
-      i += 2
-      while (i + 1 < n && !(text[i] === '*' && text[i + 1] === '/')) i += 1
-      i += 2
-      continue
-    }
-    if (ch === '\'' || ch === '"' || ch === '`') {
-      const quote = ch
-      started = true
-      i += 1
-      while (i < n) {
-        if (quote === '\'' && text[i] === '\\') { i += 2; continue }
-        if (text[i] === quote) {
-          if (text[i + 1] === quote) { i += 2; continue }
-          break
-        }
-        i += 1
-      }
-      i += 1
-      continue
-    }
-    if (ch === ';') {
-      emit(i)
-      i += 1
-      start = i
-      continue
-    }
-    if (!/\s/.test(ch)) started = true
-    i += 1
-  }
-  emit(n)
-  return parts
 }
 
 export function aliasesOf(value) {

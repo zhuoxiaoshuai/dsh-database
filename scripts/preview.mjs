@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomBytes } from 'node:crypto'
-import { ConnectionService } from '../src/connection-service.ts'
+import { ConnectionService } from '../src/host/connection-service.ts'
 import { connectionApi } from '../src/host/connection-api.ts'
 import { ExecutionStore } from '../src/host/execution-store.ts'
 export async function startPreview(port = 0) {

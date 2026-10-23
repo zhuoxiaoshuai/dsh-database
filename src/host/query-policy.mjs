@@ -5,6 +5,9 @@ export function splitStatements(sql, dialect) {
   return dialect ? getDataSource(dialect).policy.splitStatements(sql) : splitCommonStatements(sql)
 }
 
+// Not the same helper as shared/workbench.ts's quoteIdentifier: that one only
+// quotes through the dialect capabilities. This is the Host entry that validates
+// the identifier first and then quotes through the registered source driver.
 export function quoteIdentifier(dialect, value, options = {}) {
   const {
     maxLength,

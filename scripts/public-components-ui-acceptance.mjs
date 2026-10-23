@@ -14,7 +14,7 @@ import {DialogFrame} from './src/client/workspace/parts/overlay/dialog-frame.tsx
 import {ActionMenu,ResourceHelp} from './src/client/workspace/parts/overlay/action-menu.tsx';import {WorkbenchTooltips} from './src/client/workspace/parts/overlay/tooltip.tsx';
 import {SaveExperienceDialog} from './src/client/save-experience-dialog.tsx';import {StructureForm} from './src/client/structure-form.tsx';
 import {VisibleCatalogDialog} from './src/client/workspace/shell/visible-catalog-dialog.tsx';import {ConnectionForm} from './src/client/workspace/connection/connection-form.tsx';
-import {ConnectionTreeBranch} from './src/client/workspace/shell/connection-tree-branch.tsx';import {SearchSelect} from './src/client/search-select.tsx';
+import {ConnectionTreeBranch} from './src/client/workspace/shell/connection-tree-branch.tsx';import {SearchSelect} from './src/client/workspace/parts/controls/search-select.tsx';
 import {SqlToolbarTemplatePicker} from './src/client/sql-toolbar-template-picker.tsx';import {GridCopyMenu} from './src/client/grid-copy/menu.tsx';
 import {clientModules} from './src/client/data-sources/registry.ts';import {RedisOverview} from './src/client/redis/overview.tsx';import {StandardSourceMount} from './src/client/workspace-sources.tsx';
 const calls=[],connection={id:'mysql',generation:'g1',name:'fixture-long-connection',dialect:'mysql',environment:'sit',database:'app',live:true,health:'ready'};

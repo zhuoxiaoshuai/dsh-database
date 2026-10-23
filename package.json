@@ -1,6 +1,6 @@
 {
   "name": "dsh-database",
-  "version": "0.1.0-alpha.12.86",
+  "version": "0.1.0-alpha.12.87",
   "license": "MIT",
   "author": "liu",
   "description": "MySQL, Oracle, Redis, Kafka and Nacos inside DeepSeek Harness. Written entirely with AI.",
@@ -62,7 +62,6 @@
     "lib/dml-plan.mjs",
     "lib/ddl-plan.mjs",
     "lib/primary-keys.mjs",
-    "lib/oracle-temporal.mjs",
     "lib/request-timeouts.mjs",
     "lib/cell-value.mjs",
     "lib/dialects",
@@ -117,7 +116,6 @@
     "test:kafka-existing": "node scripts/kafka-readonly-existing-acceptance.mjs",
     "test:kafka": "node scripts/kafka-acceptance.mjs",
     "test:package-closure": "node --experimental-strip-types --test test/package-runtime-closure.test.mjs && node scripts/package-closure.mjs",
-    "test:package": "node scripts/host-acceptance.mjs",
     "install:desktop": "node scripts/install-desktop.mjs",
     "test:theme-ui": "node scripts/workbench-theme-ui-acceptance.mjs",
     "test:nacos-ui": "node scripts/nacos-ui-acceptance.mjs",

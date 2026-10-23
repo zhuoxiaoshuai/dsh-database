@@ -17,7 +17,7 @@ await build({
       import React, { useState } from 'react'
       import { createRoot } from 'react-dom/client'
       import { SqlRunWorkspace } from './src/client/sql-run-workspace.tsx'
-      import { QueryResultFrame } from './src/client/workspace/source/query-result-frame.tsx'
+      import { QueryResultFrame } from './src/client/workspace/parts/layout/query-result-frame.tsx'
       import { QueryResultGrid } from './src/client/query-result-grid.tsx'
       import './src/client/style.css'
 

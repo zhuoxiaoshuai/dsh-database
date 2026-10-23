@@ -1,4 +1,4 @@
-import { executionStop, isHostQueryTimeout } from '../shared/execution.ts'
+import { classifyOperationFailure } from '../shared/execution.ts'
 import { runLocalOperation, type LocalOperationContext, type LocalOperationFailure, type LocalOperationOutcome, type OperationLifecycle } from './operation-runtime.ts'
 import type { Connection } from '../shared/workbench.ts'
 import type { ExecutionStore } from './execution-store.ts'
@@ -8,14 +8,8 @@ type LocalToolExecution = { signal?: AbortSignal; callId?: string; rootCallId?: 
 
 // Preserve the old local-tool failure contract; Worker operations keep their own classifiers.
 function localFailure(error: unknown, lifecycle: OperationLifecycle): LocalOperationFailure {
-  const message = error instanceof Error ? error.message : '操作失败'
-  const stop = executionStop({ ...lifecycle, message })
-  const thrown = error instanceof Error ? error : new Error(message)
-  if (isHostQueryTimeout(message)) return { status: 'failed', message, error: thrown }
-  if (stop.status !== 'failed') return { status: stop.status, message: stop.message, error: thrown }
-  if (/超时|timeout/i.test(message)) return { status: 'unknown', message, error: thrown, event: 'timeout' }
-  if (/连接已关闭|连接已变化/.test(message)) return { status: 'unknown', message, error: thrown, event: 'disconnect' }
-  return { status: 'failed', message, error: thrown }
+  const failure = classifyOperationFailure(error, lifecycle)
+  return { ...failure, error: error instanceof Error ? error : new Error(failure.message) }
 }
 
 export function runLocalAiOperation<T>(executions: ExecutionStore, execution: LocalToolExecution, session: string,

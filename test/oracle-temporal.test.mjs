@@ -6,7 +6,7 @@ import {
   classifyOracleTemporal,
   normalizeOracleFetchedString,
   oracleTemporalExpression,
-} from '../src/host/oracle-temporal.mjs'
+} from '../src/host/data-sources/oracle/temporal.mjs'
 import { createDmlPlan } from '../src/host/dml-plan.mjs'
 import { buildBrowse } from '../src/host/browse.mjs'
 

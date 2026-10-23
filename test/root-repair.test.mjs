@@ -13,7 +13,6 @@ import { writeDriverError } from '../src/host/data-sources/sql-write-error.mjs'
 import { runOperation } from '../src/host/operation-runtime.ts'
 import { classifySqlInterruption } from '../src/host/sql-operation.ts'
 import { saveDmlOperations } from '../src/client/execute-dml.ts'
-import { applyExecutionResult, displayFromLatest } from '../src/shared/query-sync.ts'
 import { emptyExecutionDocument, updateExecutionDocument } from '../src/shared/execution-document.ts'
 import { sql as oracleSql } from '../src/host/data-sources/oracle/driver.mjs'
 import { connectionInput, temporaryDirectory } from './helpers.mjs'
@@ -153,16 +152,6 @@ test('shared grid coordinator consumes successes and prohibits unknown resubmiss
   assert.deepEqual(committed, ['1']); assert.equal(operations.length, 1)
   await assert.rejects(saveDmlOperations(operations, async op => sent.push(op.values.id), () => {}), /不能再次提交/)
   assert.deepEqual(sent, ['1', '2'])
-})
-
-test('same text in another target, revision or generation rejects late success and late failure', () => {
-  const result = { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 1 }
-  const opts = { connectionId: 'db', controller: 'user', sql: 'SELECT 1', queryRevision: 5, schema: 'new', generation: 'g2' }
-  for (const type of ['EXECUTION_FINISHED', 'EXECUTION_FAILED']) for (const stale of [{ generation: 'g1' }, { schema: 'old' }, { queryRevision: 4 }]) {
-    const event = { ...opts, type, executionId: 'old', executedSql: opts.sql, result, ...stale }
-    assert.equal(applyExecutionResult(undefined, event, opts), undefined)
-  }
-  assert.equal(displayFromLatest('db', { sql: opts.sql, schema: 'new', revision: 5 }, { executionId: 'old', connectionId: 'db', executedSql: opts.sql, queryRevision: 5, schema: 'old', generation: 'g2', type: 'query', result }, 'g2'), undefined)
 })
 
 test('Oracle statistics use escaped literal values and preserve quoted-name case', () => {

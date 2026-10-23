@@ -32,3 +32,31 @@ export function createHostModuleRegistry(entries: readonly HostSourceModule[], e
 }
 
 export const hostModules = createHostModuleRegistry([mysqlModule, oracleModule, redisModule, kafkaModule, nacosModule], supportedAllDataSources)
+
+export type HostSourceRuntime = HostSourceModule['runtime']
+
+export function createRuntimeRegistry(entries: readonly HostSourceRuntime[]) {
+  const byId = new Map<DataSourceId, HostSourceRuntime>()
+  for (const entry of entries) {
+    if (!entry || typeof entry.id !== 'string' || !entry.id || byId.has(entry.id)
+      || typeof entry.workerEntry !== 'string' || !/^[a-z][a-z0-9-]*-worker\.mjs$/.test(entry.workerEntry)
+      || typeof entry.requiresPassword !== 'boolean' || typeof entry.usesCustomCa !== 'function'
+      || !Array.isArray(entry.actions) || !entry.actions.length || entry.actions.some(action => typeof action !== 'string' || !action)
+      || new Set(entry.actions).size !== entry.actions.length || (entry.documentKind !== undefined && !['sql', 'command'].includes(entry.documentKind))) {
+      throw new Error(`数据源运行能力不完整或重复：${String(entry?.id)}`)
+    }
+    byId.set(entry.id, entry)
+  }
+  return Object.freeze({
+    ids: () => [...byId.keys()],
+    get(id: DataSourceId) {
+      const runtime = byId.get(id)
+      if (!runtime) throw new Error(`不支持此数据源：${String(id)}`)
+      return runtime
+    },
+  })
+}
+
+const runtimes = createRuntimeRegistry(hostModules.ids().map(id => hostModules.get(id).runtime))
+export const getSourceRuntime = (id: DataSourceId) => runtimes.get(id)
+export const registeredSourceRuntimes = () => runtimes.ids()

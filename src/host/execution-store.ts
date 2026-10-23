@@ -6,13 +6,16 @@ import { databaseWorkspaceRoot } from './dsh-home.ts'
 import type { Result } from '../shared/workbench.ts'
 import type { ExecutionResultEnvelope } from '../shared/execution-result.ts'
 import {
-  canTransition, clipSql, clipResultPreview, clipNarrative, EXECUTION_REASON_MAX, EXECUTION_TITLE_MAX, inferExecutionType, isTerminalStatus, publicExecution, summarizeParams,
+  canTransition, clipSql, clipResultPreview, clipNarrative, EXECUTION_REASON_MAX, EXECUTION_TITLE_MAX, inferExecutionType, isTerminalStatus, isUserVisibleQueryType, publicExecution, summarizeParams,
   type ExecutionEventKind, type ExecutionRecord, type ExecutionStatus, type ExecutionType, type WorkbenchEvent, type DocumentExecutionIdentity,
 } from '../shared/execution.ts'
 
 const CONVERSATION_CAP = 100
 const GLOBAL_CAP = 2000
 const FILE_BUDGET = 2 * 1024 * 1024
+
+/** A running request may already be at the database, so its result is unknown rather than cancelled. */
+const interruptedStatus = (record: ExecutionRecord): 'unknown' | 'cancelled' => record.status === 'running' ? 'unknown' : 'cancelled'
 
 export class ExecutionStore {
   #records = new Map<string, ExecutionRecord>()
@@ -191,7 +194,7 @@ export class ExecutionStore {
       const type = row.type || inferExecutionType(row.operation)
       return row.connectionId === connectionId
         && row.operation !== 'knowledge_sql_execute'
-        && (type === 'query' || type === 'write' || type === 'explain' || this.#nativeResults.has(row.executionId))
+        && (isUserVisibleQueryType(type) || this.#nativeResults.has(row.executionId))
         && isTerminalStatus(row.status)
         && (row.resultPersisted || !!row.resultMeta || this.#nativeResults.has(row.executionId))
     })
@@ -324,7 +327,7 @@ export class ExecutionStore {
       this.#controllers.get(record.executionId)?.abort()
       this.event(record.executionId, 'disconnect', reason)
       record.conclusion = clipNarrative('连接已失效，结果未知。', 200)
-      this.transition(record.executionId, record.status === 'running' ? 'unknown' : 'cancelled', '连接代次已失效，迟到结果不会进入新连接。')
+      this.transition(record.executionId, interruptedStatus(record), '连接代次已失效，迟到结果不会进入新连接。')
     }
   }
 
@@ -340,7 +343,7 @@ export class ExecutionStore {
       if (record.conversationId !== conversationId || isTerminalStatus(record.status)) continue
       this.#controllers.get(record.executionId)?.abort()
       this.event(record.executionId, 'cancel', reason)
-      this.transition(record.executionId, record.status === 'running' ? 'unknown' : 'cancelled', reason)
+      this.transition(record.executionId, interruptedStatus(record), reason)
     }
   }
 
@@ -366,7 +369,7 @@ export class ExecutionStore {
     for (const record of this.#records.values()) {
       if (isTerminalStatus(record.status)) continue
       this.#controllers.get(record.executionId)?.abort()
-      this.transition(record.executionId, record.status === 'running' ? 'unknown' : 'cancelled', '插件已释放。')
+      this.transition(record.executionId, interruptedStatus(record), '插件已释放。')
     }
     this.#controllers.clear()
     this.#results.clear()

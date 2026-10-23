@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef } from 'react'
 import type { Connection, WorkspaceBridge } from '../../../shared/workbench.ts'
-import { emptyExecutionDocument, type ExecutionDocument } from '../../../shared/execution-document.ts'
+import { emptyExecutionDocument, sameStringMap, type ExecutionDocument } from '../../../shared/execution-document.ts'
 import type { WorkbenchEvent } from '../../../shared/execution.ts'
 import { matchesResultOwner, type ResultIdentity } from '../../../shared/query-sync.ts'
 import { useExecutionItems } from '../../ai-query-bus.ts'
@@ -24,8 +24,6 @@ const initial = (source: Connection['dialect']): State => ({ draft: emptyExecuti
   acknowledged: 0, pending: 0, save: { status: 'idle' }, readError: '', operationError: '', busy: false })
 const dirty = (s: State) => s.version !== s.acknowledged
 const blocked = (s: State) => s.save.status === 'failed' || s.save.status === 'conflict'
-const sameContext = (a: Record<string, string>, b: Record<string, string>) =>
-  Object.keys(a).length === Object.keys(b).length && Object.keys(a).every(key => a[key] === b[key])
 
 /** Local edits and every remote document reply use this single acceptance boundary. */
 function reducer(s: State, a: Action): State {
@@ -85,7 +83,7 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
       if (!scope.current.isCurrent(ticket) || !response.document) return
       commit({ type: 'snapshot', document: response.document, version, preserveDraft })
       if (version === current.current.version && !dirty(current.current) && executionContextKey
-        && !sameContext(current.current.draft.context, contextRef.current)) saveDraft(current.current.draft.text, false, contextRef.current)
+        && !sameStringMap(current.current.draft.context, contextRef.current)) saveDraft(current.current.draft.text, false, contextRef.current)
     } catch (error) {
       if (scope.current.isCurrent(ticket)) throw error
     } finally { scope.current.finish(ticket) }
@@ -108,11 +106,11 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
         const revision = format?.revision ?? current.current.confirmed?.revision
         if (revision === undefined) throw new Error('尚未读取权威文档，请刷新后重试。')
         if (format && (revision !== current.current.confirmed?.revision || format.text !== current.current.confirmed?.text
-          || !sameContext(context, current.current.confirmed.context))) throw new Error('内容已变化，请重新格式化；本地草稿已保留。')
+          || !sameStringMap(context, current.current.confirmed.context))) throw new Error('内容已变化，请重新格式化；本地草稿已保留。')
         const response = await bridge.executions('execution-document-update', { id: connection.id, generation: connection.generation, text, context, revision, source,
           ...(format?.range ? { formatRange: format.range } : {}) }, ticket.signal) as { document?: ExecutionDocument }
         if (!scope.current.isCurrent(ticket)) return
-        if (!response.document || response.document.text !== text || !sameContext(response.document.context, context)) throw new Error('保存回执与草稿不一致，请刷新后重试。')
+        if (!response.document || response.document.text !== text || !sameStringMap(response.document.context, context)) throw new Error('保存回执与草稿不一致，请刷新后重试。')
         commit({ type: 'snapshot', document: response.document, acknowledged: version })
       } finally { scope.current.finish(ticket) }
     }).catch(async caught => {
@@ -189,7 +187,7 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
       if (!scope.current.isCurrent(ticket)) return
       if (version !== current.current.version || dirty(current.current)) throw new Error('内容已变化，请重新执行。')
       const controlled = current.current.confirmed!
-      if (executionContextKey && !sameContext(controlled.context, contextRef.current)) throw new Error('当前执行目标尚未保存，不能执行。')
+      if (executionContextKey && !sameStringMap(controlled.context, contextRef.current)) throw new Error('当前执行目标尚未保存，不能执行。')
       if (!controlled.text.trim()) throw new Error('请先输入命令。')
       executionIdentity = { ...resultOwner(), documentText: controlled.text, executedSql: executionText ?? controlled.text, initiator: 'user' }
       const reply = await bridge.executions('execution-document-run', { id: connection.id, generation: connection.generation, revision: controlled.revision, ...(executionText !== undefined ? { text: executionText } : {}) }, ticket.signal)
@@ -214,7 +212,7 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
     const binding = connectionRef.current
     if (event.connectionId !== binding.id || event.generation !== binding.generation) return
     if (event.type === 'EXECUTION_DOCUMENT_CHANGED' && event.document && !current.current.pending && !dirty(current.current)) {
-      if (executionContextKey && !sameContext(event.document.context, contextRef.current)) return
+      if (executionContextKey && !sameStringMap(event.document.context, contextRef.current)) return
       commit({ type: 'snapshot', document: event.document, version: current.current.version })
     }
 
@@ -229,7 +227,7 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
     const task = (async () => {
       const saved = await flush()
       if (identityRef.current !== owner || version !== current.current.version || request.text !== saved.text
-        || snapshot.text !== saved.text || !sameContext(snapshot.context, saved.context)) throw new Error('内容已变化，请重新格式化；本地草稿已保留。')
+        || snapshot.text !== saved.text || !sameStringMap(snapshot.context, saved.context)) throw new Error('内容已变化，请重新格式化；本地草稿已保留。')
       const result = prepareSqlFormat(saved.text, connection.dialect, request.range)
       if (result.text === saved.text) return saved
       request.apply(result)

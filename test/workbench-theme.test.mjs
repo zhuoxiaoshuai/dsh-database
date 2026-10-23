@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isHostDark } from '../src/client/workspace/parts/host-theme.ts'
-import { themeVariables, workbenchThemes } from '../src/client/workspace/parts/theme-tokens.ts'
+import { isHostDark } from '../src/client/workspace/parts/theme/host-theme.ts'
+import { themeVariables, workbenchThemes } from '../src/client/workspace/parts/theme/theme-tokens.ts'
 
 test('explicit host light defeats system dark and stale dark class', () => {
   assert.equal(isHostDark({ documentElement: { dataset: { theme: 'light' }, classList: { contains: name => name === 'dark' } }, defaultView: { matchMedia: () => ({ matches: true }) } }), false)
@@ -13,7 +13,7 @@ let sequence = 0
 async function fresh(storage, run) {
   const previous = Object.getOwnPropertyDescriptor(globalThis, 'window')
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { localStorage: storage } })
-  try { await run(await import(`../src/client/workspace/parts/workbench-theme.ts?theme-test=${++sequence}`)) }
+  try { await run(await import(`../src/client/workspace/parts/theme/workbench-theme.ts?theme-test=${++sequence}`)) }
   finally { if (previous) Object.defineProperty(globalThis, 'window', previous); else delete globalThis.window }
 }
 
