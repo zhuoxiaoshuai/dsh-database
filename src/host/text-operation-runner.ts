@@ -1,5 +1,5 @@
 import type { Connection, Result } from '../shared/workbench.ts'
-import type { ExecutionDocument } from '../shared/execution-document.ts'
+import { sameStringMap, type ExecutionDocument } from '../shared/execution-document.ts'
 import type { DocumentExecutionIdentity, ExecutionType } from '../shared/execution.ts'
 import { CONNECTION_ERROR_CODES, ServiceError } from '../shared/connection-errors.ts'
 import { hostModules } from './data-sources/modules.ts'
@@ -42,7 +42,7 @@ export class TextOperationRunner {
     const validate = () => {
       if (!document) return
       const now = this.port.document(session, id, generation)
-      if (now.revision !== queryRevision || now.controller !== initiator || now.text !== document.text || JSON.stringify(now.context) !== JSON.stringify(document.context)) throw new Error('AI Query 已被修改、接管或切换目标，操作没有发出。')
+      if (now.revision !== queryRevision || now.controller !== initiator || now.text !== document.text || !sameStringMap(now.context, document.context)) throw new Error('AI Query 已被修改、接管或切换目标，操作没有发出。')
     }
     const send = (workSignal?: AbortSignal, onDispatched?: () => void) => this.port.send(session, id, generation, prepared, workSignal, { beforeDispatch: validate, onDispatched })
     if (prepared.recordPolicy === 'none') {
