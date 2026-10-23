@@ -25,3 +25,17 @@ export function nativeErrorText(error, fallback = '') {
   }
   return fallback
 }
+
+const driverErrorFields = ['code', 'errno', 'sqlState', 'errorNum', 'fatal']
+
+/**
+ * Fresh Error with the native message and the driver fields copied in order.
+ * @param {unknown} error
+ */
+export function nativeDriverError(error) {
+  const next = new Error(nativeErrorText(error, '数据库没有返回错误说明。'))
+  if (error && typeof error === 'object') {
+    for (const key of driverErrorFields) if (error[key] != null) next[key] = error[key]
+  }
+  return next
+}

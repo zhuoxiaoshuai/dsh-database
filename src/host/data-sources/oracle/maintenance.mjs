@@ -1,4 +1,4 @@
-import { MaintenanceError } from '../maintenance-error.mjs'
+import { DML_PRIVILEGES, MaintenanceError } from '../maintenance-error.mjs'
 import { oracleIdentityMatches } from './connection.mjs'
 import { applyOracleTemporalSession } from './temporal.mjs'
 import { read as readCatalog } from './catalog.mjs'
@@ -11,7 +11,6 @@ export async function inspect(connection, schema, table, allowMissing = false) {
 }
 
 export async function privileges(connection, schema, table, credentials) {
-  const wanted = ['INSERT', 'UPDATE', 'DELETE']
   const allowAll = { insert: true, update: true, delete: true }
   const owner = String(schema).toUpperCase()
   const current = String(credentials.user || credentials.username || '').toUpperCase()
@@ -21,7 +20,7 @@ export async function privileges(connection, schema, table, credentials) {
     [owner, String(table).toUpperCase()],
   )
   const allowed = new Set((result.rows || []).map(row => String(Array.isArray(row) ? row[0] : row.PRIVILEGE || row.privilege).toUpperCase()))
-  if (![...allowed].some(privilege => wanted.includes(privilege))) return allowAll
+  if (![...allowed].some(privilege => DML_PRIVILEGES.includes(privilege))) return allowAll
   return { insert: allowed.has('INSERT'), update: allowed.has('UPDATE'), delete: allowed.has('DELETE') }
 }
 

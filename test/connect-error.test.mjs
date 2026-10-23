@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { nativeErrorText } from '../src/host/connect-error.mjs'
+import { nativeDriverError, nativeErrorText } from '../src/host/connect-error.mjs'
 
 test('access denied returns the driver message exactly', () => {
   const message = "Access denied for user 'reader'@'10.0.0.8' (using password: YES)"
@@ -53,4 +53,27 @@ test('description strings and internal whitespace stay unchanged', () => {
   assert.equal(nativeErrorText(spaced), spaced)
   assert.equal(nativeErrorText({ message: spaced }), spaced)
   assert.equal(nativeErrorText({ message: '', sqlMessage: '', code: '', cause: { message: 'from cause' } }), 'from cause')
+})
+
+test('native driver errors copy driver fields in order and skip empty fields', () => {
+  const next = nativeDriverError({ code: 'ER_PARSE_ERROR', errno: 1064, sqlState: '42000', errorNum: 923, fatal: true, message: 'syntax error' })
+  assert.ok(next instanceof Error)
+  assert.equal(next.message, 'syntax error')
+  assert.equal(next.code, 'ER_PARSE_ERROR')
+  assert.equal(next.errno, 1064)
+  assert.equal(next.sqlState, '42000')
+  assert.equal(next.errorNum, 923)
+  assert.equal(next.fatal, true)
+  assert.deepEqual(Object.keys(next), ['code', 'errno', 'sqlState', 'errorNum', 'fatal'])
+  const partial = nativeDriverError({ code: 'NJS-500', errno: null, sqlState: undefined, message: 'ORA-12541: TNS:no listener' })
+  assert.equal(partial.message, 'ORA-12541: TNS:no listener')
+  assert.deepEqual(Object.keys(partial), ['code'])
+})
+
+test('native driver errors fall back to the empty description text', () => {
+  assert.equal(nativeDriverError({ message: '' }).message, '数据库没有返回错误说明。')
+  assert.equal(nativeDriverError({}).message, '数据库没有返回错误说明。')
+  assert.equal(nativeDriverError(null).message, '数据库没有返回错误说明。')
+  assert.equal(nativeDriverError({ code: 'ECONNREFUSED', message: '' }).message, 'ECONNREFUSED')
+  assert.equal(nativeDriverError({ sqlMessage: "You have an error in your SQL syntax" }).message, 'You have an error in your SQL syntax')
 })
