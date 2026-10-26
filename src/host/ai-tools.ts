@@ -87,7 +87,8 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
   const liveSummaries = (session: string) => service.list(session).filter(item =>
     item.live && (item.dialect === 'mysql' || item.dialect === 'oracle')
   ).map(item => {
-    const query = item.workbench?.sharedQuery
+    // 内部真相是执行文档；sharedQuery 只是公共兼容投影，不再读取。
+    const document = item.workbench?.aiDocument
     return {
       connectionId: item.id,
       generation: item.generation,
@@ -96,8 +97,8 @@ export function registerAiTools(ctx: { tools: { register(tool: unknown): void } 
       environment: item.environment,
       database: item.database,
       version: item.version,
-      controller: query?.controller || 'ai',
-      sharedQueryRevision: query?.revision || 1,
+      controller: document?.controller || 'ai',
+      sharedQueryRevision: document?.revision || 1,
     }
   })
   const editorViews = (session: string) => workbenchEditorViews(service.snapshot(session))

@@ -1,4 +1,5 @@
 import type { Connection } from '../shared/workbench.ts'
+import { legacySharedQueryDocument } from '../shared/workbench.ts'
 import { assertDocumentRevision, emptyExecutionDocument, isDocumentRevision, updateExecutionDocument, controlExecutionDocument, type ExecutionDocument } from '../shared/execution-document.ts'
 import { sanitizeConversationWorkbench, type ConversationLayout } from './conversation-workbench-store.ts'
 import { hostModules, getSourceRuntime } from './data-sources/modules.ts'
@@ -20,9 +21,10 @@ export class ExecutionDocumentService {
     if (workbench?.aiDocument?.sourceId === binding.dialect) return workbench.aiDocument
     const kind = getSourceRuntime(binding.dialect).documentKind
     if (!kind) throw new Error('此数据源不支持此能力。')
-    const old = workbench?.sharedQuery
+    // 没有权威文档时旧 SharedQuery 只是迁移输入；迁移后的文档不再回读旧字段。
+    const old = legacySharedQueryDocument(workbench, binding.dialect, binding.database)
     return old && kind === 'sql'
-      ? { sourceId: binding.dialect, text: old.sql, context: { schema: old.schema || binding.database }, revision: old.revision, controller: old.controller, controllerReason: old.controllerReason }
+      ? old
       : emptyExecutionDocument(binding.dialect, kind === 'sql' ? { schema: binding.database } : binding.dialect === 'redis' ? { database: binding.database } : {})
   }
   private commit(owner: string, id: string, document: ExecutionDocument): ExecutionDocument {

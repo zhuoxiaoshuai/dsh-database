@@ -3,6 +3,7 @@ import type { ExecutionApiAction } from './database-actions.ts'
 import { RESULT_PREVIEW_MAX_COLUMNS, SQL_FIELD_MAX_LENGTH } from './limits.ts'
 import { dialectCapabilities } from './dialect-capabilities.ts'
 import { clientWorkspaceDescriptor, isDataSourceId } from './data-sources/registry.ts'
+import type { DataSourceId } from './data-sources/types.ts'
 import type { MaintenanceCapability } from './maintenance-capability.ts'
 import type { RedisResponse } from './redis-result.ts'
 import type { ExplorerListInput, ExplorerReadInput, ExplorerPage } from './explorer.ts'
@@ -421,6 +422,17 @@ export function sanitizeSharedQuery(value: unknown): SharedQuery {
     ...(lastExecutionId ? { lastExecutionId } : {}),
     ...(lastRun ? { lastRun } : {}),
   }
+}
+
+/**
+ * 旧持久化数据的迁移输入：把 legacy SharedQuery 投影成执行文档。
+ * sharedQuery 只剩两个身份——publicConnection 的公共兼容投影、旧持久化数据的迁移输入；
+ * 内部真相一律是 aiDocument，此函数只允许迁移路径调用。
+ */
+export function legacySharedQueryDocument(workbench: ConnectionWorkbench | undefined, sourceId: DataSourceId, database: string): ExecutionDocument | undefined {
+  const old = workbench?.sharedQuery
+  if (!old) return
+  return { sourceId, text: old.sql, context: { schema: old.schema || database }, revision: old.revision, controller: old.controller, controllerReason: old.controllerReason }
 }
 
 function migrateSharedQuery(input: ConnectionWorkbench): SharedQuery | undefined {

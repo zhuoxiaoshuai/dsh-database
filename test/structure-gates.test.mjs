@@ -304,3 +304,16 @@ test('client code never imports the host', () => {
 test('package exports stay the three public entries', () => {
   assert.deepEqual(Object.keys(JSON.parse(read('package.json')).exports), ['.', './client', './package.json'])
 })
+
+test('sharedQuery is read only by its public projection and legacy migration', () => {
+  // sharedQuery 只剩两个身份：① publicConnection 的公共兼容投影；② 旧持久化数据的迁移输入。
+  // 白名单（读取原因）：
+  // - src/host/saved-connections.ts：公共兼容投影，把执行文档投影回 sharedQuery 供旧客户端。
+  // - src/host/conversation-workbench-store.ts：旧持久化数据迁移，sanitize 删除已迁移字段并重置旧模型会话字段。
+  // - src/shared/workbench.ts：SharedQuery 类型与 sanitizeSharedQuery/migrateSharedQuery/legacySharedQueryDocument，旧数据还要读。
+  // 其余 src/** 一律读 aiDocument 或文档派生值。
+  const allowed = new Set(['src/host/saved-connections.ts', 'src/host/conversation-workbench-store.ts', 'src/shared/workbench.ts'])
+  const access = /\.\s*sharedQuery\b|\[\s*['"]sharedQuery['"]\s*\]/
+  const offenders = walk('src', ['.ts', '.tsx', '.mjs', '.js']).filter(path => !allowed.has(path) && access.test(read(path)))
+  assert.deepEqual(offenders, [], '只有公共投影与旧数据迁移允许读取 sharedQuery')
+})

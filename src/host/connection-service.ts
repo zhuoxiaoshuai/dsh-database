@@ -19,7 +19,7 @@ import type { ExplorerListInput, ExplorerReadInput } from '../shared/explorer.ts
 import type { PasswordProtector } from '../password-protector.ts'
 import type { ExecutionStore } from './execution-store.ts'
 import { authorizeStatement, splitStatements } from './query-policy.mjs'
-import { catalogSchemaName, coerceVisibleSchemas, connectionOwnsSchema, sharedQuerySurface } from '../shared/workbench.ts'
+import { catalogSchemaName, coerceVisibleSchemas, connectionOwnsSchema, legacySharedQueryDocument, sharedQuerySurface } from '../shared/workbench.ts'
 import { inferExecutionType, isUserVisibleQueryType } from '../shared/execution.ts'
 import { HOST_TIMEOUTS, connectTimeoutMessage, hostDeadlineFor, hostTimeoutMessage } from './request-timeouts.mjs'
 import { nativeErrorText } from './connect-error.mjs'
@@ -307,7 +307,8 @@ export class ConnectionService {
     }
     const { sharedQuery: _ignored, aiDocument: _document, aiCollab: _legacy, visibleSchemas: _visible, ...rest } = incoming
     const current = this.#layout(session, rows)
-    const workbench = sanitizeConversationWorkbench({ ...current.workbenches[id], ...rest, sharedQuery: current.workbenches[id]?.sharedQuery })
+    // 浏览器不能覆盖文档与旧模型字段；旧字段随 spread 原样保留。
+    const workbench = sanitizeConversationWorkbench({ ...current.workbenches[id], ...rest })
     current.workbenches[id] = workbench
     this.conversations.save(session, current, new Set(rows.keys()))
     return publicConnection(this.#rows!.get(id)!, undefined, workbench).workbench || workbench
@@ -545,10 +546,12 @@ export class ConnectionService {
       }
     }
     for (const [id, workbench] of Object.entries(layout.workbenches)) {
-      const saved = rows.get(id), old = workbench.sharedQuery
-      if (!saved || workbench.aiDocument || !old) continue
-      layout.workbenches[id] = sanitizeConversationWorkbench({ ...workbench, aiDocument: { sourceId: saved.settings.dialect, text: old.sql,
-        context: { schema: old.schema || ('database' in saved.settings ? saved.settings.database : '') }, revision: Math.max(1, old.revision), controller: old.controller, controllerReason: old.controllerReason } })
+      const saved = rows.get(id)
+      if (!saved || workbench.aiDocument) continue
+      // 旧持久化 SharedQuery 只是迁移输入：没有权威文档时才推导，lastRun 等旧字段随迁移丢弃。
+      const legacy = legacySharedQueryDocument(workbench, saved.settings.dialect, 'database' in saved.settings ? saved.settings.database : '')
+      if (!legacy) continue
+      layout.workbenches[id] = sanitizeConversationWorkbench({ ...workbench, aiDocument: { ...legacy, revision: Math.max(1, legacy.revision) } })
       changed = true
     }
     if (changed) this.conversations.save(session, layout, new Set(rows.keys()))
