@@ -26,7 +26,27 @@ async function fixture(t) {
 
 const toolExecution = owner => ({ callId: 'call-1', rootCallId: 'root-1', agent: { session: { id: owner } }, signal: new AbortController().signal })
 
-test('刻画：getSharedQuery 的 lastRun 来自执行记录，迁移后的编辑器视图恒取不到 lastRun', async t => {
+/** 直接种一条执行记录：只用来刻画 lastRun 的匹配/可见性规则，生产侧仍从执行记录现算。 */
+function seedQueryRun(f, owner, document, patch = {}) {
+  const record = f.executions.create({
+    conversationId: owner,
+    callId: 'seed-call-1',
+    rootCallId: 'seed-root-1',
+    connectionId: f.connection.id,
+    generation: f.connection.generation,
+    schema: document.context.schema || '',
+    operation: 'database_execute_sql',
+    sql: document.text,
+    documentText: document.text,
+    queryRevision: document.revision,
+    type: 'query',
+    ...patch,
+  })
+  f.executions.complete(record.executionId, 'succeeded', undefined, { columns: ['id'], rows: [['1']], truncated: false, elapsedMs: 3 })
+  return f.executions.get(owner, record.executionId, true)
+}
+
+test('已修复：lastRun 现在来自执行记录，getSharedQuery、公共投影与编辑器视图完全同源', async t => {
   const f = await fixture(t)
   f.service.updateSharedQuery('owner', f.connection.id, { sql: 'SELECT id FROM records', schema: 'app' }, 'system',
     f.service.getExecutionDocument('owner', f.connection.id).revision)
@@ -39,10 +59,64 @@ test('刻画：getSharedQuery 的 lastRun 来自执行记录，迁移后的编�
   const snapshot = f.service.snapshot('owner')
   const workbench = snapshot.connections.find(item => item.id === f.connection.id)?.workbench
   assert.equal(workbench?.aiDocument?.text, document.text, 'aiDocument 是权威文档')
-  assert.equal(Object.hasOwn(workbench?.sharedQuery || {}, 'lastRun'), false, 'publicConnection 的公共投影不含 lastRun')
+  assert.deepEqual(workbench?.sharedQuery?.lastRun, query.lastRun, '已修复，lastRun 现在来自执行记录：公共投影的 lastRun 与 getSharedQuery 同源')
   const view = workbenchEditorViews(snapshot).find(item => item.connectionId === f.connection.id)
-  assert.equal(view?.lastRun, undefined, '迁移后的文档，workbench-editors 读到的 lastRun 恒为 undefined')
+  assert.deepEqual(view?.lastRun, query.lastRun, '已修复，lastRun 现在来自执行记录：编辑器视图的 lastRun 与 getSharedQuery 完全一致')
+  for (const field of ['columns', 'rowCount', 'elapsedMs', 'message', 'at']) {
+    assert.deepEqual(view?.lastRun?.[field], query.lastRun?.[field], `已修复，lastRun 现在来自执行记录：lastRun.${field} 与 getSharedQuery 完全一致`)
+  }
   assert.equal(view?.aiQuery?.sql, document.text)
+  const tools = new Map()
+  registerAiTools({ tools: { register(tool) { tools.set(tool.name, tool) } } }, f.service, f.executions, () => true)
+  const collab = JSON.parse(await tools.get('database_read_collab').execute({}, toolExecution('owner')))
+  // 工具输出是 JSON 文本，undefined 字段不出现；比较 JSON 规范化后的同源值。
+  const json = value => JSON.parse(JSON.stringify(value))
+  assert.deepEqual(json(collab.items.find(item => item.connectionId === f.connection.id)?.lastRun), json(query.lastRun),
+    '已修复，lastRun 现在来自执行记录：database_read_collab 的编辑器视图同源')
+})
+
+test('已修复：无执行记录时 lastRun 仍为 undefined，不出现空对象', async t => {
+  const f = await fixture(t)
+  f.service.updateSharedQuery('owner', f.connection.id, { sql: 'SELECT id FROM records', schema: 'app' }, 'system',
+    f.service.getExecutionDocument('owner', f.connection.id).revision)
+  const query = f.service.getSharedQuery('owner', f.connection.id)
+  assert.equal(query.lastRun, undefined, '没有执行记录时 getSharedQuery 没有 lastRun')
+  assert.equal(query.lastExecutionId, undefined)
+  const snapshot = f.service.snapshot('owner')
+  const workbench = snapshot.connections.find(item => item.id === f.connection.id)?.workbench
+  assert.equal(Object.hasOwn(workbench?.sharedQuery || {}, 'lastRun'), false, '无执行记录时公共投影不含 lastRun 字段（字段不存在，不是 undefined 值）')
+  const view = workbenchEditorViews(snapshot).find(item => item.connectionId === f.connection.id)
+  assert.deepEqual(view?.lastRun, undefined, '已修复，lastRun 现在来自执行记录：没有执行记录时编辑器视图的 lastRun 仍是 undefined，不许出现空对象')
+  assert.deepEqual(view?.lastRun, query.lastRun, '已修复，lastRun 现在来自执行记录：与 getSharedQuery 一致')
+})
+
+test('已修复：lastRun 的用户可见性规则与 getSharedQuery 一致（用户接管后 AI 记录不算）', async t => {
+  const f = await fixture(t)
+  const id = f.connection.id
+  const viewOf = () => workbenchEditorViews(f.service.snapshot('owner')).find(item => item.connectionId === id)
+  f.service.updateSharedQuery('owner', id, { sql: 'SELECT id FROM records', schema: 'app' }, 'system',
+    f.service.getExecutionDocument('owner', id).revision)
+  await f.service.runSharedQuery('owner', { connectionId: id, generation: f.connection.generation, schema: 'app',
+    sql: 'SELECT id FROM records', revision: f.service.getSharedQuery('owner', id).revision, initiator: 'ai', purpose: 'result' })
+  const aiRun = f.service.getSharedQuery('owner', id)
+  assert.equal(aiRun.lastRun?.rowCount, 1, 'AI 执行产生 lastRun')
+  assert.deepEqual(viewOf()?.lastRun, aiRun.lastRun, '已修复，lastRun 现在来自执行记录：AI 执行后编辑器视图同源')
+  f.service.takeSharedQuery('owner', id, 'user-takeover', aiRun.revision)
+  const document = f.service.getExecutionDocument('owner', id)
+  assert.equal(document.controller, 'user')
+  // 一条 revision/text/schema 都匹配、只有 initiator=ai 的记录：用户接管后不得计入 lastRun。
+  const hidden = seedQueryRun(f, 'owner', document, { initiator: 'ai' })
+  const taken = f.service.getSharedQuery('owner', id)
+  assert.equal(taken.lastRun, undefined, "initiator='ai' 且 controller='user' 的执行记录不算 lastRun")
+  assert.deepEqual(viewOf()?.lastRun, taken.lastRun, '已修复，lastRun 现在来自执行记录：可见性规则与 getSharedQuery 一致')
+  // 用户自己的执行仍计入，且结果摘要同源。
+  const visible = seedQueryRun(f, 'owner', document, { initiator: 'user', callId: 'seed-user' })
+  const userRun = f.service.getSharedQuery('owner', id)
+  assert.equal(userRun.lastRun?.executionId, visible.executionId, "initiator='user' 的执行记录计入 lastRun")
+  assert.equal(userRun.lastRun?.executionId !== hidden.executionId, true, '计入的是用户执行记录')
+  assert.deepEqual(userRun.lastRun?.columns, ['id'])
+  assert.equal(userRun.lastRun?.elapsedMs, 3)
+  assert.deepEqual(viewOf()?.lastRun, userRun.lastRun, '已修复，lastRun 现在来自执行记录：编辑器视图与 getSharedQuery 完全一致')
 })
 
 test('刻画：旧持久化 sharedQuery.lastRun 在迁移为 aiDocument 时丢弃，编辑器视图取不到', async t => {
@@ -59,9 +133,9 @@ test('刻画：旧持久化 sharedQuery.lastRun 在迁移为 aiDocument 时丢�
   const workbench = snapshot.connections.find(item => item.id === id)?.workbench
   assert.equal(workbench?.aiDocument?.text, 'SELECT 1', '旧 SharedQuery 迁移为 aiDocument')
   assert.equal(workbench?.aiDocument?.revision, 7)
-  assert.equal(Object.hasOwn(workbench?.sharedQuery || {}, 'lastRun'), false, '迁移后的公共投影不含 lastRun')
+  assert.equal(Object.hasOwn(workbench?.sharedQuery || {}, 'lastRun'), false, '迁移丢弃的旧 lastRun 不回流：无执行记录时公共投影不含 lastRun 字段')
   const view = workbenchEditorViews(snapshot).find(item => item.connectionId === id)
-  assert.equal(view?.lastRun, undefined, '迁移后的文档恒取不到 lastRun')
+  assert.equal(view?.lastRun, undefined, '已修复，lastRun 现在来自执行记录：旧 lastRun 随迁移丢弃，没有执行记录时编辑器视图仍取不到')
   assert.deepEqual(view?.aiQuery, { sql: 'SELECT 1', controller: 'ai', revision: 7 })
 })
 

@@ -1,4 +1,5 @@
 import type { DatabaseWorkspaceSnapshot } from '../shared/workbench.ts'
+import { projectedLastRun } from './saved-connections.ts'
 
 export type WorkbenchEditorView = {
   connectionId: string
@@ -29,8 +30,9 @@ export function workbenchEditorViews(snap: DatabaseWorkspaceSnapshot): Workbench
       activeQuery: active?.sql ? { name: active.name, sql: active.sql } : undefined,
       queries: tabs.filter(tab => tab.sql).map(tab => ({ name: tab.name, sql: tab.sql, active: tab.id === active?.id })),
       aiQuery: sql?.text ? { sql: sql.text, controller: sql.controller || 'ai', revision: sql.revision || 1 } : undefined,
-      // 刻画结论：公共投影不含 lastRun，迁移后的文档恒取不到 lastRun；保持取不到，不新造来源。
-      lastRun: undefined,
+      // 已修复：lastRun 现在来自执行记录。快照公共投影按 getSharedQuery 同一套匹配规则现算补入，
+      // 无执行记录时字段不存在，这里保持 undefined；非 SQL 文档没有该投影，也不提供 lastRun。
+      lastRun: sql ? projectedLastRun(item.workbench) : undefined,
     }
   }).filter(item => item.activeQuery || item.aiQuery || item.lastRun)
 }

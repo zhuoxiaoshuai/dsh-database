@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { databaseWorkspaceRoot, resolveDshHome } from './dsh-home.ts'
 import type { PasswordProtector } from '../password-protector.ts'
 import { windowsPasswordProtector } from '../password-protector.ts'
-import type { Connection, ConnectionWorkbench, SourceConnectionSettings } from '../shared/workbench.ts'
+import type { Connection, ConnectionWorkbench, SharedQueryLastRun, SourceConnectionSettings } from '../shared/workbench.ts'
 import { coerceVisibleSchemas, sanitizeConnectionWorkbench } from '../shared/workbench.ts'
 import { hostModules } from './data-sources/modules.ts'
 import { normalizeEnvironment } from '../shared/connection-permission.ts'
@@ -171,11 +171,21 @@ export function uniqueCopyName(name: string, taken: Iterable<string>, max = 80):
   return candidate
 }
 
-export function publicConnection(row: StoredDatabaseConnection, live?: Connection, workbench?: ConnectionWorkbench): Connection {
+/**
+ * 公共投影 lastRun 的读取出口：lastRun 只由 publicConnection 按执行记录现算补入投影，
+ * 无执行记录时字段不存在。公共投影是 sharedQuery 的唯一读者，其他模块从这里取派生值。
+ */
+export function projectedLastRun(workbench: ConnectionWorkbench | undefined): SharedQueryLastRun | undefined {
+  return workbench?.sharedQuery?.lastRun
+}
+
+export function publicConnection(row: StoredDatabaseConnection, live?: Connection, workbench?: ConnectionWorkbench, lastRun?: SharedQueryLastRun): Connection {
   const merged: ConnectionWorkbench = { ...workbench }
   if (merged.aiDocument && (merged.aiDocument.sourceId === 'mysql' || merged.aiDocument.sourceId === 'oracle')) {
     const document = merged.aiDocument
-    merged.sharedQuery = { sql: document.text, schema: document.context.schema || '', revision: document.revision, controller: document.controller, controllerReason: document.controllerReason }
+    // lastRun 与 getSharedQuery 同源，由调用方按执行记录现算传入；不传时字段不存在，也不落盘。
+    merged.sharedQuery = { sql: document.text, schema: document.context.schema || '', revision: document.revision, controller: document.controller, controllerReason: document.controllerReason,
+      ...(lastRun ? { lastRun } : {}) }
   }
   if (row.visibleSchemas?.length) merged.visibleSchemas = row.visibleSchemas
   else delete merged.visibleSchemas

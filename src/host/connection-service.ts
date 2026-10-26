@@ -7,7 +7,7 @@ import type { ConnectionLifecycle, ConnectionStart, ConnectionFailureCategory } 
 import { NacosService } from './nacos-service.ts'
 import { Worker } from 'node:worker_threads'
 import { randomUUID, createHash } from 'node:crypto'
-import type { Connection, ConnectionTest, CatalogRequest, CatalogResult, ConnectionWorkbench, DatabaseWorkspaceSnapshot, QueryEditSource, Result, SharedQuery, SourceConnectionInput, SourceConnectionSettings } from '../shared/workbench.ts'
+import type { Connection, ConnectionTest, CatalogRequest, CatalogResult, ConnectionWorkbench, DatabaseWorkspaceSnapshot, QueryEditSource, Result, SharedQuery, SharedQueryLastRun, SourceConnectionInput, SourceConnectionSettings } from '../shared/workbench.ts'
 import type { DataSourceId } from '../shared/data-sources/types.ts'
 import { connectionFingerprint, validateConnection, canReuseSavedLogin } from '../shared/connection-input.ts'
 import { publicConnection, SavedDatabaseConnections, uniqueCopyName, type StoredDatabaseConnection } from './saved-connections.ts'
@@ -32,7 +32,7 @@ import { runOperation } from './operation-runtime.ts'
 import { assertRedisClusterDatabase, assertRedisDatabaseId, redisPreparedInput } from './redis-request.ts'
 import { TextOperationRunner } from './text-operation-runner.ts'
 import type { TextEntryOptions } from './data-sources/module-types.ts'
-import type { DocumentExecutionIdentity, ExecutionType } from '../shared/execution.ts'
+import type { DocumentExecutionIdentity, ExecutionRecord, ExecutionType } from '../shared/execution.ts'
 import { sqlOperationBinding, sqlOperationMetadata, sqlCompletion, sqlModel, sqlFailureMessage } from './sql-operation.ts'
 import { prepareCatalogTool, catalogToolFailure, type CatalogToolInput } from './sql-catalog-operation.ts'
 import { prepareRedisReadOperation, type RedisReadTool } from './data-sources/redis/read-operation.ts'
@@ -70,6 +70,20 @@ function normalizeSourceConnection(raw: unknown, options?: { passwordOptional?: 
 }
 function keepVisibleSchemas(previous: StoredDatabaseConnection | undefined, next: StoredDatabaseConnection): StoredDatabaseConnection {
   return previous?.visibleSchemas?.length ? { ...next, visibleSchemas: [...previous.visibleSchemas] } : next
+}
+export type LastRunMatch = { connectionId: string; generation?: string; revision: number; text: string; schema: string; controller: 'ai' | 'user' }
+/**
+ * lastRun 的唯一算法：按当前执行文档（revision/text/schema/controller）在执行记录里找最近一次用户可见执行，再取结果摘要。
+ * getSharedQuery 与快照公共投影都走这里，两处 lastRun 完全同源；只现算，不落盘、不新造来源。
+ */
+export function lastRunFromExecutions(records: readonly ExecutionRecord[], match: LastRunMatch, readResult: (executionId: string) => Result | undefined): { lastExecutionId: string; lastRun: SharedQueryLastRun } | undefined {
+  const record = records.find(r => r.connectionId === match.connectionId && r.generation === match.generation
+    && r.queryRevision === match.revision && r.documentText === match.text && r.schema === match.schema
+    && isUserVisibleQueryType(r.type || '') && !(r.initiator === 'ai' && match.controller === 'user'))
+  if (!record) return
+  const result = readResult(record.executionId)
+  return { lastExecutionId: record.executionId, lastRun: { executionId: record.executionId, columns: result?.columns || [], rowCount: result?.rows.length || 0,
+    truncated: result?.truncated || false, elapsedMs: result?.elapsedMs || 0, message: record.message || result?.message, at: record.updatedAt } }
 }
 type ServiceRequest = {
   background?: boolean
@@ -174,8 +188,10 @@ export class ConnectionService {
     if (this.#closed || !this.sessionValid(session)) throw new Error('当前对话已失效。')
     const rows = this.ensure()
     const layout = this.#layout(session, rows)
+    // lastRun 由执行记录现算后补进公共投影：与 getSharedQuery 同源，一次快照只列一次执行记录。
+    const records = this.#executions?.list(session) || []
     return {
-      connections: [...rows.values()].map(row => { const projection = this.#runtime.get(row.id)?.attempt?.projection; return { ...publicConnection(row, this.#entry(row.id)?.connection, layout.workbenches[row.id]), lifecycle: projection ? { ...projection } : undefined } }),
+      connections: [...rows.values()].map(row => { const projection = this.#runtime.get(row.id)?.attempt?.projection; return { ...publicConnection(row, this.#entry(row.id)?.connection, layout.workbenches[row.id], this.#lastRunForView(session, row.id, records)), lifecycle: projection ? { ...projection } : undefined } }),
       lastActiveId: layout.lastActiveId && rows.has(layout.lastActiveId) ? layout.lastActiveId : undefined,
       passwordStorage: this.store.passwordStorage,
       revision: this.#revision,
@@ -316,14 +332,19 @@ export class ConnectionService {
   get storageDegraded(): boolean { return this.conversations.storageDegraded }
   getSharedQuery(session: string, id: string): SharedQuery {
     const d = this.getExecutionDocument(session, id)
-    const record = this.#executions?.list(session).find(r => r.connectionId === id && r.generation === this.#entry(id)?.connection.generation
-      && r.queryRevision === d.revision && r.documentText === d.text && r.schema === (d.context.schema || '')
-      && isUserVisibleQueryType(r.type || '') && !(r.initiator === 'ai' && d.controller === 'user'))
-    const result = record && this.#executions?.get(session, record.executionId, true)?.result
+    const run = this.#lastRun(session, id, d, this.#executions?.list(session) || [])
     return { sql: d.text, schema: d.context.schema || '', revision: d.revision, controller: d.controller, controllerReason: d.controllerReason,
-      ...(record ? { lastExecutionId: record.executionId, lastRun: { executionId: record.executionId, columns: result?.columns || [], rowCount: result?.rows.length || 0,
-        truncated: result?.truncated || false, elapsedMs: result?.elapsedMs || 0, message: record.message || result?.message, at: record.updatedAt } } : {}) }
-
+      ...(run ? { lastExecutionId: run.lastExecutionId, lastRun: run.lastRun } : {}) }
+  }
+  /** 与 getSharedQuery 同源的 lastRun 现算：同一套执行记录匹配规则，快照投影用它补数据。 */
+  #lastRun(session: string, id: string, document: ExecutionDocument, records: readonly ExecutionRecord[]): { lastExecutionId: string; lastRun: SharedQueryLastRun } | undefined {
+    return lastRunFromExecutions(records, { connectionId: id, generation: this.#entry(id)?.connection.generation,
+      revision: document.revision, text: document.text, schema: document.context.schema || '', controller: document.controller },
+      executionId => this.#executions?.get(session, executionId, true)?.result)
+  }
+  /** 编辑器视图的 lastRun 数据源：没有文档能力的连接读不到文档，也就没有 lastRun。 */
+  #lastRunForView(session: string, id: string, records: readonly ExecutionRecord[]): SharedQueryLastRun | undefined {
+    try { return this.#lastRun(session, id, this.getExecutionDocument(session, id), records)?.lastRun } catch { return undefined }
   }
   getExecutionDocument(session: string, id: string, generation?: unknown): ExecutionDocument {
     return this.documents.read(session, id, generation)
