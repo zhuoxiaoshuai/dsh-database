@@ -19,10 +19,19 @@ D0–D3 的冗余清理删除了根/中间层 re-export 别名、重复注册表
 | 位置 | 为什么不合并 |
 |---|---|
 | `src/host/query-policy.mjs` 与 `src/shared/workbench.ts` 的 `quoteIdentifier` | 前者做 Host 参数校验并走数据源 driver 引用标识符；后者只按方言能力加引号。职责不同。 |
-| `splitStatements` 与 `enumerateStatements`（都在 `src/shared/sql-lex.ts`） | 语义不同：前者保留 Host 既有的 `--` / `#` / 反斜杠规则用于授权切分，后者是方言感知的编辑器定位器。`test/sql-statement-split.test.mjs` 显式钉住三处差异，合并前必须先决定是否接受语义变化。 |
 | `query-sync.ts` 的 `ownsDocumentResult` 与 `use-execution-document.ts` 的 `resultOwner()` | 前者始终按 `context` 全量比较；后者对 mysql/oracle 只比较 `schema`。两侧语义不同，合并会改变其中一侧。 |
 | `sanitizeSharedQuery` 与 `sanitizeExecutionDocument` 的修订号归一与文本截断 | 修订号：前者接受字符串数字（`Number(raw.revision)`），后者只接受整数。文本上限也不同：前者在 `src/shared/workbench.ts` 按 `SQL_FIELD_MAX_LENGTH`（32768）截断 `sql`，后者在 `src/shared/execution-document.ts` 按 `textLimit` 截断 `text`（普通源 65536、kafka 512 KiB）。属于两个持久化 schema 的历史差异。 |
 | `ai-query-bus.ts` 的“执行中”判定 与 `ai-executions.tsx` 的 `isTerminalStatus` 判定 | 前者把 `awaiting_confirmation` 视为未完成，后者相反。是有意的产品差异。 |
+| `src/host/data-sources/modules.ts` 的 `hostModules`／`getSourceRuntime` 与 `sql-registry.mjs`／`redis-registry.mjs`（`provider-registry.mjs`） | 构建边界造成的有意分离，不是漏删；见下方小节「两套数据源注册层：构建边界造成的有意分离」。 |
+
+### 两套数据源注册层：构建边界造成的有意分离
+
+`src/host/data-sources/modules.ts:34,60` 的 `hostModules`／`getSourceRuntime`（TS 服务侧，被 `connection-service.ts`、`explorer-service.ts`、`knowledge-service.ts` 等使用）与 `src/host/data-sources/sql-registry.mjs:5`／`redis-registry.mjs:4`（基于 `provider-registry.mjs` 的 SQL／Redis Provider 注册表，被 `query.mjs`、`session-manager.mjs`、`maintenance.mjs`、`catalog.mjs`、各 worker 使用）是两套注册入口，但不是可以合并的冗余：
+
+- **构建边界（2026-10-26 以构建产物证实）**：`scripts/build.mjs` 只把 `src/host/**/*.mjs` 原样复制进 `lib/`（`copyTree('src/host/data-sources', 'lib/data-sources')`，过滤条件 `endsWith('.mjs')`），TS 全部被 esbuild 打包进 `lib/index.js` 单文件。发布树里不存在 `modules.ts` 这类文件，被复制树里的 `.mjs` 注册表运行时 import TS 只会 `ERR_MODULE_NOT_FOUND`。证据：`lib/data-sources/` 39 个文件全部是 `.mjs`、`lib/` 内无任何 `.ts`、`lib/data-sources/sql-registry.mjs` 与源文件逐字节相同、`createHostModuleRegistry`／`hostModules` 只出现在 `lib/index.js` 打包体内。
+- **运行拓扑**：`.mjs` 注册表的消费者跑在按 `runtime.workerEntry` 起的 worker 模块图里（`src/host/connection-service.ts:772`），与 TS 服务所在的 Host 主线程 bundle 是两个模块图；注册表内容是函数（driver／policy／maintenance），无法跨线程序列化共享。反向（TS import `.mjs`）可行但 esbuild 会内联成私有副本（如 `sql-policy-common.mjs` 的既有特例），得到的是副本而非共享注册表，反而破坏同一对象引用。
+- **一致性如何锁死**：runtime 元数据本来就是单源的——每来源只有一个 `<source>/runtime.mjs`，`module.ts` 与 `index.mjs` 都 import 它。`test/source-registry-consistency.test.mjs` 断言两套注册表的注册 id 集合一致（SQL/Redis 域相等，无 Provider 的 `kafka`／`nacos` 显式钉住）、`hostModules.get(id).runtime` 与 `getSqlDataSource(id)`／`getRedisDataSource(id).runtime` 是同一对象引用（`assert.strictEqual`），且 `workerEntry`／`actions`／`requiresPassword`／`documentKind` 一致。runtime 形状校验单源于 `src/host/data-sources/runtime-contract.mjs`（必须是 `.mjs`：只有它能同时被 TS 与被复制树 import）。
+- **若要真正合并**：需放弃 raw copy 构建（全部 bundle）或把注册表跨 worker 边界序列化，代价大于收益，未做。原「尚未收敛的根因」第 3 条据此关闭为“已定性 + 门禁锁死”。
 
 ## 2026-10-23 收敛同步
 
@@ -32,14 +41,14 @@ D0–D3 的冗余清理删除了根/中间层 re-export 别名、重复注册表
 - `src/host/text-operation-runner.ts` 派发前的 context 复核改用 `sameStringMap`，不再用 `JSON.stringify` 逐键比较。`JSON.stringify` 对 key 顺序敏感，等价 context 会被误判为改过目标；这是行为修复，不是等价改写。
 - `nativeDriverError`／`driverErrorFields` 从 mysql／oracle driver 收敛到 `src/host/connect-error.mjs`，两个 driver 复用同一实现；mysql／oracle maintenance 的 `wanted` 收敛为共享 `DML_PRIVILEGES`（`src/host/data-sources/maintenance-error.mjs`）。
 
-## 尚未收敛的根因
+## 已知缺口与仍开放的取舍
 
-以下重复有共同根因，已知但尚未收敛，不是漏删；动到这些位置时成对处理，合并前先决定取舍。行号为 2026-10-23 核对结果，以符号名／函数名为准。
+原「尚未收敛的根因」三条已于 2026-10-26 全部处置（切分统一、内部读取单源、依赖根因修复，见下节）。剩下的不是重复实现，而是需要产品决策或有意保留的取舍：
 
-1. SQL 授权切分与方言感知切分的语义差异：`src/shared/sql-lex.ts:117` 的 `splitStatements`（保留 Host 既有的 `--` / `#` / 反斜杠规则，用于授权切分）与 `src/shared/sql-lex.ts:78` 的 `enumerateStatements`（方言感知的编辑器定位器）。差异被 `test/sql-statement-split.test.mjs:27-42` 显式钉住三处（`--x` 无空格注释、双引号转义、`#` 注释），合并前必须先决定是否接受授权语义变化。**风险已核对为保守失败，不是授权绕过**：`src/host/query.mjs:241` 按同一个 `splitStatements` 切分后逐段授权、逐段执行，MySQL 连接显式 `multipleStatements: false`（`src/host/data-sources/mysql/connection.mjs:8`），因此切分不一致只会让语句被整段判 write 或直接报 SQL 错误，不会让未授权的语句被执行。真正要取舍的是语句计数（`MAX_AI_STATEMENTS`）、`--x`／`#`／反斜杠三类文本的正确性与 UX，以及两套词法器的维护成本。
-2. `SharedQuery` 与 `ExecutionDocument` 双模型。4 处转换：`src/host/connection-service.ts:316`（`getSharedQuery` 由文档重建旧模型）、`src/host/connection-service.ts:547`（`#layout` 把旧模型迁移为 `aiDocument`）、`src/host/execution-document-service.ts:23`（`read` 由 `sharedQuery` 建文档）、`src/host/saved-connections.ts:176`（`publicConnection` 把文档投影回 `sharedQuery`）。4 处遗留读取：`src/host/ai-tools.ts:90`、`src/host/workbench-editors.ts:20`、`src/client/schema/refresh.ts:81`、`src/client/sql/workspace-bindings.tsx:86`。
-3. 两套数据源注册层：`src/host/data-sources/modules.ts:34,60` 的 `hostModules` 与派生的 `getSourceRuntime`，对 `src/host/data-sources/sql-registry.mjs:5`／`src/host/data-sources/redis-registry.mjs:4`（基于 `provider-registry.mjs` 的 SQL／Redis Provider 注册表）。
-4. npm 默认安装的 peer 冲突：`@deepseek-ai/dsh-api-session-controller` → `@deepseek-ai/dsh-agent-presets` → `@deepseek-ai/cordis-plugin-include`（`^1.0.7` 解析到 1.0.10）要求 `@deepseek-ai/cordis@~4.0.5`，根项目固定 `4.0.2`（`package.json:152,191`）；CI 用 `npm ci --legacy-peer-deps` 绕过（`.github/workflows/ci.yml:19`）。2026-10-26 已把解析策略固化到仓库 `.npmrc`（`legacy-peer-deps=true`），`npm ci`／`npm install` 不带参数即可得到与 lockfile 一致的树；真正消除仍需上游对齐 peer 范围，或把 `@deepseek-ai/cordis` 升到 4.0.5 后重新生成 lockfile（需联网重解依赖树，本轮环境无法验证）。
+1. **`lastRun` 视图缺口**（2026-10-26 刻意未修）：`src/host/workbench-editors.ts` 的 `lastRun` 在真实路径上恒为 `undefined`。链条是 `connection-service.ts` 的 `getSharedQuery()` 每次从执行记录现算 `lastRun`、不落 workbench；`src/host/saved-connections.ts:176` 的公共投影不含 `lastRun`；旧 `sharedQuery` 迁成 `aiDocument` 时 `lastRun` 被丢弃。刻画测试见 `test/shared-query-document-source.test.mjs`。修它等于让 AI 工具开始看到最近一次执行信息，属产品行为变更，未做。
+2. **结果采纳的两套契约与两个 sanitizer 的 schema 差异**：见上文「有意不合并的近似重复」表（`ownsDocumentResult` vs `resultOwner()`、`sanitizeSharedQuery` vs `sanitizeExecutionDocument`）。合并前必须先决定取哪一侧语义。
+3. **`SharedQuery` 公共投影的退役时间点**：`sharedQuery` 现在只剩两个身份——`src/host/saved-connections.ts:176` 的公共兼容投影、旧持久化数据的迁移输入（`src/shared/workbench.ts` 的 `legacySharedQueryDocument()`）。内部代码已不再读它（`test/structure-gates.test.mjs` 有门禁）。彻底删除需要客户端同步改造与旧数据迁移窗口。
+4. **`GRID_ROW_HEIGHT` 偏差**（非缺陷）：`src/client/query-detail-layout.ts:1` 的 `GRID_ROW_HEIGHT=28` 与实际行高（`--db-row-height: 34px`，实测 td 37px）不一致，detail 展开时保留行数的预留偏小；现有 `>= 80` 断言稳过，如需精确对齐由该文件持有者校准。
 
 ## 2026-10-26 收敛同步
 
@@ -48,8 +57,10 @@ D0–D3 的冗余清理删除了根/中间层 re-export 别名、重复注册表
   - `npm run test:ui`：fixture 给了 80 行结果却没传 `resultKey`，与产品契约「有结果必有 `resultKey`」（`src/client/workspace/source/source-workspace.tsx:178`）不一致，紧凑视图停在 `showing-editor`，结果面板 `display:none` 导致 cell 0×0。补 `resultKey` 后按产品状态机自动切到结果视图；折叠往返那组按钮只存在于分栏布局，故改到 768×600 视口执行。紧凑视图契约另有 `scripts/plugin-ui-acceptance.mjs`、`scripts/source-module-ui-acceptance.mjs` 固化，不应改产品。
 - 已验证的 UI 子集（`test:plugin-ui`、`test:public-ui`、`test:grid-copy`、`test:theme-ui`、`test:ui`）进入 CI 的 `ui` job；其余 UI 脚本需要真实服务或未在本轮验证，暂不入 CI。
 - 测试墙钟时序消除：`database-lifecycle`／`kafka-worker`／`nacos`／`sql-completion-source`／`bounded-parser` 从「断速度」改为「断完成顺序／钉死配置值」（如并发独立性改断「快请求在慢请求仍 pending 时完成」，截止值改用 mock timers 钉死）。20 核压满负载下以 `--test-concurrency=8` 复跑通过；并用探针证明旧的 `fast < 1500ms` 在主线程被饿死 2s 时每轮必假失败。
-- npm 解析策略固化到仓库 `.npmrc`，见上文第 4 条。
-- 另记一处非缺陷偏差：`src/client/query-detail-layout.ts:1` 的 `GRID_ROW_HEIGHT=28` 与实际行高（`--db-row-height: 34px`，实测 td 37px）不一致，detail 展开时保留行数的预留偏小；现有 `>= 80` 断言仍稳过，如需精确对齐由该文件持有者校准。
+- SQL 授权切分统一到方言感知：`splitStatements` 不再手写扫描，改为复用 `enumerateStatements` 的方言区域扫描再套原后处理（trim、剥尾随 `;`、丢纯注释段、前导注释仍附着）。三条历史差异按方言修正（**有意的行为变化**）：MySQL 下 `--x` 无空格不再吞掉分号、双引号内反斜杠不再误切、Oracle 的 `#` 不再当注释（MySQL 的 `#` 注释保留）。授权与执行仍共用同一入口（`src/host/query-policy.mjs` 的 `splitStatements`），逐段授权、逐段执行的结构未变，语句计数（`MAX_AI_STATEMENTS`）随之与授权段数一致。原「有意不合并」表中的对应条目已撤销。
+- `SharedQuery` 内部读取单源化：`src/host/ai-tools.ts`、`src/host/workbench-editors.ts`、`src/client/schema/refresh.ts`、`src/client/sql/workspace-bindings.tsx` 改读 `aiDocument`／文档派生值，旧 SharedQuery → 文档的迁移输入投影收敛到 `src/shared/workbench.ts` 的 `legacySharedQueryDocument()`。`sharedQuery` 只剩公共投影与旧数据迁移两个身份，`test/structure-gates.test.mjs` 新增门禁禁止别处再读。顺带证实了 `lastRun` 缺口（见上文「已知缺口」第 1 条），按约定未修。
+- npm 默认安装根因修复：`@deepseek-ai/cordis` 对齐到 `4.0.5`（满足 `cordis-plugin-include` 的 `cordis@~4.0.5`），lockfile 以**默认 peer 解析**重生成（`dsh-agent-presets`、`dsh-agent-default-model`、`cordis-plugin-loader`、`cordis-plugin-include` 等 30 个 peer 包首次真正入树）；`npm ci`／`npm install` 零参数即可用，CI 与 `.npmrc` 的 `legacy-peer-deps` 绕过随之删除。同时 `peerDependencies` 全部改为只设兼容下限、不设上限（`@deepseek-ai/cordis >=4.0.2`、`dsh-session`／`dsh-tools >=0.1.2-rc.1`、`react`／`react-dom >=18.0.0`）；`dependencies`／`devDependencies` 仍精确钉死，保证 `npm ci` 可复现。
+- 两套数据源注册层定性完成（见上文「两套数据源注册层：构建边界造成的有意分离」）：构建边界证实成立，处置为文档化 + 门禁锁死，不硬合并。同步把两处重复的 runtime 形状校验收敛为单一实现 `src/host/data-sources/runtime-contract.mjs`（`modules.ts` 的 `createRuntimeRegistry` 与 `provider-registry.mjs` 的 `createDataSourceRegistry` 共用；放在 `.mjs` 是构建边界使然）。收敛带来的唯一行为变化：`provider-registry.mjs` 现在也校验 `actions` 元素是非空字符串且无重复（原先只查数组非空），现有 Provider 全部通过；错误文案不变。
 
 ## 新增门面的规则
 
