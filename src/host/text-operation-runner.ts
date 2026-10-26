@@ -88,11 +88,11 @@ export class TextOperationRunner {
       if (status === 'unknown') throw Object.assign(new Error(this.port.executions?.get(session, result.executionId as string)?.message || '执行结果未知，请核验，勿重复提交。'), { effect: 'unknown', phase: 'receipt', executionId: result.executionId, executionStatus: status, steps: receipt?.steps, batch: receipt?.batch,
         ...(prepared.sourceKind === 'kafka' && result.kind === 'produce-batch' ? { sourceResult: prepared.projectLiveResult ? prepared.projectLiveResult({ ...result, executionStatus: status }) : { ...result, executionStatus: status } } : {}) })
       if (!sql) return { ...(prepared.projectLiveResult ? prepared.projectLiveResult(response) : response), ...(identity ? { ...identity, identity, result: prepared.projectLiveResult ? prepared.projectLiveResult(response) : response } : {}) }
-      return { ...(identity || {}), ...(identity ? { identity } : {}), schema: normalized.schema, ...(identity && this.port.document(session, id).revision !== identity.queryRevision ? { controlLost: true } : {}), executionId: result.executionId, status, kind, sql: prepared.text, result, model: sqlModel(result as unknown as Result, result.executionId as string, !!document && this.port.document(session, id).revision !== document.revision) }
+      return { ...(identity || {}), ...(identity ? { identity } : {}), ...(identity && this.port.document(session, id).revision !== identity.queryRevision ? { controlLost: true } : {}), executionId: result.executionId, status, kind, sql: prepared.text, result, model: sqlModel(result as unknown as Result, result.executionId as string, !!document && this.port.document(session, id).revision !== document.revision) }
     } catch (error) {
       const partial = prepared.recoverPartialResult?.(error)
       if (partial && error && typeof error === 'object') Object.assign(error, { sourceResult: { ...partial, executionStatus: (error as { executionStatus?: string }).executionStatus || 'unknown' } })
-      if (error && typeof error === 'object') Object.assign(error, { ...(identity || {}), ...(identity ? { identity } : {}), kind, schema: normalized.schema })
+      if (error && typeof error === 'object') Object.assign(error, { ...(identity || {}), ...(identity ? { identity } : {}), kind })
       if (error instanceof Error && (error as {executionId?: string}).executionId) { const message = this.port.executions?.get(session, (error as Error & {executionId: string}).executionId)?.message; if (message) error.message = message }
       throw error
     } finally { if (lease !== undefined) this.port.releaseRun(id, lease) }

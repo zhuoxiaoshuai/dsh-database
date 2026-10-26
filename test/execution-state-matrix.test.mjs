@@ -78,6 +78,38 @@ test('result adoption survives edits but never crosses a target or takeover boun
   assert.equal(sameDocumentResultTarget({ ...identity, initiator: 'ai' }, { ...owner, document: { ...document, controller: 'user' } }), true)
 })
 
+test('结果归属只认完整 context，两套入口对同一输入给出一致结论', () => {
+  const document = { sourceId: 'mysql', text: 'SELECT 1', context: { schema: 'app' }, revision: 4, controller: 'ai' }
+  const owner = { connectionId: 'c1', generation: 'g1', conversationId: 'conv', document }
+  const identity = {
+    conversationId: 'conv', connectionId: 'c1', generation: 'g1', sourceId: 'mysql', context: { schema: 'app' },
+    queryRevision: 4, documentText: 'SELECT 1', executedSql: 'SELECT 1', initiator: 'ai',
+  }
+  // resultOwner() 统一后只带完整 context；mysql/oracle 不再有 schema 形状的归属判定。
+  for (const [label, resultPatch, contextPatch, expected] of [
+    ['同一目标', {}, undefined, true],
+    ['空 schema 目标仍按完整 map 匹配', { context: { schema: '' } }, { schema: '' }, true],
+    ['结果缺少 context', { context: undefined }, undefined, false],
+    ['结果只带 schema 快照', { context: undefined, schema: 'app' }, undefined, false],
+    ['结果 context 多出的键不能被 schema 相等掩盖', { context: { schema: 'app', database: '1' } }, undefined, false],
+    ['结果 context 缺少 schema 键', { context: {} }, undefined, false],
+    ['结果目标漂移', { context: { schema: 'other' } }, undefined, false],
+    ['文档 context 多出的键同样不被掩盖', {}, { schema: 'app', database: '1' }, false],
+    ['文档目标漂移', {}, { schema: 'other' }, false],
+    ['空 map 与缺少 schema 键不等价', { context: {} }, { schema: '' }, false],
+  ]) {
+    const target = contextPatch === undefined ? document.context : contextPatch
+    const result = { ...identity, ...resultPatch }
+    const ownerTuple = { connectionId: 'c1', generation: 'g1', conversationId: 'conv', context: target,
+      sql: document.text, queryRevision: document.revision, controller: document.controller }
+    assert.equal(matchesResultOwner(result, ownerTuple), expected, label)
+    assert.equal(ownsDocumentResult(result, { ...owner, document: { ...document, context: target } }), expected, label)
+  }
+  // 只带 schema 的旧 owner 形状不再是归属凭据，即使 schema 值完全相同。
+  assert.equal(matchesResultOwner(identity, { connectionId: 'c1', generation: 'g1', schema: 'app',
+    sql: document.text, queryRevision: document.revision, controller: 'ai' }), false, '只带 schema 的 owner 不再判定归属')
+})
+
 test('local tool failures share one classification ladder', () => {
   const lifecycle = (aborted, dispatched) => ({ aborted, dispatched })
   assert.deepEqual(catalogToolFailure(new Error('boom'), lifecycle(false, false)), { status: 'failed', message: 'boom' })

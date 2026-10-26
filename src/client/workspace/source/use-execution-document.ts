@@ -72,8 +72,8 @@ export function useExecutionDocument(bridge: WorkspaceBridge, connection: Connec
   const previous = useRef({ id: connection.id, source: connection.dialect, generation: connection.generation, context: executionContextKey })
   const resultOwner = () => {
     const binding = connectionRef.current, document = current.current.draft
-    return { connectionId: binding.id, generation: binding.generation, sql: document.text, queryRevision: document.revision, controller: document.controller,
-      ...(binding.dialect === 'mysql' || binding.dialect === 'oracle' ? { schema: document.context.schema || '' } : { context: document.context }) }
+    return { connectionId: binding.id, generation: binding.generation, sql: document.text, queryRevision: document.revision,
+      controller: document.controller, context: document.context }
   }
   const load = async (preserveDraft = false) => {
     if (!bridge.executions || !connection.live) return

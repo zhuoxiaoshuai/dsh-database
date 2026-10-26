@@ -4,13 +4,14 @@ import type { DisplayResult, DocumentExecutionIdentity, DocumentExecutionResult 
 import { sameStringMap, type ExecutionDocument } from './execution-document.ts'
 
 export type ResultIdentity = {
-  conversationId?: string; connectionId?: string; generation?: string; schema?: string
+  conversationId?: string; connectionId?: string; generation?: string
   context?: Record<string, string>
   queryRevision?: number; documentText?: string; executedSql?: string; initiator?: 'ai' | 'user'
 }
+/** Ownership only ever compares the complete target context; a schema-only owner is not an owner. */
 type ResultOwner = {
-  conversationId?: string; connectionId: string; generation?: string; schema?: string
-  context?: Record<string, string>
+  conversationId?: string; connectionId: string; generation?: string
+  context: Record<string, string>
   queryRevision: number; sql: string; controller?: SharedQuery['controller']
 }
 
@@ -65,8 +66,7 @@ export function sqlDisplay(value: DocumentExecutionResult | undefined): DisplayR
 export function matchesResultOwner(result: ResultIdentity, owner: ResultOwner): boolean {
   return typeof result.generation === 'string' && typeof owner.generation === 'string'
     && result.connectionId === owner.connectionId && result.generation === owner.generation
-    && (owner.context ? !!result.context && sameStringMap(result.context, owner.context)
-      : typeof result.schema === 'string' && result.schema === (owner.schema ?? ''))
+    && !!result.context && !!owner.context && sameStringMap(result.context, owner.context)
     && result.queryRevision === owner.queryRevision && typeof result.documentText === 'string'
     && result.documentText === owner.sql
     && typeof result.executedSql === 'string' && (result.initiator === 'user' || result.initiator === 'ai')
