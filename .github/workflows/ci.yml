@@ -15,10 +15,27 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      # The dev dependency tree has an upstream peer conflict; the lockfile was created with legacy resolution.
+      # The dev dependency tree has an upstream peer conflict; the resolution policy is pinned in .npmrc.
       - run: npm ci --legacy-peer-deps
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
       - run: npm run check
       - run: npm pack --dry-run
       - run: npm run test:package-closure
+
+  # The acceptance scripts bundle from src/ and drive Chromium against controlled fixtures.
+  ui:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --legacy-peer-deps
+      - run: npx playwright install chromium
+      - run: npm run test:plugin-ui
+      - run: npm run test:public-ui
+      - run: npm run test:grid-copy
+      - run: npm run test:theme-ui
+      - run: npm run test:ui
