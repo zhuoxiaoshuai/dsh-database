@@ -1,6 +1,7 @@
 import type { Dialect, SharedQuery } from '../shared/workbench.ts'
 import { SQL_FIELD_MAX_LENGTH } from '../shared/limits.ts'
 import { parseSqlFormatRange, prepareSqlFormat, type SqlFormatRange, type SqlFormatResult } from '../shared/sql-format.ts'
+import { assertDocumentRevision } from '../shared/execution-document.ts'
 
 export type BrowserQueryUpdate = {
   source: 'user' | 'format'
@@ -38,7 +39,7 @@ export function parseBrowserQueryUpdate(input: Record<string, unknown>): Browser
 export function validateBrowserFormat(current: SharedQuery, patch: BrowserQueryUpdate['patch'], dialect: Dialect, expectedRevision?: number, selection?: unknown): SqlFormatResult['kind'] {
   const range = parseSqlFormatRange(selection, current.sql.length)
   if (range && expectedRevision === undefined) throw new Error('选区格式化缺少文档修订号。')
-  if (expectedRevision !== undefined && expectedRevision !== current.revision) throw new Error('AI Query 已变化，请刷新后再格式化。')
+  assertDocumentRevision(current, expectedRevision, 'AI Query 已变化，请刷新后再格式化。')
   if (patch.schema !== undefined && patch.schema !== current.schema) throw new Error('格式化不能改变 Schema。')
   if (patch.sql === undefined || patch.sql === current.sql) return 'sql'
   if (patch.sql.length > SQL_FIELD_MAX_LENGTH) throw new Error('格式化结果超过文档长度上限。')

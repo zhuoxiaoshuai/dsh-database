@@ -64,7 +64,7 @@ function mergeListed(previous: Connection[], listed: Connection[], blend: (previ
   return merged
 }
 
-const sessionWorkbenchKeys = ['schema', 'view', 'queryTabs', 'activeTabId', 'sharedQuery', 'history', 'templates'] as const
+const sessionWorkbenchKeys = ['schema', 'view', 'queryTabs', 'activeTabId', 'aiDocument', 'history', 'templates'] as const
 
 function takeSessionWorkbench(previous: Connection, next: Connection): Connection {
   const blended = blendLiveConnection(previous, next)
@@ -78,8 +78,8 @@ function takeSessionWorkbench(previous: Connection, next: Connection): Connectio
   else workbench.queryTabs = source.queryTabs
   if (source?.activeTabId === undefined) delete workbench.activeTabId
   else workbench.activeTabId = source.activeTabId
-  if (source?.sharedQuery === undefined) delete workbench.sharedQuery
-  else workbench.sharedQuery = source.sharedQuery
+  if (source?.aiDocument === undefined) delete workbench.aiDocument
+  else workbench.aiDocument = source.aiDocument
   if (source?.history === undefined) delete workbench.history
   else workbench.history = source.history
   if (source?.templates === undefined) delete workbench.templates

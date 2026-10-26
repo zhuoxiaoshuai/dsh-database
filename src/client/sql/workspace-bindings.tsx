@@ -83,7 +83,8 @@ export function useSqlWorkspaceBindings({
   const [highlight, setHighlight] = useState('')
   const [cacheTick, setCacheTick] = useState(0)
   const schemaSeen = useRef(schema)
-  const collabSchemaSeen = useRef(connection.workbench?.sharedQuery?.schema)
+  // 会话初始值取文档派生的执行目标；公共投影的 schema 与文档 context.schema 一致。
+  const collabSchemaSeen = useRef(connection.workbench?.aiDocument?.context.schema)
   const treeSeq = useRef(0)
   const persistPatch = useRef<ConnectionWorkbench>()
   const onWorkbenchRef = useRef(onWorkbench)

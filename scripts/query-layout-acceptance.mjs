@@ -17,7 +17,7 @@ await build({
       import React, { useState } from 'react'
       import { createRoot } from 'react-dom/client'
       import { SqlRunWorkspace } from './src/client/sql-run-workspace.tsx'
-      import { QueryResultFrame } from './src/client/workspace/source/query-result-frame.tsx'
+      import { QueryResultFrame } from './src/client/workspace/parts/layout/query-result-frame.tsx'
       import { QueryResultGrid } from './src/client/query-result-grid.tsx'
       import './src/client/style.css'
 
@@ -49,6 +49,7 @@ await build({
             sql={sql}
             onChange={setSql}
             onRun={() => {}}
+            resultKey="fixture-run-1"
             resultOpen={resultOpen}
             onResultOpenChange={setResultOpen}
             editorRatio={ratio}
@@ -147,6 +148,8 @@ try {
   assert.ok(await grid.evaluate(node => node.scrollTop > 0))
   await page.getByRole('button', { name: '收起字段详情' }).click()
 
+  // 紧凑视图（分隔条高度 < 420）没有 .db-pane-gutter-y，收起/展开结果按钮只在分栏布局存在，回到分栏视口验证折叠往返
+  await page.setViewportSize({ width: 768, height: 600 })
   await page.getByRole('button', { name: '收起结果' }).click()
   assert.ok(await page.getByLabel('SQL 编辑器').isVisible())
   await page.getByRole('button', { name: '展开结果' }).click()

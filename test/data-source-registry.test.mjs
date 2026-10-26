@@ -4,7 +4,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { resolve, dirname } from 'node:path'
 import { createDataSourceRegistry, getDataSource, getRedisDataSource, registeredDataSources, registeredAllDataSources } from './helpers/runtime-providers.mjs'
-import { createRuntimeRegistry, getSourceRuntime, registeredSourceRuntimes } from '../src/host/data-sources/runtime-registry.mjs'
+import { createRuntimeRegistry, getSourceRuntime, registeredSourceRuntimes } from '../src/host/data-sources/modules.ts'
 import { getSqlDataSource as getSqlRuntimeProvider, registeredDataSources as registeredSqlRuntimeProviders } from '../src/host/data-sources/sql-registry.mjs'
 import { getRedisDataSource as getRedisRuntimeProvider } from '../src/host/data-sources/redis-registry.mjs'
 import { clientDataSource, clientWorkspaceDescriptor, supportedDataSources } from '../src/shared/data-sources/registry.ts'
@@ -82,7 +82,7 @@ test('connection runtime selection and credential rules belong to the registered
   assert.throws(() => createRuntimeRegistry([mysql, mysql]), /重复/)
   assert.throws(() => createRuntimeRegistry([{ ...mysql, actions: ['query', 'query'] }]), /运行能力不完整/)
   const root = resolve(dirname(fileURLToPath(import.meta.url)), '../src/host/data-sources')
-  for (const file of ['runtime-registry.mjs', 'mysql/runtime.mjs', 'oracle/runtime.mjs', 'redis/runtime.mjs']) {
+  for (const file of ['mysql/runtime.mjs', 'oracle/runtime.mjs', 'redis/runtime.mjs']) {
     assert.doesNotMatch(readFileSync(resolve(root, file), 'utf8'), /\b(?:mysql2|oracledb|from ['"]redis['"]|createClient|driver\.mjs)\b/)
   }
 })

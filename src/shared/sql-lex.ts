@@ -96,3 +96,30 @@ export function locateStatement(sql: string, offset: number, dialect: Dialect = 
   const point = Math.max(0, Math.min(offset, sql.length))
   return ranges.find(range => point >= range.start && point <= range.end) || ranges.at(-1) || { start: 0, end: sql.length, sql }
 }
+
+function leadKind(sql: string): string {
+  let text = sql.trim()
+  for (;;) {
+    const next = text.replace(/^--[^\n]*(?:\r?\n|$)/, '').replace(/^#[^\n]*(?:\r?\n|$)/, '').replace(/^\/\*[\s\S]*?\*\//, '').trim()
+    if (next === text) return text
+    text = next
+  }
+}
+
+/**
+ * Split a script into the statements the Host policy authorizes.
+ *
+ * Reuses `enumerateStatements`'s dialect-aware region scan (`--` only opens a
+ * comment where the dialect requires it, `#` is dialect-specific, backslash
+ * escapes apply inside quoted regions, Oracle q-quotes), so authorization and
+ * execution see the same boundaries as dialect parsing. Comment-only segments
+ * are dropped and leading comments stay attached.
+ */
+export function splitStatements(sql: string, dialect: Dialect = 'mysql'): string[] {
+  const parts: string[] = []
+  for (const range of enumerateStatements(String(sql || ''), dialect)) {
+    const part = range.sql.trim().replace(/;\s*$/, '')
+    if (part && leadKind(part)) parts.push(part)
+  }
+  return parts
+}

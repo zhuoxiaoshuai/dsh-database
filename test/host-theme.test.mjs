@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { isHostDark, HOST_DARK_ATTRIBUTE } from '../src/client/workspace/parts/host-theme.ts'
+import { isHostDark, HOST_DARK_ATTRIBUTE } from '../src/client/workspace/parts/theme/host-theme.ts'
 import { overlayMenuClass } from '../src/client/workspace/parts/overlay-menu.ts'
 
 test('host dark follows body[data-ds-dark-theme] before html class', () => {

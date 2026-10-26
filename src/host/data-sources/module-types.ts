@@ -11,7 +11,14 @@ import type { OperationLifecycle, OperationStatus } from '../operation-runtime.t
 export interface HostSourceModule {
   id: DataSourceId
   family: 'sql' | 'redis' | 'kafka' | 'nacos'
-  runtime: { id: DataSourceId; workerEntry: string; actions: readonly string[]; documentKind?: 'sql' | 'command' }
+  runtime: {
+    id: DataSourceId
+    workerEntry: string
+    requiresPassword: boolean
+    usesCustomCa(input: unknown): boolean
+    actions: readonly string[]
+    documentKind?: 'sql' | 'command'
+  }
   connection: {
     validate(input: unknown, options?: { passwordOptional?: boolean }): SourceConnectionInput
     fingerprint(input: never): string

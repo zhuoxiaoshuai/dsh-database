@@ -1,3 +1,5 @@
+import { unique } from '../template-common.ts'
+
 type AntlrNode = {
   constructor: { name: string }
   children?: AntlrNode[]
@@ -41,10 +43,6 @@ const CONDITION_CONTEXTS = new Set([
   'Join_on_partContext',
   'Join_using_partContext',
 ])
-
-function unique(values: string[]): string[] {
-  return [...new Set(values.filter(Boolean))].sort()
-}
 
 export function normalizeOracleIdentifier(raw: string): string {
   const text = raw.trim()

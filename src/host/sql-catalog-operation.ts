@@ -1,5 +1,5 @@
 import { catalogStatement, visibleCatalogSql } from './catalog.mjs'
-import { executionStop, isHostQueryTimeout } from '../shared/execution.ts'
+import { classifyOperationFailure } from '../shared/execution.ts'
 import { dialectCapabilities } from '../shared/dialect-capabilities.ts'
 import { draftSelects, quoteIdentifier, type CatalogRequest, type CatalogResult, type Connection, type SqlDialect } from '../shared/workbench.ts'
 import type { OperationLifecycle, OperationMetadata, OperationStatus } from './operation-runtime.ts'
@@ -72,11 +72,5 @@ export function prepareCatalogTool(connection: Connection & { dialect: SqlDialec
 
 /** Retain the directory tool's SQL interruption and public error semantics. */
 export function catalogToolFailure(error: unknown, lifecycle: OperationLifecycle): { status: OperationStatus; message: string; event?: 'timeout' | 'disconnect' } {
-  const message = error instanceof Error ? error.message : '操作失败'
-  const stop = executionStop({ ...lifecycle, message })
-  if (isHostQueryTimeout(message)) return { status: 'failed', message }
-  if (stop.status !== 'failed') return stop
-  if (/超时|timeout/i.test(message)) return { status: 'unknown', message, event: 'timeout' }
-  if (/连接已关闭|连接已变化/.test(message)) return { status: 'unknown', message, event: 'disconnect' }
-  return { status: 'failed', message }
+  return classifyOperationFailure(error, lifecycle)
 }

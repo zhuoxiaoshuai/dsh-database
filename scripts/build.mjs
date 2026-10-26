@@ -5,6 +5,8 @@ import { resolve, sep } from 'node:path'
 import { builtinModules } from 'node:module'
 const generated = spawnSync(process.execPath, ['scripts/gen-database-css.cjs'], { stdio: 'inherit' })
 if (generated.status !== 0) process.exit(generated.status ?? 1)
+// Every shipped file is generated here; a stale lib must never reach the tarball.
+await rm('lib', { recursive: true, force: true })
 await mkdir('lib/preview', { recursive: true })
 await mkdir('lib/shared', { recursive: true })
 await mkdir('lib/dialects', { recursive: true })
@@ -30,10 +32,12 @@ function verifyStandaloneDependencies(result) {
 await build({ entryPoints: ['src/index.ts'], bundle: true, platform: 'node', format: 'esm', packages: 'external', outfile: 'lib/index.js', define: { __PLUGIN_VERSION__: JSON.stringify(pkg.version) } })
 // Database drivers belong to source workers, not the always-loaded Host entry.
 if (/\b(?:from|require\()\s*['"](?:redis|mysql2(?:\/[^'"]*)?|oracledb|kafkajs)['"]/.test(await readFile('lib/index.js', 'utf8'))) throw new Error('Database driver leaked into Host entry')
-for (const file of ['redis-worker.mjs', 'kafka-worker.mjs', 'connection-worker.mjs', 'connect-error.mjs', 'connection-failure.mjs', 'catalog.mjs', 'query.mjs', 'query-pool.mjs', 'session-manager.mjs', 'query-policy.mjs', 'browse.mjs', 'maintenance.mjs', 'maintenance-capability.mjs', 'dml-plan.mjs', 'ddl-plan.mjs', 'primary-keys.mjs', 'oracle-temporal.mjs', 'request-timeouts.mjs', 'cell-value.mjs']) {
+for (const file of ['redis-worker.mjs', 'kafka-worker.mjs', 'connection-worker.mjs', 'connect-error.mjs', 'connection-failure.mjs', 'catalog.mjs', 'query.mjs', 'query-pool.mjs', 'session-manager.mjs', 'query-policy.mjs', 'browse.mjs', 'maintenance.mjs', 'maintenance-capability.mjs', 'dml-plan.mjs', 'ddl-plan.mjs', 'primary-keys.mjs', 'request-timeouts.mjs', 'cell-value.mjs']) {
   await copyFile('src/host/' + file, 'lib/' + file)
 }
-for (const file of ['types.mjs', 'mysql.mjs', 'oracle.mjs', 'registry.mjs']) {
+await rm('lib/dialects', { recursive: true, force: true })
+await mkdir('lib/dialects', { recursive: true })
+for (const file of ['registry.mjs']) {
   await copyFile('src/host/dialects/' + file, 'lib/dialects/' + file)
 }
 const providerOutput = resolve('lib/data-sources'), libRoot = resolve('lib')
@@ -45,12 +49,14 @@ await build({entryPoints:['src/host/data-sources/kafka/command.mjs'],bundle:true
 await build({entryPoints:['src/host/data-sources/nacos/http-client.mjs'],bundle:true,platform:'node',format:'esm',packages:'external',outfile:'lib/data-sources/nacos/http-client.mjs'})
 // Provider output omits src/host: bundle shared source imports rather than copying escaping paths.
 for(const file of ['configuration-service.mjs','config-protection.mjs','markup-protection.mjs'])await build({entryPoints:['src/host/data-sources/nacos/'+file],bundle:true,platform:'node',format:'esm',packages:'external',outfile:'lib/data-sources/nacos/'+file})
+await build({entryPoints:['src/host/data-sources/sql-policy-common.mjs'],bundle:true,platform:'node',format:'esm',packages:'external',outfile:'lib/data-sources/sql-policy-common.mjs'})
+if (/\.\.\/shared\//.test(await readFile('lib/data-sources/sql-policy-common.mjs', 'utf8'))) throw new Error('SQL policy import escaped the package')
 await copyFile('src/shared/connection-permission.mjs', 'lib/shared/connection-permission.mjs')
 await copyFile('src/shared/limits.mjs', 'lib/shared/limits.mjs')
 // A raw copy of nacos-worker.mjs cannot import src/shared from lib/. Bundle the HTTP client and endpoint helpers into the worker.
 await build({ entryPoints: ['src/host/nacos-worker.mjs'], bundle: true, platform: 'node', format: 'esm', packages: 'external', outfile: 'lib/nacos-worker.mjs' })
 if (/\.\.\/shared\//.test(await readFile('lib/nacos-worker.mjs', 'utf8'))) throw new Error('Nacos worker import escaped the package')
-await build({ entryPoints: ['src/client/index.tsx'], bundle: true, platform: 'browser', format: 'cjs', external: ['react', 'react-dom', 'react/jsx-runtime'], outfile: 'lib/client.js', loader: { '.png': 'dataurl' }, define: { __DATABASE_CSS__: JSON.stringify(css) } })
+await build({ entryPoints: ['src/client/index.tsx'], bundle: true, platform: 'browser', format: 'cjs', external: ['react', 'react-dom', 'react/jsx-runtime'], outfile: 'lib/client.js', loader: { '.png': 'dataurl' } })
 const client = await readFile('lib/client.js', 'utf8')
 await writeFile('lib/client.js', `window.__ModuleLoader__.load({id:"dsh-database",factory:(require)=>{var module={exports:{}};var exports=module.exports;\n${client}\nreturn module.exports;}});\n`)
 await build({ entryPoints: ['preview/index.tsx'], bundle: true, platform: 'browser', format: 'esm', outfile: 'lib/preview/preview.js', loader: { '.png': 'dataurl' } })

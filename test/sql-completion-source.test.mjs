@@ -69,9 +69,12 @@ test('explicit completion waits for pending columns', async () => {
 
 test('automatic completion never waits for metadata', async () => {
   let release
+  let metadataDelivered = false
   const catalog = async (_connection, input) => {
     if (input.kind === 'tables') return { items: [{ name: 'user', kind: 'BASE TABLE' }], more: false, collectedAt: '', source: 'test' }
-    await new Promise(resolve => { release = resolve })
+    // The column metadata stays pending one full event loop turn; a completion that waits on it settles too late.
+    await new Promise(resolve => { release = resolve; setImmediate(resolve) })
+    metadataDelivered = true
     return { columns: [{ name: 'id', type: 'bigint' }], collectedAt: '', source: 'test', primaryKeys: ['id'] }
   }
   const cache = new SchemaCache(catalog, { emitCoalesceMs: 0, schedule: task => task() })
@@ -80,9 +83,8 @@ test('automatic completion never waits for metadata', async () => {
   const live = { dialect: 'mysql', schema: 'biz', connection, cache }
   const sql = 'SELECT d\nFROM user'
   const source = createSqlCompletionSource(() => live)
-  const started = Date.now()
   const result = await source(fakeContext(sql, 'SELECT d'.length, { explicit: false }))
-  assert.ok(Date.now() - started < 50)
+  assert.equal(metadataDelivered, false, '自动补全返回时列元数据必须仍未就绪')
   assert.ok(!result?.options.some(item => item.type === 'property'))
   assert.notEqual(result?.options[0]?.label, '正在加载列…')
   assert.ok(!result?.options.some(item => item.label === '正在加载列…'))

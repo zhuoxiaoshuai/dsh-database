@@ -7,7 +7,7 @@ import type { ConnectionLifecycle, ConnectionStart, ConnectionFailureCategory } 
 import { NacosService } from './nacos-service.ts'
 import { Worker } from 'node:worker_threads'
 import { randomUUID, createHash } from 'node:crypto'
-import type { Connection, ConnectionTest, CatalogRequest, CatalogResult, ConnectionWorkbench, DatabaseWorkspaceSnapshot, QueryEditSource, Result, SharedQuery, SourceConnectionInput, SourceConnectionSettings } from '../shared/workbench.ts'
+import type { Connection, ConnectionTest, CatalogRequest, CatalogResult, ConnectionWorkbench, DatabaseWorkspaceSnapshot, QueryEditSource, Result, SharedQuery, SharedQueryLastRun, SourceConnectionInput, SourceConnectionSettings } from '../shared/workbench.ts'
 import type { DataSourceId } from '../shared/data-sources/types.ts'
 import { connectionFingerprint, validateConnection, canReuseSavedLogin } from '../shared/connection-input.ts'
 import { publicConnection, SavedDatabaseConnections, uniqueCopyName, type StoredDatabaseConnection } from './saved-connections.ts'
@@ -19,27 +19,26 @@ import type { ExplorerListInput, ExplorerReadInput } from '../shared/explorer.ts
 import type { PasswordProtector } from '../password-protector.ts'
 import type { ExecutionStore } from './execution-store.ts'
 import { authorizeStatement, splitStatements } from './query-policy.mjs'
-import { catalogSchemaName, coerceVisibleSchemas, connectionOwnsSchema, sharedQuerySurface } from '../shared/workbench.ts'
-import { inferExecutionType } from '../shared/execution.ts'
+import { catalogSchemaName, coerceVisibleSchemas, connectionOwnsSchema, legacySharedQueryDocument, sharedQuerySurface } from '../shared/workbench.ts'
+import { inferExecutionType, isUserVisibleQueryType } from '../shared/execution.ts'
 import { HOST_TIMEOUTS, connectTimeoutMessage, hostDeadlineFor, hostTimeoutMessage } from './request-timeouts.mjs'
 import { nativeErrorText } from './connect-error.mjs'
 import { CONNECTION_ERROR_CODES, ServiceError, type ConnectionErrorCode } from '../shared/connection-errors.ts'
 import type { ServiceRequestAction } from '../shared/database-actions.ts'
 import { DEFAULT_QUERY_PAGE_SIZE } from '../shared/limits.ts'
-import type { ExecutionDocument } from '../shared/execution-document.ts'
+import { assertDocumentRevision, isDocumentRevision, sameStringMap, type ExecutionDocument } from '../shared/execution-document.ts'
 import { ExecutionDocumentService } from './execution-document-service.ts'
-import { getSourceRuntime } from './data-sources/runtime-registry.mjs'
 import { runOperation } from './operation-runtime.ts'
 import { assertRedisClusterDatabase, assertRedisDatabaseId, redisPreparedInput } from './redis-request.ts'
 import { TextOperationRunner } from './text-operation-runner.ts'
 import type { TextEntryOptions } from './data-sources/module-types.ts'
-import type { DocumentExecutionIdentity, ExecutionType } from '../shared/execution.ts'
+import type { DocumentExecutionIdentity, ExecutionRecord, ExecutionType } from '../shared/execution.ts'
 import { sqlOperationBinding, sqlOperationMetadata, sqlCompletion, sqlModel, sqlFailureMessage } from './sql-operation.ts'
 import { prepareCatalogTool, catalogToolFailure, type CatalogToolInput } from './sql-catalog-operation.ts'
 import { prepareRedisReadOperation, type RedisReadTool } from './data-sources/redis/read-operation.ts'
 import { unwrapExplainSql } from '../shared/sql-text.ts'
 import { parseBrowserQueryUpdate, validateBrowserFormat } from './sql-browser-request.ts'
-import { hostModules } from './data-sources/modules.ts'
+import { hostModules, getSourceRuntime } from './data-sources/modules.ts'
 export { connectionFingerprint, validateConnection } from '../shared/connection-input.ts'
 
 const MAX_LIVE = 20
@@ -71,6 +70,20 @@ function normalizeSourceConnection(raw: unknown, options?: { passwordOptional?: 
 }
 function keepVisibleSchemas(previous: StoredDatabaseConnection | undefined, next: StoredDatabaseConnection): StoredDatabaseConnection {
   return previous?.visibleSchemas?.length ? { ...next, visibleSchemas: [...previous.visibleSchemas] } : next
+}
+export type LastRunMatch = { connectionId: string; generation?: string; revision: number; text: string; schema: string; controller: 'ai' | 'user' }
+/**
+ * lastRun 的唯一算法：按当前执行文档（revision/text/schema/controller）在执行记录里找最近一次用户可见执行，再取结果摘要。
+ * getSharedQuery 与快照公共投影都走这里，两处 lastRun 完全同源；只现算，不落盘、不新造来源。
+ */
+export function lastRunFromExecutions(records: readonly ExecutionRecord[], match: LastRunMatch, readResult: (executionId: string) => Result | undefined): { lastExecutionId: string; lastRun: SharedQueryLastRun } | undefined {
+  const record = records.find(r => r.connectionId === match.connectionId && r.generation === match.generation
+    && r.queryRevision === match.revision && r.documentText === match.text && r.schema === match.schema
+    && isUserVisibleQueryType(r.type || '') && !(r.initiator === 'ai' && match.controller === 'user'))
+  if (!record) return
+  const result = readResult(record.executionId)
+  return { lastExecutionId: record.executionId, lastRun: { executionId: record.executionId, columns: result?.columns || [], rowCount: result?.rows.length || 0,
+    truncated: result?.truncated || false, elapsedMs: result?.elapsedMs || 0, message: record.message || result?.message, at: record.updatedAt } }
 }
 type ServiceRequest = {
   background?: boolean
@@ -175,8 +188,10 @@ export class ConnectionService {
     if (this.#closed || !this.sessionValid(session)) throw new Error('当前对话已失效。')
     const rows = this.ensure()
     const layout = this.#layout(session, rows)
+    // lastRun 由执行记录现算后补进公共投影：与 getSharedQuery 同源，一次快照只列一次执行记录。
+    const records = this.#executions?.list(session) || []
     return {
-      connections: [...rows.values()].map(row => { const projection = this.#runtime.get(row.id)?.attempt?.projection; return { ...publicConnection(row, this.#entry(row.id)?.connection, layout.workbenches[row.id]), lifecycle: projection ? { ...projection } : undefined } }),
+      connections: [...rows.values()].map(row => { const projection = this.#runtime.get(row.id)?.attempt?.projection; return { ...publicConnection(row, this.#entry(row.id)?.connection, layout.workbenches[row.id], this.#lastRunForView(session, row.id, records)), lifecycle: projection ? { ...projection } : undefined } }),
       lastActiveId: layout.lastActiveId && rows.has(layout.lastActiveId) ? layout.lastActiveId : undefined,
       passwordStorage: this.store.passwordStorage,
       revision: this.#revision,
@@ -308,7 +323,8 @@ export class ConnectionService {
     }
     const { sharedQuery: _ignored, aiDocument: _document, aiCollab: _legacy, visibleSchemas: _visible, ...rest } = incoming
     const current = this.#layout(session, rows)
-    const workbench = sanitizeConversationWorkbench({ ...current.workbenches[id], ...rest, sharedQuery: current.workbenches[id]?.sharedQuery })
+    // 浏览器不能覆盖文档与旧模型字段；旧字段随 spread 原样保留。
+    const workbench = sanitizeConversationWorkbench({ ...current.workbenches[id], ...rest })
     current.workbenches[id] = workbench
     this.conversations.save(session, current, new Set(rows.keys()))
     return publicConnection(this.#rows!.get(id)!, undefined, workbench).workbench || workbench
@@ -316,14 +332,19 @@ export class ConnectionService {
   get storageDegraded(): boolean { return this.conversations.storageDegraded }
   getSharedQuery(session: string, id: string): SharedQuery {
     const d = this.getExecutionDocument(session, id)
-    const record = this.#executions?.list(session).find(r => r.connectionId === id && r.generation === this.#entry(id)?.connection.generation
-      && r.queryRevision === d.revision && r.documentText === d.text && r.schema === (d.context.schema || '')
-      && ['query', 'write', 'explain'].includes(r.type || '') && !(r.initiator === 'ai' && d.controller === 'user'))
-    const result = record && this.#executions?.get(session, record.executionId, true)?.result
+    const run = this.#lastRun(session, id, d, this.#executions?.list(session) || [])
     return { sql: d.text, schema: d.context.schema || '', revision: d.revision, controller: d.controller, controllerReason: d.controllerReason,
-      ...(record ? { lastExecutionId: record.executionId, lastRun: { executionId: record.executionId, columns: result?.columns || [], rowCount: result?.rows.length || 0,
-        truncated: result?.truncated || false, elapsedMs: result?.elapsedMs || 0, message: record.message || result?.message, at: record.updatedAt } } : {}) }
-
+      ...(run ? { lastExecutionId: run.lastExecutionId, lastRun: run.lastRun } : {}) }
+  }
+  /** 与 getSharedQuery 同源的 lastRun 现算：同一套执行记录匹配规则，快照投影用它补数据。 */
+  #lastRun(session: string, id: string, document: ExecutionDocument, records: readonly ExecutionRecord[]): { lastExecutionId: string; lastRun: SharedQueryLastRun } | undefined {
+    return lastRunFromExecutions(records, { connectionId: id, generation: this.#entry(id)?.connection.generation,
+      revision: document.revision, text: document.text, schema: document.context.schema || '', controller: document.controller },
+      executionId => this.#executions?.get(session, executionId, true)?.result)
+  }
+  /** 编辑器视图的 lastRun 数据源：没有文档能力的连接读不到文档，也就没有 lastRun。 */
+  #lastRunForView(session: string, id: string, records: readonly ExecutionRecord[]): SharedQueryLastRun | undefined {
+    try { return this.#lastRun(session, id, this.getExecutionDocument(session, id), records)?.lastRun } catch { return undefined }
   }
   getExecutionDocument(session: string, id: string, generation?: unknown): ExecutionDocument {
     return this.documents.read(session, id, generation)
@@ -332,9 +353,9 @@ export class ConnectionService {
     return this.documents.update(session, id, text, source, expectedRevision, generation, context)
   }
   assertBrowserDocumentRequest(session: string, id: string, generation: unknown, revision: unknown): void {
-    if (!Number.isSafeInteger(revision) || (revision as number) < 1) throw new Error('缺少有效文档修订，请刷新。')
+    if (!isDocumentRevision(revision)) throw new Error('缺少有效文档修订，请刷新。')
     const document = this.getExecutionDocument(session, id, generation)
-    if (document.revision !== revision) throw new Error('AI Query 已变化，请刷新后再试。')
+    assertDocumentRevision(document, revision, 'AI Query 已变化，请刷新后再试。')
     if (this.#hasEntry(id) && typeof generation !== 'string') throw new Error('缺少连接代次，请刷新。')
   }
   updateExecutionDocumentFromBrowser(session: string, id: string, input: Record<string, unknown>): ExecutionDocument {
@@ -347,8 +368,7 @@ export class ConnectionService {
       if (input.context !== undefined) {
         const binding = this.#entry(id)?.connection || this.list(session).find(item => item.id === id)!
         const context = hostModules.get(previous.sourceId).execution!.normalizeContext(input.context, binding)
-        if (Object.keys(context).length !== Object.keys(previous.context).length
-          || Object.keys(context).some(key => context[key] !== previous.context[key])) throw new Error('格式化不能改变执行目标。')
+        if (!sameStringMap(context, previous.context)) throw new Error('格式化不能改变执行目标。')
       }
       const kind = validateBrowserFormat(this.getSharedQuery(session, id), { sql: input.text }, previous.sourceId, input.revision as number, input.formatRange)
       source = kind === 'values' ? 'user' : 'system'
@@ -398,7 +418,7 @@ export class ConnectionService {
     const id = input.connectionId, document = this.getExecutionDocument(session, id, input.generation)
     const connection = this.#entry(id)?.connection
     if (!connection?.live || getSourceRuntime(document.sourceId).documentKind !== 'sql') throw new Error('请先连接数据库。')
-    if (input.revision !== undefined && input.revision !== document.revision) throw new Error('AI Query 已变化，请重新读取后再试。')
+    assertDocumentRevision(document, input.revision, 'AI Query 已变化，请重新读取后再试。')
     if (document.controller !== input.initiator) throw new Error(input.initiator === 'ai' ? '用户已接管 AI Query。' : '请先接管 AI Query。')
     const sql = input.sql || document.text, schema = input.schema || document.context.schema || connection.database
     if (input.initiator === 'user' && !document.text.includes(unwrapExplainSql(sql))) throw new Error('执行文本不属于当前文档。')
@@ -413,7 +433,7 @@ export class ConnectionService {
   }
   async explainPlan(session: string, id: string, generation: unknown, input: { schema: string; sql: string; revision?: number; initiator?: 'ai' | 'user'; callId?: string; rootCallId?: string }, signal?: AbortSignal): Promise<Result & { executionId?: string }> {
     const d = this.getExecutionDocument(session, id, generation)
-    if (input.revision !== undefined && input.revision !== d.revision) throw new Error('AI Query 已变化，请刷新。')
+    assertDocumentRevision(d, input.revision, 'AI Query 已变化，请刷新。')
     const result = await this.executeText(session, id, generation, input.sql, signal, input.initiator || 'ai', input.callId, d.revision, input.rootCallId, { schema: input.schema },
       { type: 'explain', sql: { sourceKind: 'sql', entry: 'explain', input: { sql: input.sql, schema: input.schema, limit: DEFAULT_QUERY_PAGE_SIZE } } })
     return { ...(result.result as Result), executionId: result.executionId as string }
@@ -547,10 +567,12 @@ export class ConnectionService {
       }
     }
     for (const [id, workbench] of Object.entries(layout.workbenches)) {
-      const saved = rows.get(id), old = workbench.sharedQuery
-      if (!saved || workbench.aiDocument || !old) continue
-      layout.workbenches[id] = sanitizeConversationWorkbench({ ...workbench, aiDocument: { sourceId: saved.settings.dialect, text: old.sql,
-        context: { schema: old.schema || ('database' in saved.settings ? saved.settings.database : '') }, revision: Math.max(1, old.revision), controller: old.controller, controllerReason: old.controllerReason } })
+      const saved = rows.get(id)
+      if (!saved || workbench.aiDocument) continue
+      // 旧持久化 SharedQuery 只是迁移输入：没有权威文档时才推导，lastRun 等旧字段随迁移丢弃。
+      const legacy = legacySharedQueryDocument(workbench, saved.settings.dialect, 'database' in saved.settings ? saved.settings.database : '')
+      if (!legacy) continue
+      layout.workbenches[id] = sanitizeConversationWorkbench({ ...workbench, aiDocument: { ...legacy, revision: Math.max(1, legacy.revision) } })
       changed = true
     }
     if (changed) this.conversations.save(session, layout, new Set(rows.keys()))
@@ -923,7 +945,7 @@ export class ConnectionService {
     const prepared = prepareRedisReadOperation(operation, input, document.context, connection)
     const response = await runOperation(this.#executions, sqlOperationBinding(session, connection), { operation, title: prepared.title, initiator: 'ai', callId, rootCallId, type: 'tool' },
       (workSignal, onDispatched) => this.#withReadonly(id, () => this.#dispatch(session, id, generation, prepared.action, prepared.input as ServiceRequest, workSignal, undefined, {
-        beforeDispatch: () => { const current = this.getExecutionDocument(session, id, generation); if (current.controller !== 'ai' || current.revision !== document.revision) throw new Error('AI Query 已变化。') }, onDispatched,
+        beforeDispatch: () => { const current = this.getExecutionDocument(session, id, generation); assertDocumentRevision(current, document.revision, 'AI Query 已变化。'); if (current.controller !== 'ai') throw new Error('AI Query 已变化。') }, onDispatched,
       }), 'ai', workSignal) as Promise<Record<string, unknown>>, prepared.summarize, signal, prepared.classifyResult,
       { classifyInterruption: (_error, lifecycle) => lifecycle.aborted ? 'cancelled' : 'failed', summarizeFailure: prepared.summarizeFailure })
     const { executionStatus: _status, ...result } = response

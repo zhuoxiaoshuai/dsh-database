@@ -37,26 +37,41 @@ test('Kafka PEEK rejects an already cancelled request before accessing the broke
   assert.equal(accessed, false)
 })
 
-test('Kafka PEEK deadline also bounds a stalled consumer connect', async () => {
+test('Kafka PEEK deadline also bounds a stalled consumer connect', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   let stopped = 0, disconnected = 0
   const runtime = { admin: { async fetchTopicOffsets() { return [{ partition: 0, low: '0', high: '1' }] } },
     kafka: { consumer: () => ({ connect: () => new Promise(() => {}),
       async stop() { stopped += 1 }, async disconnect() { disconnected += 1 } }) } }
-  const begun = Date.now()
-  await assert.rejects(peekKafkaPartition(runtime, { kind: 'peek', topic: 'demo', partition: 0, from: 'beginning', limit: 1 }, undefined, 15),
-    error => error.recycleWorker === true)
-  assert.ok(Date.now() - begun < 1000)
+  const pending = peekKafkaPartition(runtime, { kind: 'peek', topic: 'demo', partition: 0, from: 'beginning', limit: 1 }, undefined, 15)
+  let settled
+  pending.then(() => { settled = 'resolved' }, () => { settled = 'rejected' })
+  t.mock.timers.tick(14)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(settled, undefined, '未到截止时间时不能提前结束')
+  t.mock.timers.tick(1)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(settled, 'rejected', '到达截止时间后必须结束')
+  await assert.rejects(pending, error => error.recycleWorker === true)
   assert.deepEqual([stopped, disconnected], [1, 1])
 })
 
-test('Kafka PEEK deadline includes stalled metadata lookup', async () => {
+test('Kafka PEEK deadline includes stalled metadata lookup', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   let consumerCreated = false
-  const begun = Date.now()
-  await assert.rejects(peekKafkaPartition({ admin: { fetchTopicOffsets: () => new Promise(() => {}) },
+  const pending = peekKafkaPartition({ admin: { fetchTopicOffsets: () => new Promise(() => {}) },
     kafka: { consumer() { consumerCreated = true } } },
-  { kind: 'peek', topic: 'demo', partition: 0, from: 'beginning', limit: 1 }, undefined, 15), /截止时间/)
+  { kind: 'peek', topic: 'demo', partition: 0, from: 'beginning', limit: 1 }, undefined, 15)
+  let settled
+  pending.then(() => { settled = 'resolved' }, () => { settled = 'rejected' })
+  t.mock.timers.tick(14)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(settled, undefined, '未到截止时间时不能提前结束')
+  t.mock.timers.tick(1)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(settled, 'rejected', '到达截止时间后必须结束')
+  await assert.rejects(pending, /截止时间/)
   assert.equal(consumerCreated, false)
-  assert.ok(Date.now() - begun < 500)
 })
 
 test('Kafka PEEK disables consumer restart and retains bounded partial data after a crash', async () => {

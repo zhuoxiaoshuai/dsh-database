@@ -10,8 +10,8 @@ await mkdir(out, { recursive: true })
 await build({ stdin: { resolveDir: resolve('.'), loader: 'tsx', contents: `
   import React,{useState} from 'react';import {createRoot} from 'react-dom/client';
   import {StandardSourceMount} from './src/client/workspace-sources.tsx';import {clientModules} from './src/client/data-sources/registry.ts';
-  import {useWorkbenchTheme} from './src/client/workspace/parts/use-workbench-theme.ts';
-  import {setWorkbenchTheme} from './src/client/workspace/parts/workbench-theme.ts';import {workbenchThemes} from './src/client/workspace/parts/theme-tokens.ts';
+  import {useWorkbenchTheme} from './src/client/workspace/parts/theme/use-workbench-theme.ts';
+  import {setWorkbenchTheme} from './src/client/workspace/parts/theme/workbench-theme.ts';import {workbenchThemes} from './src/client/workspace/parts/theme/theme-tokens.ts';
   import './src/client/style.css';
   const calls=[],data={content:'port: 8080\\nname: app\\n',md5:'baseline',type:'yaml'},documents={};let source='kafka';
   const connections=Object.fromEntries(['kafka','redis','nacos'].map(dialect=>[dialect,{id:dialect,generation:'g1',name:dialect,dialect,environment:'sit',database:dialect==='redis'?'0':'',live:true,health:'ready'}]));
@@ -74,8 +74,11 @@ try {
       for(const mode of ['light','dark']){await theme(mode);await noOverflow();await page.screenshot({animations:'disabled',path:resolve(out,`${dialect}-${width}-${mode}.png`)})}
     }
     if(dialect!=='nacos'){
-      for(const width of [759,760]){await page.setViewportSize({width,height:850});assert.equal(await main.locator('.db-search-tree-toggle').isVisible(),width<760)}
-      await page.setViewportSize({width:600,height:850});await drawer(dialect==='kafka'?'打开 Topic 列表':'打开 Key 列表');await page.keyboard.press('Escape');await page.waitForFunction(()=>document.activeElement?.classList.contains('db-search-tree-toggle'))
+      // Kafka 同时常驻 topics/groups 两个概览（data-sources/kafka.tsx 的 keep-alive 隐藏挂载），
+      // 两个 .db-search-tree-toggle 同时在 DOM 中；断言必须限定到当前激活面板的抽屉开关。
+      const treeDrawer=dialect==='kafka'?'打开 Topic 列表':'打开 Key 列表'
+      for(const width of [759,760]){await page.setViewportSize({width,height:850});assert.equal(await main.getByRole('button',{name:treeDrawer,exact:true}).isVisible(),width<760)}
+      await page.setViewportSize({width:600,height:850});await drawer(treeDrawer);await page.keyboard.press('Escape');await page.waitForFunction(()=>document.activeElement?.classList.contains('db-search-tree-toggle'))
     }
   }
   checks.push('three sources at 420/768/1200 in light/dark, container breakpoints and drawer focus')

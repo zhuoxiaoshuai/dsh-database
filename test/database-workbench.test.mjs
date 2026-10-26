@@ -1,7 +1,8 @@
 import { emptyExecutionDocument, updateExecutionDocument, controlExecutionDocument } from '../src/shared/execution-document.ts'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { catalogSchemaName, coerceVisibleSchemas, composeTableSelect, dedupeSqlTemplates, emptySharedQuery, isAbortError, keepResultOnFailure, preferredCatalogRoot, queryTabNeedsCloseConfirm, sanitizeConnectionWorkbench, schemaCatalogChildren, schemaNameListed, sharedQuerySurface, shouldMarkConnectionOffline, visibleCatalogChildren } from '../src/shared/workbench.ts'
+import { catalogSchemaName, coerceVisibleSchemas, composeTableSelect, dedupeSqlTemplates, emptySharedQuery, isAbortError, keepResultOnFailure, legacySharedQueryDocument, preferredCatalogRoot, queryTabNeedsCloseConfirm, sanitizeConnectionWorkbench, schemaCatalogChildren, schemaNameListed, sharedQuerySurface, shouldMarkConnectionOffline, visibleCatalogChildren } from '../src/shared/workbench.ts'
+import { SQL_FIELD_MAX_LENGTH } from '../src/shared/limits.ts'
 import { catalogFilterCopy, sqlCatalogFilterCopy } from '../src/client/workspace/shell/catalog-filter-copy.ts'
 import { catalogStatement } from '../src/host/catalog.mjs'
 
@@ -60,6 +61,19 @@ test('workbench snapshots drop result grids and cap sql drafts', () => {
   assert.equal(collab.sharedQuery?.lastRun?.rowCount, 1)
   assert.equal(Object.hasOwn(collab.sharedQuery?.lastRun || {}, 'rows'), false)
   assert.equal(Object.hasOwn(collab, 'aiCollab'), false)
+})
+
+test('旧 sharedQuery 落盘形态恒为整数修订与受限 sql，两条规则的差异在产物上不可达', () => {
+  // 已核实为不可达的历史差异（见 docs/cleanup-facades.md「已核实为不可达的历史差异」）：
+  // 旧 sharedQuery 的写入方只产出整数修订与 ≤SQL_FIELD_MAX_LENGTH 的 sql；这里钉住的是落盘产物不变量——
+  // 即便旧磁盘数据带着字符串数字修订或超长 sql，归一后也不会与 sanitizeExecutionDocument 的产物形态分叉。
+  const legacy = sanitizeConnectionWorkbench({ sharedQuery: { sql: 'x'.repeat(SQL_FIELD_MAX_LENGTH + 100), revision: '5' } })
+  assert.equal(Number.isInteger(legacy.sharedQuery?.revision), true, '落盘产物的修订号必须是整数，字符串数字修订只在读入旧数据时归一')
+  assert.equal(legacy.sharedQuery?.revision, 5, '旧数据的字符串数字修订归一为整数后再落盘，产物上不存在字符串修订')
+  assert.equal(legacy.sharedQuery?.sql.length, SQL_FIELD_MAX_LENGTH, '落盘产物的 sql 恒不超过 SQL_FIELD_MAX_LENGTH，写入方天然在该上限内')
+  const migrated = legacySharedQueryDocument(legacy, 'mysql', 'app')
+  assert.equal(Number.isInteger(migrated?.revision), true, '迁移进执行文档的修订号仍是整数，与 sanitizeExecutionDocument 的归一一致')
+  assert.equal(migrated?.text.length, SQL_FIELD_MAX_LENGTH, '迁移进执行文档的文本天然 ≤SQL_FIELD_MAX_LENGTH，不会被文档的 65536 上限截断')
 })
 
 test('document edits take control and reject stale AI writes', () => {

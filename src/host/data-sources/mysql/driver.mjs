@@ -2,10 +2,9 @@ import { DRIVER_TIMEOUTS } from '../../request-timeouts.mjs'
 import { mysqlConnectionConfig } from './connection.mjs'
 import { formatMysqlValue, mysqlBinaryField } from '../../cell-value.mjs'
 import { writeDriverError } from '../sql-write-error.mjs'
-import { nativeErrorText } from '../../connect-error.mjs'
+import { nativeDriverError, nativeErrorText } from '../../connect-error.mjs'
 
 const quote = value => '`' + String(value).replaceAll('`', '``') + '`'
-const driverErrorFields = ['code', 'errno', 'sqlState', 'errorNum', 'fatal']
 const connectionState = new WeakMap()
 
 export function trackMysqlConnection(connection) {
@@ -29,14 +28,6 @@ function watchConnection(connection, listener) {
   state.listeners.add(listener)
   if (state.lost) queueMicrotask(() => { if (state.listeners.has(listener)) listener() })
   return () => state.listeners.delete(listener)
-}
-
-function nativeDriverError(error) {
-  const next = new Error(nativeErrorText(error, '数据库没有返回错误说明。'))
-  if (error && typeof error === 'object') {
-    for (const key of driverErrorFields) if (error[key] != null) next[key] = error[key]
-  }
-  return next
 }
 
 export const sql = Object.freeze({

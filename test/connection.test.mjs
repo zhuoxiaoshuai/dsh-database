@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { validateConnection, connectionFingerprint, ConnectionService } from '../src/connection-service.ts'
+import { validateConnection, connectionFingerprint, ConnectionService } from '../src/host/connection-service.ts'
 const input = { name: '', dialect: 'mysql', host: 'localhost', port: 3306, database: '', oracleMode: 'service', username: 'dev', password: ' p@ss ', environment: 'dev' }
 test('MySQL database/name optional, password whitespace preserved, Oracle target required and descriptors rejected', () => {
   assert.equal(validateConnection(input).name, 'MySQL · localhost:3306')

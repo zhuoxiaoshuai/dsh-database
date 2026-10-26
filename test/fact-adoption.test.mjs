@@ -67,10 +67,13 @@ for (const dialect of ['mysql', 'oracle']) {
       const document = f.service.updateExecutionDocument('owner', id, text, 'user', f.service.getExecutionDocument('owner', id).revision, generation, { schema: 'app' })
       const response = await api(f, { action: 'execution-document-run', id, generation, revision: document.revision })
       assert.equal(response.status, text.includes('ERROR') ? 400 : 200)
-      const owner = { connectionId: id, generation, schema: 'app', sql: text, queryRevision: document.revision, controller: 'user' }
+      const owner = { connectionId: id, generation, context: { schema: 'app' }, sql: text, queryRevision: document.revision, controller: 'user' }
       assert.equal(matchesResultOwner(response.body, owner), true)
       const record = f.executions.list('owner').find(item => item.executionId === response.body.executionId)
       assert.equal(matchesResultOwner(record, owner), true)
+      assert.equal(response.body.schema, undefined, '回执身份只保留完整 context，不再另带 schema 快照')
+      assert.equal(matchesResultOwner(response.body, { ...owner, context: { schema: 'other' } }), false, '目标不同的回执不得采纳')
+      assert.equal(matchesResultOwner(response.body, { ...owner, context: undefined, schema: 'app' }), false, '只带 schema 的 owner 不再判定归属')
     }
   })
 }

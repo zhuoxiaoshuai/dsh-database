@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { compareDbIntegers, compareDbValues, dbRowClass, nextDbSort, sortDbRows } from '../src/client/workspace/source/db-table.ts'
+import { compareDbIntegers, compareDbValues, dbRowClass, nextDbSort, sortDbRows } from '../src/client/workspace/parts/layout/db-table.ts'
 
 const read = (path) => readFileSync(new URL(path, import.meta.url), 'utf8')
 

@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { prepareTextOperation, authorizeTextOperation, dispatchTextOperation } from '../src/host/text-execution.ts'
+import { TextOperationRunner } from '../src/host/text-operation-runner.ts'
 import { createSqlTextExecution } from '../src/host/data-sources/sql-execution.ts'
 import { ConnectionService } from '../src/host/connection-service.ts'
 import { ExecutionStore } from '../src/host/execution-store.ts'
@@ -149,4 +150,16 @@ for (const dialect of ['mysql', 'oracle']) test(`${dialect} real SQL executor au
   const authorized = await authorizeStatement(dialect, 'SELECT id FROM records; DROP TABLE records', 'app')
   assert.equal(authorized.kind, 'write')
   assert.deepEqual(authorized.targets, [])
+})
+
+test('beforeDispatch context recheck compares content and ignores key order', async () => {
+  const connection = { dialect: 'mysql', generation: 'g', database: 'app', environment: 'pvt' }
+  const start = { sourceId: 'mysql', text: 'SELECT 1', context: { schema: 'app', database: '1' }, revision: 1, controller: 'user' }
+  const run = now => { let reads = 0
+    return new TextOperationRunner({ valid: () => true, connection: () => connection, document: () => (reads++ ? now : start), acquireRun: () => 'lease', releaseRun: () => {},
+      send: async (_owner, _id, _generation, _prepared, _signal, hooks) => { hooks.beforeDispatch(); return { ok: true } } })
+      .run('owner', 'connection', 'g', 'SELECT 1', undefined, 'user', undefined, 1, undefined, { schema: 'app' }, { sql: { sourceKind: 'sql', entry: 'manual-query' } }) }
+  assert.deepEqual(await run({ ...start, context: { database: '1', schema: 'app' } }), { ok: true }, '同样内容、不同 key 顺序照常发出')
+  for (const now of [{ ...start, context: { database: '2', schema: 'app' } }, { ...start, context: { schema: 'app' } }, { ...start, context: { schema: 'app', database: '1', owner: 'other' } },
+    { ...start, text: 'SELECT 2' }, { ...start, revision: 2 }, { ...start, controller: 'ai' }]) await assert.rejects(run(now), /已被修改、接管或切换目标/)
 })

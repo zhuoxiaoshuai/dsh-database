@@ -1,3 +1,5 @@
+import { isValidSourceRuntime } from './runtime-contract.mjs'
+
 const requiredDriverMethods = [
   'openCatalog', 'openQuery', 'openMaintenance', 'destroy', 'cancel', 'probe',
   'prepareReadonly', 'reset', 'runSelect', 'prepareWrite', 'executeWrite',
@@ -7,7 +9,7 @@ export function createDataSourceRegistry(providers) {
   const registered = new Map()
   for (const provider of providers) {
     if (!provider || typeof provider.id !== 'string' || !provider.id || !['sql', 'redis'].includes(provider.family) || registered.has(provider.id)) throw new Error('数据源注册信息无效或重复。')
-    if (!provider.runtime || provider.runtime.id !== provider.id || typeof provider.runtime.workerEntry !== 'string' || !/^[a-z][a-z0-9-]*-worker\.mjs$/.test(provider.runtime.workerEntry) || typeof provider.runtime.requiresPassword !== 'boolean' || typeof provider.runtime.usesCustomCa !== 'function' || !Array.isArray(provider.runtime.actions) || !provider.runtime.actions.length || !['sql', 'command'].includes(provider.runtime.documentKind)) throw new Error(`数据源运行能力不完整：${provider.id}`)
+    if (!provider.runtime || provider.runtime.id !== provider.id || !isValidSourceRuntime(provider.runtime, { requireDocumentKind: true })) throw new Error(`数据源运行能力不完整：${provider.id}`)
     if (provider.family === 'redis') {
       if (!provider.connection || ['validateTarget', 'fingerprintSuffix'].some(method => typeof provider.connection[method] !== 'function')) throw new Error(`数据源连接能力不完整：${provider.id}`)
       if (!provider.driver || ['open', 'probe', 'databases', 'close', 'execute', 'scan', 'suggestKeys', 'key', 'revive'].some(method => typeof provider.driver[method] !== 'function')) throw new Error(`Redis 驱动能力不完整：${provider.id}`)

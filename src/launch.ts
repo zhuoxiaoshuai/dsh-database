@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isDirectRun } from './host/is-direct-run.ts'
 import { startStandalone, type StandaloneOptions, type StandaloneServer } from './serve.ts'
 
 export type DshProfile = 'web' | 'desktop'
@@ -100,15 +101,7 @@ export async function runLaunch(io: LaunchIo = {}): Promise<{ mode: 'plugin' | '
   return { mode: 'standalone', url: started.url, close: () => started.close() }
 }
 
-function isDirectRun(): boolean {
-  const entry = process.argv[1]
-  if (!entry) return false
-  const left = resolve(entry)
-  const right = fileURLToPath(import.meta.url)
-  return process.platform === 'win32' ? left.toLowerCase() === right.toLowerCase() : left === right
-}
-
-if (isDirectRun()) {
+if (isDirectRun(import.meta.url)) {
   runLaunch({
     args: process.argv.slice(2),
     directories: [fileURLToPath(new URL('..', import.meta.url)), process.cwd()],

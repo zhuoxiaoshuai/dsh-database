@@ -5,6 +5,7 @@ import { oracleModule } from './oracle/module.ts'
 import { redisModule } from './redis/module.ts'
 import { kafkaModule } from './kafka/module.ts'
 import { nacosModule } from './nacos/module.ts'
+import { isValidSourceRuntime } from './runtime-contract.mjs'
 import type { HostSourceModule } from './module-types.ts'
 
 export function createHostModuleRegistry(entries: readonly HostSourceModule[], expected: readonly DataSourceId[]) {
@@ -32,3 +33,28 @@ export function createHostModuleRegistry(entries: readonly HostSourceModule[], e
 }
 
 export const hostModules = createHostModuleRegistry([mysqlModule, oracleModule, redisModule, kafkaModule, nacosModule], supportedAllDataSources)
+
+export type HostSourceRuntime = HostSourceModule['runtime']
+
+export function createRuntimeRegistry(entries: readonly HostSourceRuntime[]) {
+  const byId = new Map<DataSourceId, HostSourceRuntime>()
+  for (const entry of entries) {
+    // runtime 形状规则单源于 runtime-contract.mjs（与 provider-registry.mjs 共用）。
+    if (!entry || byId.has(entry.id) || !isValidSourceRuntime(entry)) {
+      throw new Error(`数据源运行能力不完整或重复：${String(entry?.id)}`)
+    }
+    byId.set(entry.id, entry)
+  }
+  return Object.freeze({
+    ids: () => [...byId.keys()],
+    get(id: DataSourceId) {
+      const runtime = byId.get(id)
+      if (!runtime) throw new Error(`不支持此数据源：${String(id)}`)
+      return runtime
+    },
+  })
+}
+
+const runtimes = createRuntimeRegistry(hostModules.ids().map(id => hostModules.get(id).runtime))
+export const getSourceRuntime = (id: DataSourceId) => runtimes.get(id)
+export const registeredSourceRuntimes = () => runtimes.ids()

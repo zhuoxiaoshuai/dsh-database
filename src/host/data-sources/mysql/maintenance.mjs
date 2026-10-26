@@ -1,4 +1,4 @@
-import { MaintenanceError } from '../maintenance-error.mjs'
+import { DML_PRIVILEGES, MaintenanceError } from '../maintenance-error.mjs'
 import { read as readCatalog } from './catalog.mjs'
 import { mysqlDialect, sql } from './driver.mjs'
 
@@ -15,7 +15,6 @@ export async function inspect(connection, schema, table, allowMissing = false) {
 }
 
 export async function privileges(connection, schema, table) {
-  const wanted = ['INSERT', 'UPDATE', 'DELETE']
   const allowAll = { insert: true, update: true, delete: true }
   const [rows] = await connection.query('SHOW GRANTS FOR CURRENT_USER')
   const allowed = new Set()
@@ -30,10 +29,10 @@ export async function privileges(connection, schema, table) {
     const scope = match[2].replaceAll('`', '').replaceAll('"', '').replaceAll("'", '').toLowerCase()
     if (scope !== '*.*' && scope !== `${schemaName}.*` && scope !== `${schemaName}.${tableName}`) continue
     const granted = (raw === 'ALL PRIVILEGES' || raw === 'ALL')
-      ? wanted : raw.split(',').map(value => value.trim().replace(/\s*\(.*\)$/, ''))
-    if (!granted.some(privilege => wanted.includes(privilege) || privilege === 'SELECT')) continue
+      ? DML_PRIVILEGES : raw.split(',').map(value => value.trim().replace(/\s*\(.*\)$/, ''))
+    if (!granted.some(privilege => DML_PRIVILEGES.includes(privilege) || privilege === 'SELECT')) continue
     explicit = true
-    for (const privilege of granted) if (wanted.includes(privilege)) allowed.add(privilege)
+    for (const privilege of granted) if (DML_PRIVILEGES.includes(privilege)) allowed.add(privilege)
   }
   if (!explicit) return allowAll
   return { insert: allowed.has('INSERT'), update: allowed.has('UPDATE'), delete: allowed.has('DELETE') }

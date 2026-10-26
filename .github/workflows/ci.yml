@@ -1,0 +1,41 @@
+name: check
+
+on:
+  pull_request:
+  push:
+    branches: [main, codex/nacos-p0-shared-framework]
+
+jobs:
+  check:
+    # The suite verifies Windows behaviours (DPAPI storage, cmd shims) and is run on Windows.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      # The dev dependency tree had an upstream peer conflict; it is resolved by aligning @deepseek-ai/cordis to 4.0.5.
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - run: npm run check
+      - run: npm pack --dry-run
+      - run: npm run test:package-closure
+
+  # The acceptance scripts bundle from src/ and drive Chromium against controlled fixtures.
+  ui:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install chromium
+      - run: npm run test:plugin-ui
+      - run: npm run test:public-ui
+      - run: npm run test:grid-copy
+      - run: npm run test:theme-ui
+      - run: npm run test:ui

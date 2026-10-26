@@ -232,7 +232,7 @@
 - 主要新增：`src/client/data-sources/kafka.tsx`、`src/client/kafka/`、`src/host/data-sources/kafka/`、`src/host/kafka-worker.mjs`、`src/host/operation-runtime.ts`；改动两端静态模块、连接服务、共享连接类型、执行详情、打包文件清单。Kafka AI 工具只注册 status/topics/describe/peek；执行文本先写入共编文档，实际派发前再核对修订和控制权。
 - `scripts/kafka-host-probe.mjs` 对本轮带标签的一次性无认证 broker 实测：测试及打开连接、保存脱敏、TOPICS、DESCRIBE、PEEK 均通过。KafkaJS 2.2.4 在 Node 24 仍发出负数 timer 警告；未把这个警告视为功能通过的证明。TLS、CA、PLAIN、SCRAM、ACL、取消、超时和浏览器 Kafka 页面尚未实测。
 - `npm run check`：PASS，475/475 测试、类型检查、Host/client 构建均通过。`test/package-runtime-closure.test.mjs` 随完整测试通过，Kafka Worker 已加入复制和发布文件清单。尚需做实际 npm pack／安装后的运行时闭包验证。
-- 偏差：旧 `src/host/data-sources/registry.mjs` 是 SQL／Redis 专属 Provider 注册表，不含 Kafka；正式全源入口是 Host `modules.ts` 与 `runtime-registry.mjs`。因此更新旧 Redis 测试断言以明确区分两个注册层，没有给 Kafka 伪造 SQL／Redis Provider。
+- 偏差：旧 `src/host/data-sources/registry.mjs` 是 SQL／Redis 专属 Provider 注册表，不含 Kafka；正式全源入口是 Host `modules.ts` 与 `runtime-registry.mjs`。因此更新旧 Redis 测试断言以明确区分两个注册层，没有给 Kafka 伪造 SQL／Redis Provider。2026-10-23 勘误：`runtime-registry.mjs` 已在冗余清理中删除，运行时元数据由 Host `modules.ts` 从 `hostModules` 派生，正式全源入口是 `hostModules` 与 `getSourceRuntime`。
 - 下一阶段前置：补有主权的一次性 Kafka 验收 fixture，验证 SASL/TLS 和消费位置；补 AI 控制权／记录单测与 Kafka 浏览器流程；随后跑实际发布包、无豁免 Web 安装及 MySQL／Oracle／Redis 回归。缺少环境的项目逐项标 `NOT_RUN`。
 ## 2026-10-02 SQL Host standard-text 接入（完成）
 

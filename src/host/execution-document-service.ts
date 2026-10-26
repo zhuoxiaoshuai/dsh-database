@@ -1,8 +1,8 @@
 import type { Connection } from '../shared/workbench.ts'
-import { emptyExecutionDocument, updateExecutionDocument, controlExecutionDocument, type ExecutionDocument } from '../shared/execution-document.ts'
+import { legacySharedQueryDocument } from '../shared/workbench.ts'
+import { assertDocumentRevision, emptyExecutionDocument, isDocumentRevision, updateExecutionDocument, controlExecutionDocument, type ExecutionDocument } from '../shared/execution-document.ts'
 import { sanitizeConversationWorkbench, type ConversationLayout } from './conversation-workbench-store.ts'
-import { getSourceRuntime } from './data-sources/runtime-registry.mjs'
-import { hostModules } from './data-sources/modules.ts'
+import { hostModules, getSourceRuntime } from './data-sources/modules.ts'
 
 export interface ExecutionDocumentPort {
   binding(owner: string, id: string, generation?: unknown): Connection
@@ -21,9 +21,10 @@ export class ExecutionDocumentService {
     if (workbench?.aiDocument?.sourceId === binding.dialect) return workbench.aiDocument
     const kind = getSourceRuntime(binding.dialect).documentKind
     if (!kind) throw new Error('此数据源不支持此能力。')
-    const old = workbench?.sharedQuery
+    // 没有权威文档时旧 SharedQuery 只是迁移输入；迁移后的文档不再回读旧字段。
+    const old = legacySharedQueryDocument(workbench, binding.dialect, binding.database)
     return old && kind === 'sql'
-      ? { sourceId: binding.dialect, text: old.sql, context: { schema: old.schema || binding.database }, revision: old.revision, controller: old.controller, controllerReason: old.controllerReason }
+      ? old
       : emptyExecutionDocument(binding.dialect, kind === 'sql' ? { schema: binding.database } : binding.dialect === 'redis' ? { database: binding.database } : {})
   }
   private commit(owner: string, id: string, document: ExecutionDocument): ExecutionDocument {
@@ -34,16 +35,16 @@ export class ExecutionDocumentService {
     return document
   }
   update(owner: string, id: string, text: string, source: 'ai' | 'user' | 'system', expectedRevision?: number, generation?: unknown, context?: unknown): ExecutionDocument {
-    if (!Number.isSafeInteger(expectedRevision) || !expectedRevision) throw new Error('缺少有效文档修订，请刷新。')
+    if (!isDocumentRevision(expectedRevision)) throw new Error('缺少有效文档修订，请刷新。')
     const previous = this.read(owner, id, generation)
     const normalized = context === undefined ? undefined : hostModules.get(previous.sourceId).execution!.normalizeContext(context, this.port.binding(owner, id))
     const next = updateExecutionDocument(previous, text, source, expectedRevision, normalized)
     return next === previous ? previous : this.commit(owner, id, next)
   }
   control(owner: string, id: string, controller: 'ai' | 'user', reason: string, generation?: unknown, revision?: number): ExecutionDocument {
-    if (!Number.isSafeInteger(revision) || !revision) throw new Error('缺少有效文档修订，请刷新。')
+    if (!isDocumentRevision(revision)) throw new Error('缺少有效文档修订，请刷新。')
     const previous = this.read(owner, id, generation)
-    if (revision !== previous.revision) throw new Error('AI Query 已变化，请刷新后再试。')
+    assertDocumentRevision(previous, revision, 'AI Query 已变化，请刷新后再试。')
     const next = controlExecutionDocument(previous, controller, reason)
     return next === previous ? previous : this.commit(owner, id, next)
   }
