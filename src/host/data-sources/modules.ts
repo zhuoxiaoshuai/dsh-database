@@ -5,6 +5,7 @@ import { oracleModule } from './oracle/module.ts'
 import { redisModule } from './redis/module.ts'
 import { kafkaModule } from './kafka/module.ts'
 import { nacosModule } from './nacos/module.ts'
+import { isValidSourceRuntime } from './runtime-contract.mjs'
 import type { HostSourceModule } from './module-types.ts'
 
 export function createHostModuleRegistry(entries: readonly HostSourceModule[], expected: readonly DataSourceId[]) {
@@ -38,11 +39,8 @@ export type HostSourceRuntime = HostSourceModule['runtime']
 export function createRuntimeRegistry(entries: readonly HostSourceRuntime[]) {
   const byId = new Map<DataSourceId, HostSourceRuntime>()
   for (const entry of entries) {
-    if (!entry || typeof entry.id !== 'string' || !entry.id || byId.has(entry.id)
-      || typeof entry.workerEntry !== 'string' || !/^[a-z][a-z0-9-]*-worker\.mjs$/.test(entry.workerEntry)
-      || typeof entry.requiresPassword !== 'boolean' || typeof entry.usesCustomCa !== 'function'
-      || !Array.isArray(entry.actions) || !entry.actions.length || entry.actions.some(action => typeof action !== 'string' || !action)
-      || new Set(entry.actions).size !== entry.actions.length || (entry.documentKind !== undefined && !['sql', 'command'].includes(entry.documentKind))) {
+    // runtime 形状规则单源于 runtime-contract.mjs（与 provider-registry.mjs 共用）。
+    if (!entry || byId.has(entry.id) || !isValidSourceRuntime(entry)) {
       throw new Error(`数据源运行能力不完整或重复：${String(entry?.id)}`)
     }
     byId.set(entry.id, entry)
