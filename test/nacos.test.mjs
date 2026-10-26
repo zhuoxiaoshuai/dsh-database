@@ -66,13 +66,16 @@ test('production Nacos HTTP client handles health and login without exposing cre
   })
 })
 
-test('production Nacos HTTP client reports timeout without hanging', async () => {
+test('production Nacos HTTP client reports timeout without hanging', async t => {
   const fetch = (_url, init) => new Promise((_resolve, reject) => {
     init.signal.addEventListener('abort', () => reject(init.signal.reason), { once: true })
   })
-  const begun = Date.now()
-  await assert.rejects(new NacosHttpClient(base, { fetch, timeoutMs: 30 }).request('/v1/console/health/liveness',{text:true}), /超时/)
-  assert.ok(Date.now() - begun < 1000)
+  const armed = []
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal)
+  t.mock.method(AbortSignal, 'timeout', ms => { armed.push(ms); return realTimeout(ms) })
+  const pending = new NacosHttpClient(base, { fetch, timeoutMs: 30 }).request('/v1/console/health/liveness',{text:true})
+  assert.deepEqual(armed, [30], '必须按配置的 30 毫秒启动超时')
+  await assert.rejects(pending, /超时/)
 })
 
 function listen(handler) {

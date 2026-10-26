@@ -135,10 +135,12 @@ test('two live connections run requests independently', async t => {
   const { service } = setup(t)
   const first = await service.open('owner-a', input, false)
   const second = await service.open('owner-a', { ...input, name: 'other', database: 'other' }, false)
-  const slow = service.request('owner-a', first.id, first.generation, 'query', { schema: 'app', sql: "SELECT id FROM records WHERE note = 'SLEEP_TEST'" })
-  const started = Date.now()
+  let slowSettled = false
+  const slow = service
+    .request('owner-a', first.id, first.generation, 'query', { schema: 'app', sql: "SELECT id FROM records WHERE note = 'SLEEP_TEST'" })
+    .then(value => { slowSettled = true; return value }, error => { slowSettled = true; throw error })
   const fast = await service.request('owner-a', second.id, second.generation, 'catalog', { kind: 'schemas' })
-  assert.ok(Date.now() - started < 1500)
+  assert.equal(slowSettled, false, '慢查询仍未结束时，另一连接的请求必须已经完成')
   assert.deepEqual(fast.items, [])
   await slow
 })
@@ -268,15 +270,16 @@ test('a saturated connection does not block another connection query or catalog'
   const first = await service.open('owner-a', input, false)
   const second = await service.open('owner-a', { ...input, name: 'other', database: 'other' }, false)
   const hold = { schema: 'app', sql: "SELECT id FROM records WHERE note = 'SLEEP_TEST'" }
+  let busySettled = 0
+  const track = promise => promise.then(value => { busySettled += 1; return value }, error => { busySettled += 1; throw error })
   const busyA = [
-    service.request('owner-a', first.id, first.generation, 'query', hold),
-    service.request('owner-a', first.id, first.generation, 'query', hold),
+    track(service.request('owner-a', first.id, first.generation, 'query', hold)),
+    track(service.request('owner-a', first.id, first.generation, 'query', hold)),
   ]
   await new Promise(resolve => setTimeout(resolve, 40))
-  const started = Date.now()
   const queryB = await service.request('owner-a', second.id, second.generation, 'query', { schema: 'other', sql: 'SELECT 1' })
   const catalogB = await service.request('owner-a', second.id, second.generation, 'catalog', { kind: 'schemas' })
-  assert.ok(Date.now() - started < 1500)
+  assert.equal(busySettled, 0, '慢查询仍未结束时，另一连接的查询与目录请求必须已经完成')
   assert.deepEqual(queryB.rows, [['1', 'secret-value']])
   assert.deepEqual(catalogB.items, [])
   await Promise.all(busyA)
