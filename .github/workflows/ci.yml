@@ -15,8 +15,8 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      # The dev dependency tree has an upstream peer conflict; the resolution policy is pinned in .npmrc.
-      - run: npm ci --legacy-peer-deps
+      # The dev dependency tree had an upstream peer conflict; it is resolved by aligning @deepseek-ai/cordis to 4.0.5.
+      - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
       - run: npm run check
@@ -32,7 +32,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci --legacy-peer-deps
+      - run: npm ci
       - run: npx playwright install chromium
       - run: npm run test:plugin-ui
       - run: npm run test:public-ui
